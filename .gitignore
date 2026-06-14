@@ -1,0 +1,13 @@
+/build/
+/dist/
+/.cache/
+/VERSION
+/compile_commands.json
+*.o
+*.a
+*.so
+*.dylib
+*.swp
+*.swo
+*~
+.DS_Store

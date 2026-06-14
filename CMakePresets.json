@@ -1,0 +1,162 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SL_BUILD_TESTS": "ON",
+        "SL_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "displayName": "ASan+UBSan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "SL_BUILD_TESTS": "ON",
+        "SL_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
+      "name": "x86_64-linux-gnu-release",
+      "inherits": "base",
+      "displayName": "x86_64 Linux GNU Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS": "-march=x86-64",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_DIST_DIR": "${sourceDir}/dist",
+        "SL_TARGET_ID": "x86_64-linux-gnu",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/x86_64-linux-gnu-release/install"
+      }
+    },
+    {
+      "name": "x86_64-linux-musl-release",
+      "inherits": "base",
+      "displayName": "x86_64 Linux Musl Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_DIST_DIR": "${sourceDir}/dist",
+        "SL_TARGET_ID": "x86_64-linux-musl",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/x86_64-linux-musl-release/install"
+      }
+    },
+    {
+      "name": "aarch64-linux-gnu-release",
+      "inherits": "base",
+      "displayName": "aarch64 Linux GNU Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_DIST_DIR": "${sourceDir}/dist",
+        "SL_TARGET_ID": "aarch64-linux-gnu",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/aarch64-linux-gnu-release/install"
+      }
+    },
+    {
+      "name": "aarch64-linux-musl-release",
+      "inherits": "base",
+      "displayName": "aarch64 Linux Musl Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_DIST_DIR": "${sourceDir}/dist",
+        "SL_TARGET_ID": "aarch64-linux-musl",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/aarch64-linux-musl-release/install"
+      }
+    },
+    {
+      "name": "armhf-linux-gnu-release",
+      "inherits": "base",
+      "displayName": "armhf Linux GNU Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_DIST_DIR": "${sourceDir}/dist",
+        "SL_TARGET_ID": "armhf-linux-gnu",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/armhf-linux-gnu-release/install"
+      }
+    },
+    {
+      "name": "armhf-linux-musl-release",
+      "inherits": "base",
+      "displayName": "armhf Linux Musl Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_DIST_DIR": "${sourceDir}/dist",
+        "SL_TARGET_ID": "armhf-linux-musl",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/armhf-linux-musl-release/install"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "x86_64-linux-gnu-release",
+      "configurePreset": "x86_64-linux-gnu-release"
+    },
+    {
+      "name": "x86_64-linux-musl-release",
+      "configurePreset": "x86_64-linux-musl-release"
+    },
+    {
+      "name": "aarch64-linux-gnu-release",
+      "configurePreset": "aarch64-linux-gnu-release"
+    },
+    {
+      "name": "aarch64-linux-musl-release",
+      "configurePreset": "aarch64-linux-musl-release"
+    },
+    {
+      "name": "armhf-linux-gnu-release",
+      "configurePreset": "armhf-linux-gnu-release"
+    },
+    {
+      "name": "armhf-linux-musl-release",
+      "configurePreset": "armhf-linux-musl-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {"outputOnFailure": true}
+    }
+  ]
+}
