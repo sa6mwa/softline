@@ -52,6 +52,9 @@
       "inherits": "base",
       "displayName": "x86_64 Linux Musl Release",
       "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Linux",
+        "CMAKE_SYSTEM_PROCESSOR": "x86_64",
+        "CMAKE_C_COMPILER": "x86_64-linux-musl-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -65,6 +68,9 @@
       "inherits": "base",
       "displayName": "aarch64 Linux GNU Release",
       "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Linux",
+        "CMAKE_SYSTEM_PROCESSOR": "aarch64",
+        "CMAKE_C_COMPILER": "aarch64-linux-gnu-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -78,6 +84,9 @@
       "inherits": "base",
       "displayName": "aarch64 Linux Musl Release",
       "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Linux",
+        "CMAKE_SYSTEM_PROCESSOR": "aarch64",
+        "CMAKE_C_COMPILER": "aarch64-linux-musl-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -91,6 +100,9 @@
       "inherits": "base",
       "displayName": "armhf Linux GNU Release",
       "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Linux",
+        "CMAKE_SYSTEM_PROCESSOR": "arm",
+        "CMAKE_C_COMPILER": "arm-linux-gnueabihf-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -104,12 +116,29 @@
       "inherits": "base",
       "displayName": "armhf Linux Musl Release",
       "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Linux",
+        "CMAKE_SYSTEM_PROCESSOR": "arm",
+        "CMAKE_C_COMPILER": "arm-linux-musleabihf-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
         "SL_DIST_DIR": "${sourceDir}/dist",
         "SL_TARGET_ID": "armhf-linux-musl",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/armhf-linux-musl-release/install"
+      }
+    },
+    {
+      "name": "arm64-apple-darwin-release",
+      "inherits": "base",
+      "displayName": "arm64 Apple Darwin Release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/osxcross-darwin.cmake",
+        "CMAKE_BUILD_TYPE": "Release",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_DIST_DIR": "${sourceDir}/dist",
+        "SL_TARGET_ID": "arm64-apple-darwin",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/arm64-apple-darwin-release/install"
       }
     }
   ],
@@ -145,6 +174,10 @@
     {
       "name": "armhf-linux-musl-release",
       "configurePreset": "armhf-linux-musl-release"
+    },
+    {
+      "name": "arm64-apple-darwin-release",
+      "configurePreset": "arm64-apple-darwin-release"
     }
   ],
   "testPresets": [

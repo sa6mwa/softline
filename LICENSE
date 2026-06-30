@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 softline contributors
+Copyright (c) 2026 Michel Blomgren <mike@pkt.systems> https://pkt.systems
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,9 @@ SOFTWARE.
 
 ---
 
-This software includes linenoise (https://github.com/antirez/linenoise),
-which is licensed under the BSD 2-Clause License:
+This software contains code and design derived from linenoise
+(https://github.com/antirez/linenoise), which is licensed under the BSD
+2-Clause License:
 
 Copyright (c) 2010-2023, Salvatore Sanfilippo <antirez at gmail dot com>
 Copyright (c) 2010-2013, Pieter Noordhuis <pcnoordhuis at gmail dot com>

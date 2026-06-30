@@ -9,7 +9,6 @@ trap 'rm -rf ${TMP_DIR}' EXIT
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 ARCHIVE="${DIST_DIR}/softline-${VERSION}.tar.gz"
 
-rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
 
 STAGE_DIR="${TMP_DIR}/softline-${VERSION}"
@@ -27,17 +26,25 @@ fi
 
 if [ -z "$(ls -A "${STAGE_DIR}" 2>/dev/null)" ]; then
   for f in CMakeLists.txt CMakePresets.json Makefile .clang-format .gitignore \
-           LICENSE; do
+           LICENSE README.md; do
     [ -f "${ROOT_DIR}/${f}" ] && cp "${ROOT_DIR}/${f}" "${STAGE_DIR}/${f}"
   done
-  for d in cmake scripts include src tests examples vendor; do
+  for d in cmake scripts include src tests examples docs lua; do
     if [ -d "${ROOT_DIR}/${d}" ]; then
       cp -r "${ROOT_DIR}/${d}" "${STAGE_DIR}/${d}"
     fi
   done
+  [ -f "${ROOT_DIR}/softline.rockspec.in" ] && cp "${ROOT_DIR}/softline.rockspec.in" "${STAGE_DIR}/softline.rockspec.in"
 fi
 
+(
+  cd "${STAGE_DIR}"
+  find . -type f | sed 's|^\./||' | sort > RELEASE_MANIFEST
+)
 echo "${VERSION}" > "${STAGE_DIR}/VERSION"
+printf '%s\n' VERSION >> "${STAGE_DIR}/RELEASE_MANIFEST"
+printf '%s\n' RELEASE_MANIFEST >> "${STAGE_DIR}/RELEASE_MANIFEST"
+sort -u "${STAGE_DIR}/RELEASE_MANIFEST" -o "${STAGE_DIR}/RELEASE_MANIFEST"
 
 tar -czf "${ARCHIVE}" -C "${TMP_DIR}" "softline-${VERSION}"
 echo "Source archive: ${ARCHIVE}"

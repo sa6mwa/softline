@@ -17,6 +17,27 @@ fi
 tar -xzf "${ARCHIVE}" -C "${TMP_DIR}"
 src_dir="${TMP_DIR}/softline-${VERSION}"
 
+if [ ! -f "${src_dir}/VERSION" ] || [ "$(head -1 "${src_dir}/VERSION")" != "${VERSION}" ]; then
+  echo "ERROR: source archive VERSION does not match ${VERSION}"
+  exit 1
+fi
+
+if [ ! -f "${src_dir}/RELEASE_MANIFEST" ]; then
+  echo "ERROR: source archive missing RELEASE_MANIFEST"
+  exit 1
+fi
+
+(
+  cd "${src_dir}"
+  find . -type f | sed 's|^\./||' | sort > "${TMP_DIR}/actual-manifest"
+)
+sort "${src_dir}/RELEASE_MANIFEST" > "${TMP_DIR}/expected-manifest"
+if ! cmp -s "${TMP_DIR}/expected-manifest" "${TMP_DIR}/actual-manifest"; then
+  echo "ERROR: source archive RELEASE_MANIFEST does not match payload"
+  diff -u "${TMP_DIR}/expected-manifest" "${TMP_DIR}/actual-manifest" || true
+  exit 1
+fi
+
 cmake -S "${src_dir}" -B "${src_dir}/build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
   -DSL_BUILD_TESTS=ON \

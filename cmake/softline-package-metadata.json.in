@@ -1,0 +1,8 @@
+{
+  "name": "softline",
+  "version": "@PROJECT_VERSION@",
+  "abi_version": "@SOFTLINE_ABI_VERSION@",
+  "target_id": "@SL_TARGET_ID@",
+  "cmake_package": "softline",
+  "pkg_config": "softline"
+}

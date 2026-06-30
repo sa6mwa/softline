@@ -1,0 +1,10 @@
+prefix=@SOFTLINE_PC_PREFIX@
+exec_prefix=${prefix}
+libdir=@SOFTLINE_PC_LIBDIR@
+includedir=@SOFTLINE_PC_INCLUDEDIR@
+
+Name: softline
+Description: C89/POSIX multiline prompt editor
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lsoftline
+Cflags: -I${includedir}

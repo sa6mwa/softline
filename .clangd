@@ -1,0 +1,7 @@
+CompileFlags:
+  CompilationDatabase: build/debug
+  Add:
+    - -Iinclude
+    - -Isrc
+    - -D_POSIX_C_SOURCE=200809L
+    - -std=c89

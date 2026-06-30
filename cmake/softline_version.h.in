@@ -1,9 +1,16 @@
 #ifndef SOFTLINE_VERSION_H
 #define SOFTLINE_VERSION_H
 
+/** Full softline release version string, such as "0.1.0". */
 #define SOFTLINE_VERSION "@PROJECT_VERSION@"
+
+/** Major component of SOFTLINE_VERSION. */
 #define SOFTLINE_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+
+/** Minor component of SOFTLINE_VERSION. */
 #define SOFTLINE_VERSION_MINOR @PROJECT_VERSION_MINOR@
+
+/** Patch component of SOFTLINE_VERSION. */
 #define SOFTLINE_VERSION_PATCH @PROJECT_VERSION_PATCH@
 
 #endif

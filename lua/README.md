@@ -1,0 +1,107 @@
+# softline Lua facade
+
+The `softline` Lua module is a thin facade over the installed C library. It
+links with `libsoftline` and uses only the public `softline/softline.h` API.
+Lua 5.5 is the supported Lua runtime for this facade.
+
+```lua
+local softline = require("softline")
+
+local sl = softline.new()
+local line, status = sl:readline("softline> ")
+if line then
+  sl:history_add(line)
+else
+  if status == softline.READLINE_EOF then
+    -- input ended
+  end
+end
+sl:close()
+```
+
+## Handles
+
+`softline.new([config])` returns an independent editor handle. The optional
+config table mirrors `sl_config_t`:
+
+- `input_fd`
+- `output_fd`
+- `screen_x`
+- `screen_y`
+- `screen_width`
+- `screen_height`
+- `bounded`
+- `history_max_len`
+- `line_max_len`
+
+Each handle owns its buffer, cursor, history, prompt state, and diagnostics.
+Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
+
+## Methods
+
+- `sl:readline([prompt])` returns a submitted string, or `nil, status` for EOF,
+  cancellation, interrupt, or error.
+- `sl:history_add(line)` adds one history entry.
+- `sl:history_set_max_len(max_len)` changes the retained history cap; `0`
+  clears and disables history.
+- `sl:history_save(filename)` writes history with owner-only permissions.
+- `sl:history_load(filename)` loads history entries into the handle.
+- `sl:set_bounds(x, y, width, height)` enables bounded prompt rendering; zero
+  width or height uses dynamic terminal bounds.
+- `sl:set_screen_width(width)` sets normal prompt wrapping width; `0` returns
+  to terminal-width probing.
+- `sl:insert(text)` inserts text bytes at the active cursor.
+- `sl:set_buffer(text)` replaces the active buffer and moves the cursor to the
+  end.
+- `sl:buffer()` returns the active buffer as a Lua string.
+- `sl:cursor()` returns the cursor as a byte offset into `sl:buffer()`.
+- `sl:set_cursor(offset)` clamps the byte offset to a valid UTF-8 cluster
+  boundary when possible.
+- `sl:submit()` submits the active buffer from a callback-driven edit.
+- `sl:cancel()` cancels the active `readline()`.
+- `sl:bind_key(key, callback)` binds a decoded key to a callback. The callback
+  receives the key code and returns a `softline.KEY_ACTION_*` value, or `nil`
+  to mark the key handled. Passing `nil` as the callback removes the binding.
+- `sl:print_above(source)` prints above the active bounded prompt. `source` may
+  be a string, an array-like table of string chunks, or a function that receives
+  a 1-based chunk index and returns the next string or `nil`.
+- `sl:last_readline_status()` returns the last readline status code.
+- `sl:last_error()` returns the last handle-owned diagnostic string, or `nil`.
+- `sl:close()` destroys the handle.
+
+Fallible methods other than `readline()` return `true` on success or
+`nil, status` on failure. Status constants exported by the module are:
+
+- `softline.READLINE_NONE`
+- `softline.READLINE_SUBMITTED`
+- `softline.READLINE_EOF`
+- `softline.READLINE_CANCELLED`
+- `softline.READLINE_INTERRUPTED`
+- `softline.READLINE_ERROR`
+- `softline.OK`
+- `softline.KEY_CTRL_C`
+- `softline.KEY_ACTION_PASS`
+- `softline.KEY_ACTION_HANDLED`
+- `softline.KEY_ACTION_SUBMIT`
+- `softline.KEY_ACTION_CANCEL`
+- `softline.KEY_ACTION_INTERRUPT`
+
+## Examples
+
+The repository ships Lua examples equivalent to the C examples:
+
+```sh
+make lua-test
+eval "$(make lua-env)"
+lua examples/simple.lua
+lua examples/chat.lua
+```
+
+To run against the in-tree debug `libsoftline` instead of the installed local
+SDK:
+
+```sh
+make lua-debug-test
+make lua-debug-simple
+make lua-debug-chat
+```

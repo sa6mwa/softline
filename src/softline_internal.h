@@ -2,29 +2,74 @@
 #define SOFTLINE_INTERNAL_H
 
 #include "softline/softline.h"
-#include "linenoise.h"
+
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 #include <sys/ioctl.h>
-#include <unistd.h>
 #include <termios.h>
+#include <unistd.h>
 
-#define SL_MAX_LINES 256
-#define SL_LINE_INITIAL 256
+#define SL_BUF_INITIAL 256
+#define SL_LINE_DEFAULT_MAX 4096
+#define SL_HISTORY_DEFAULT_MAX 100
+#define SL_ERROR_LEN 160
+#define SL_DEFAULT_PROMPT "> "
+#define SL_MAX_KEY_BINDINGS 64
 
-struct sl_t {
+typedef struct sl_key_binding {
+  sl_key_t key;
+  sl_key_callback_t callback;
+  void *userdata;
+} sl_key_binding_t;
+
+typedef struct sl_history {
+  char **items;
+  int len;
+  int max_len;
+} sl_history_t;
+
+typedef struct sl_impl {
+  int input_fd;
+  int output_fd;
   int screen_x;
   int screen_y;
   int screen_width;
   int screen_height;
-  char *prompt_symbol;
-  int indent_mode;
-  struct linenoiseState ls;
+  int bounded;
+  int dynamic_width;
+  int dynamic_height;
   char *buf;
-  size_t buflen;
-  size_t buflen_max;
-  int initialized;
-};
+  size_t len;
+  size_t cap;
+  size_t line_max_len;
+  size_t cursor;
+  int raw_active;
+  struct termios original_termios;
+  sl_history_t history;
+  int history_index;
+  char *history_edit;
+  int bracketed_paste;
+  int rendered_rows;
+  int rendered_top_row;
+  int rendered_cursor_row;
+  int rendered_cursor_col;
+  char **rendered_lines;
+  size_t *rendered_lens;
+  int *rendered_cols;
+  int rendered_cap;
+  const char *active_prompt;
+  int active_readline;
+  int request_submit;
+  int request_cancel;
+  int plain_pending;
+  char plain_pending_ch;
+  sl_readline_status_t last_readline_status;
+  sl_idle_callback_t idle_callback;
+  void *idle_userdata;
+  sl_key_binding_t key_bindings[SL_MAX_KEY_BINDINGS];
+  char error[SL_ERROR_LEN];
+} sl_impl_t;
 
 #endif
