@@ -39,6 +39,7 @@ if ! cmp -s "${TMP_DIR}/expected-manifest" "${TMP_DIR}/actual-manifest"; then
 fi
 
 cmake -S "${src_dir}" -B "${src_dir}/build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="${src_dir}/cmake/toolchains/bootlin-linux.cmake" \
   -DCMAKE_BUILD_TYPE=Debug \
   -DSL_BUILD_TESTS=ON \
   -DSL_BUILD_EXAMPLES=ON

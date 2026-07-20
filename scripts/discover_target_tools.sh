@@ -13,6 +13,7 @@ fi
 BUILD_DIR="$1"
 TARGET_ID="$2"
 CACHE="${BUILD_DIR}/CMakeCache.txt"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_OS="unknown"
 case "${TARGET_ID}" in
   *-apple-darwin) TARGET_OS="darwin" ;;
@@ -83,6 +84,7 @@ find_tool() {
   compiler="$3"
   tool="$4"
   default_path="$5"
+  allow_path="$6"
   path_tool=""
 
   if is_executable_path "${override}"; then
@@ -102,10 +104,12 @@ find_tool() {
     echo "${default_path}"
     return 0
   fi
-  path_tool="$(command_path "${tool}")"
-  if [ -n "${path_tool}" ]; then
-    echo "${path_tool}"
-    return 0
+  if [ "${allow_path}" = "1" ]; then
+    path_tool="$(command_path "${tool}")"
+    if [ -n "${path_tool}" ]; then
+      echo "${path_tool}"
+      return 0
+    fi
   fi
   echo ""
 }
@@ -121,8 +125,30 @@ print_assignment() {
 }
 
 CC_VALUE="$(cache_get CMAKE_C_COMPILER)"
+DEFAULT_CC=""
+DEFAULT_LINKER=""
+DEFAULT_READELF=""
+DEFAULT_STRIP=""
+ALLOW_PATH_FALLBACK=0
+
+case "${TARGET_OS}" in
+  linux)
+    lifecycle_env="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${TARGET_ID}" 2>/dev/null || true)"
+    if [ -n "${lifecycle_env}" ]; then
+      eval "${lifecycle_env}"
+      DEFAULT_CC="${CPKT_TOOLCHAIN_CC:-${CC:-}}"
+      DEFAULT_LINKER="${CPKT_TOOLCHAIN_LD:-${LD:-}}"
+      DEFAULT_READELF="${CPKT_TOOLCHAIN_READELF:-${READELF:-}}"
+      DEFAULT_STRIP="${CPKT_TOOLCHAIN_STRIP:-${STRIP:-}}"
+    fi
+    ;;
+  darwin)
+    ALLOW_PATH_FALLBACK=1
+    ;;
+esac
+
 if [ -z "${CC_VALUE}" ]; then
-  CC_VALUE="$(command_path "$(basename_of "$(cache_get CMAKE_C_COMPILER)")")"
+  CC_VALUE="${DEFAULT_CC}"
 fi
 
 OSXCROSS_ROOT_VALUE="${OSXCROSS_ROOT:-${HOME}/.local/cross/osxcross}"
@@ -132,14 +158,23 @@ DEFAULT_INSTALL_NAME_TOOL="${OSXCROSS_ROOT_VALUE}/bin/${OSXCROSS_HOST_VALUE}-ins
 DEFAULT_DARWIN_STRIP="${OSXCROSS_ROOT_VALUE}/bin/${OSXCROSS_HOST_VALUE}-strip"
 DEFAULT_DARWIN_LINKER="${OSXCROSS_ROOT_VALUE}/bin/${OSXCROSS_HOST_VALUE}-ld"
 
-LINKER_VALUE="$(find_tool "${SOFTLINE_LINKER:-}" CMAKE_LINKER "${CC_VALUE}" ld "${DEFAULT_DARWIN_LINKER}")"
-READELF_VALUE="$(find_tool "${SOFTLINE_READELF:-}" CMAKE_READELF "${CC_VALUE}" readelf "")"
-OTOOL_VALUE="$(find_tool "${SOFTLINE_OTOOL:-}" CPKT_OTOOL "${CC_VALUE}" otool "${DEFAULT_OTOOL}")"
+case "${TARGET_OS}" in
+  linux) DEFAULT_LINKER_PATH="${DEFAULT_LINKER}" ;;
+  *) DEFAULT_LINKER_PATH="${DEFAULT_DARWIN_LINKER}" ;;
+esac
+
+LINKER_VALUE="$(find_tool "${SOFTLINE_LINKER:-}" CMAKE_LINKER "${CC_VALUE}" ld "${DEFAULT_LINKER_PATH}" "${ALLOW_PATH_FALLBACK}")"
+READELF_VALUE="$(find_tool "${SOFTLINE_READELF:-}" CMAKE_READELF "${CC_VALUE}" readelf "${DEFAULT_READELF}" "${ALLOW_PATH_FALLBACK}")"
+OTOOL_VALUE="$(find_tool "${SOFTLINE_OTOOL:-}" CPKT_OTOOL "${CC_VALUE}" otool "${DEFAULT_OTOOL}" "${ALLOW_PATH_FALLBACK}")"
 if [ -z "${OTOOL_VALUE}" ]; then
-  OTOOL_VALUE="$(find_tool "" CMAKE_OTOOL "${CC_VALUE}" otool "${DEFAULT_OTOOL}")"
+  OTOOL_VALUE="$(find_tool "" CMAKE_OTOOL "${CC_VALUE}" otool "${DEFAULT_OTOOL}" "${ALLOW_PATH_FALLBACK}")"
 fi
-INSTALL_NAME_TOOL_VALUE="$(find_tool "${SOFTLINE_INSTALL_NAME_TOOL:-}" CMAKE_INSTALL_NAME_TOOL "${CC_VALUE}" install_name_tool "${DEFAULT_INSTALL_NAME_TOOL}")"
-STRIP_VALUE="$(find_tool "${SOFTLINE_STRIP:-}" CMAKE_STRIP "${CC_VALUE}" strip "${DEFAULT_DARWIN_STRIP}")"
+INSTALL_NAME_TOOL_VALUE="$(find_tool "${SOFTLINE_INSTALL_NAME_TOOL:-}" CMAKE_INSTALL_NAME_TOOL "${CC_VALUE}" install_name_tool "${DEFAULT_INSTALL_NAME_TOOL}" "${ALLOW_PATH_FALLBACK}")"
+case "${TARGET_OS}" in
+  linux) DEFAULT_STRIP_PATH="${DEFAULT_STRIP}" ;;
+  *) DEFAULT_STRIP_PATH="${DEFAULT_DARWIN_STRIP}" ;;
+esac
+STRIP_VALUE="$(find_tool "${SOFTLINE_STRIP:-}" CMAKE_STRIP "${CC_VALUE}" strip "${DEFAULT_STRIP_PATH}" "${ALLOW_PATH_FALLBACK}")"
 
 print_assignment TARGET_ID "${TARGET_ID}"
 print_assignment TARGET_OS "${TARGET_OS}"

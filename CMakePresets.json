@@ -11,8 +11,16 @@
       }
     },
     {
-      "name": "debug",
+      "name": "linux-base",
+      "hidden": true,
       "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/bootlin-linux.cmake"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "linux-base",
       "displayName": "Debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -21,8 +29,17 @@
       }
     },
     {
+      "name": "debug-lua",
+      "inherits": "debug",
+      "displayName": "Debug Lua facade SDK",
+      "cacheVariables": {
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
       "name": "asan",
-      "inherits": "base",
+      "inherits": "linux-base",
       "displayName": "ASan+UBSan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -34,14 +51,36 @@
       }
     },
     {
+      "name": "fuzz",
+      "inherits": "linux-base",
+      "displayName": "Native AFL++ fuzzing",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/aflpp-linux.cmake",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SL_TARGET_ID": "x86_64-linux-gnu",
+        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_BUILD_TESTS": "OFF",
+        "SL_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
+      "name": "valgrind",
+      "inherits": "linux-base",
+      "displayName": "Native Valgrind",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SL_BUILD_TESTS": "ON",
+        "SL_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
       "name": "x86_64-linux-gnu-release",
-      "inherits": "base",
+      "inherits": "linux-base",
       "displayName": "x86_64 Linux GNU Release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_FLAGS": "-march=x86-64",
-        "SL_BUILD_TESTS": "OFF",
-        "SL_BUILD_EXAMPLES": "OFF",
+        "SL_BUILD_TESTS": "ON",
+        "SL_BUILD_EXAMPLES": "ON",
         "SL_DIST_DIR": "${sourceDir}/dist",
         "SL_TARGET_ID": "x86_64-linux-gnu",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/x86_64-linux-gnu-release/install"
@@ -49,12 +88,11 @@
     },
     {
       "name": "x86_64-linux-musl-release",
-      "inherits": "base",
+      "inherits": "linux-base",
       "displayName": "x86_64 Linux Musl Release",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "Linux",
         "CMAKE_SYSTEM_PROCESSOR": "x86_64",
-        "CMAKE_C_COMPILER": "x86_64-linux-musl-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -65,12 +103,11 @@
     },
     {
       "name": "aarch64-linux-gnu-release",
-      "inherits": "base",
+      "inherits": "linux-base",
       "displayName": "aarch64 Linux GNU Release",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "Linux",
         "CMAKE_SYSTEM_PROCESSOR": "aarch64",
-        "CMAKE_C_COMPILER": "aarch64-linux-gnu-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -81,12 +118,11 @@
     },
     {
       "name": "aarch64-linux-musl-release",
-      "inherits": "base",
+      "inherits": "linux-base",
       "displayName": "aarch64 Linux Musl Release",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "Linux",
         "CMAKE_SYSTEM_PROCESSOR": "aarch64",
-        "CMAKE_C_COMPILER": "aarch64-linux-musl-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -97,12 +133,11 @@
     },
     {
       "name": "armhf-linux-gnu-release",
-      "inherits": "base",
+      "inherits": "linux-base",
       "displayName": "armhf Linux GNU Release",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "Linux",
         "CMAKE_SYSTEM_PROCESSOR": "arm",
-        "CMAKE_C_COMPILER": "arm-linux-gnueabihf-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -113,12 +148,11 @@
     },
     {
       "name": "armhf-linux-musl-release",
-      "inherits": "base",
+      "inherits": "linux-base",
       "displayName": "armhf Linux Musl Release",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "Linux",
         "CMAKE_SYSTEM_PROCESSOR": "arm",
-        "CMAKE_C_COMPILER": "arm-linux-musleabihf-gcc",
         "CMAKE_BUILD_TYPE": "Release",
         "SL_BUILD_TESTS": "OFF",
         "SL_BUILD_EXAMPLES": "OFF",
@@ -148,8 +182,20 @@
       "configurePreset": "debug"
     },
     {
+      "name": "debug-lua",
+      "configurePreset": "debug-lua"
+    },
+    {
       "name": "asan",
       "configurePreset": "asan"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
+    },
+    {
+      "name": "valgrind",
+      "configurePreset": "valgrind"
     },
     {
       "name": "x86_64-linux-gnu-release",
@@ -187,8 +233,23 @@
       "output": {"outputOnFailure": true}
     },
     {
+      "name": "debug-lua",
+      "configurePreset": "debug-lua",
+      "output": {"outputOnFailure": true}
+    },
+    {
       "name": "asan",
       "configurePreset": "asan",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "valgrind",
+      "configurePreset": "valgrind",
       "output": {"outputOnFailure": true}
     }
   ]

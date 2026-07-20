@@ -20,6 +20,11 @@ if [ ! -f "${CHECKSUM_FILE}" ]; then
   exit 1
 fi
 
+if [ -e "${DIST_DIR}/SHA256SUMS" ]; then
+  echo "ERROR: deprecated checksum manifest present: ${DIST_DIR}/SHA256SUMS"
+  exit 1
+fi
+
 for checksum in "${DIST_DIR}"/softline-*-CHECKSUMS; do
   [ -f "${checksum}" ] || continue
   if [ "${checksum}" != "${CHECKSUM_FILE}" ]; then
@@ -36,6 +41,30 @@ target_from_basename() {
 load_tools() {
   target="$1"
   build_dir="${ROOT_DIR}/build/${target}-release"
+  tool_env=""
+  TARGET_ID=""
+  TARGET_OS=""
+  CC=""
+  LD=""
+  LINKER=""
+  READELF=""
+  OTOOL=""
+  INSTALL_NAME_TOOL=""
+  STRIP=""
+  if tool_env="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${target}" 2>/dev/null)"; then
+    eval "${tool_env}"
+    TARGET_ID="${target}"
+    case "${target}" in
+      *-apple-darwin) TARGET_OS="darwin" ;;
+      *-linux-*) TARGET_OS="linux" ;;
+      *) TARGET_OS="unknown" ;;
+    esac
+    LINKER="${LD:-${CPKT_TOOLCHAIN_LD:-}}"
+    OTOOL="${CPKT_TOOLCHAIN_OTOOL:-}"
+    INSTALL_NAME_TOOL="${CPKT_TOOLCHAIN_INSTALL_NAME_TOOL:-}"
+    STRIP="${CPKT_TOOLCHAIN_STRIP:-}"
+    return
+  fi
   tools="$("${ROOT_DIR}/scripts/discover_target_tools.sh" "${build_dir}" "${target}")"
   eval "${tools}"
 }
@@ -159,6 +188,74 @@ verify_darwin_metadata() {
   done
 }
 
+verify_extracted_consumer() {
+  target="$1"
+  pkg_root="$2"
+  pkg_lib_dir="$3"
+  consumer_dir="${TMP_DIR}/consumer-${target}"
+  cmake_toolchain="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
+
+  case "${target}" in
+    arm64-apple-darwin)
+      cmake_toolchain="${ROOT_DIR}/cmake/toolchains/osxcross-darwin.cmake"
+      ;;
+  esac
+
+  rm -rf "${consumer_dir}"
+  mkdir -p "${consumer_dir}"
+  cat > "${consumer_dir}/CMakeLists.txt" <<'EOF'
+cmake_minimum_required(VERSION 3.16)
+project(softline_extracted_consumer LANGUAGES C)
+find_package(softline REQUIRED CONFIG)
+add_executable(softline_extracted_consumer main.c)
+target_link_libraries(softline_extracted_consumer PRIVATE softline::softline)
+EOF
+  cat > "${consumer_dir}/main.c" <<'EOF'
+#include "softline/softline.h"
+
+int main(void) {
+  sl_config_t config;
+  sl_config_init(&config);
+  return config.input_fd == 0 ? 0 : 1;
+}
+EOF
+
+  set -- "-DCMAKE_TOOLCHAIN_FILE=${cmake_toolchain}"
+  case "${target}" in
+    arm64-apple-darwin) ;;
+    *) set -- "$@" "-DSL_TARGET_ID=${target}" ;;
+  esac
+  cmake -S "${consumer_dir}" -B "${consumer_dir}/cmake-build" -G Ninja \
+    "$@" \
+    -DCMAKE_PREFIX_PATH="${pkg_root}" \
+    -Dsoftline_DIR="${pkg_lib_dir}/cmake/softline"
+  cmake --build "${consumer_dir}/cmake-build"
+
+  PKG_CONFIG_PATH="${pkg_lib_dir}/pkgconfig"
+  export PKG_CONFIG_PATH
+  if [ "${target}" = "arm64-apple-darwin" ]; then
+    if [ -z "${LINKER:-}" ]; then
+      echo "ERROR: ${target}: target linker unavailable for pkg-config consumer" >&2
+      exit 1
+    fi
+    PATH="$(dirname "${LINKER}"):${PATH}" "${CC}" --ld-path="${LINKER}" \
+      -std=c89 -Wall -Wextra -Wpedantic -Werror \
+      $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
+      $(pkg-config --libs softline) -o "${consumer_dir}/pkg-config-consumer"
+  else
+    "${CC}" -std=c89 -Wall -Wextra -Wpedantic -Werror \
+      $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
+      $(pkg-config --libs softline) -o "${consumer_dir}/pkg-config-consumer"
+  fi
+
+  if [ "${target}" = "x86_64-linux-gnu" ]; then
+    LD_LIBRARY_PATH="${pkg_lib_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+      "${consumer_dir}/cmake-build/softline_extracted_consumer"
+    LD_LIBRARY_PATH="${pkg_lib_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+      "${consumer_dir}/pkg-config-consumer"
+  fi
+}
+
 echo "Verifying checksums..."
 cd "${DIST_DIR}"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -195,7 +292,8 @@ for archive in "${DIST_DIR}"/softline-*.tar.gz; do
     continue
   fi
   if [ "${basename}" = "softline-${VERSION}" ]; then
-    echo "  ${basename}: source archive, skipped by binary package verifier"
+    "${ROOT_DIR}/scripts/package-source-smoke.sh"
+    echo "  ${basename}: OK"
     continue
   fi
 
@@ -297,6 +395,8 @@ for archive in "${DIST_DIR}"/softline-*.tar.gz; do
     echo "ERROR: ${basename} package metadata missing pkg-config identity"
     exit 1
   fi
+
+  verify_extracted_consumer "${target}" "${pkg_root}" "${pkg_lib_dir}"
 
   echo "  ${basename}: OK"
 done

@@ -6,89 +6,66 @@ DIST_DIR="${ROOT_DIR}/dist"
 . "${ROOT_DIR}/scripts/release-targets.sh"
 
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
-TARGETS="${SOFTLINE_PACKAGE_TARGETS:-${SOFTLINE_RELEASE_TARGETS}}"
+REQUIRE_DARWIN="${SOFTLINE_REQUIRE_DARWIN:-0}"
+if [ "${REQUIRE_DARWIN}" = "1" ]; then
+  TARGETS="${SOFTLINE_RELEASE_TARGETS}"
+else
+  TARGETS="${SOFTLINE_PACKAGE_TARGETS:-${SOFTLINE_RELEASE_TARGETS}}"
+fi
 BUILT_TARGETS=""
 SKIPPED_TARGETS=""
-MANDATORY_TARGETS="${SOFTLINE_MANDATORY_PACKAGE_TARGETS:-x86_64-linux-gnu}"
+
+if [ "${REQUIRE_DARWIN}" = "1" ]; then
+  case " ${TARGETS} " in
+    *" arm64-apple-darwin "*) ;;
+    *)
+      echo "ERROR: Darwin artifact is required for make release" >&2
+      exit 1
+      ;;
+  esac
+  if ! "${ROOT_DIR}/scripts/cpkt-toolchains.sh" discover arm64-apple-darwin |
+       grep -qx 'status=ready'; then
+    echo "ERROR: Darwin artifact is required for make release, but osxcross is unavailable" >&2
+    exit 1
+  fi
+fi
 
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
-
-tool_available() {
-  tool="$1"
-  case "${tool}" in
-    /*|*/*) [ -x "${tool}" ] ;;
-    *) command -v "${tool}" >/dev/null 2>&1 ;;
-  esac
-}
-
-run_for_target() {
-  target="$1"
-  shift
-  path_prefix="$(softline_target_path_prefix "${target}")"
-  if [ -n "${path_prefix}" ]; then
-    PATH="${path_prefix}:${PATH}" "$@"
-  else
-    "$@"
-  fi
-}
-
-is_mandatory_target() {
-  needle="$1"
-  for mandatory in ${MANDATORY_TARGETS}; do
-    if [ "${mandatory}" = "${needle}" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
 
 for target in ${TARGETS}; do
   preset="${target}-release"
   build_dir="${ROOT_DIR}/build/${preset}"
   install_dir="${build_dir}/install"
   install_libdir=""
-  cc="$(softline_target_default_cc "${target}")"
-
-  if [ -n "${cc}" ] && ! tool_available "${cc}"; then
-    echo "SKIP: ${target}: compiler unavailable: ${cc}"
-    SKIPPED_TARGETS="${SKIPPED_TARGETS} ${target}"
-    continue
-  fi
-
   echo "Building ${target}..."
-  if [ -n "${cc}" ]; then
-    if ! run_for_target "${target}" cmake --preset "${preset}" -S "${ROOT_DIR}" -DCMAKE_C_COMPILER="${cc}"; then
-      if is_mandatory_target "${target}"; then
-        echo "ERROR: mandatory target ${target} failed to configure"
-        exit 1
-      fi
-      echo "SKIP: ${target}: configure failed with compiler ${cc}"
-      SKIPPED_TARGETS="${SKIPPED_TARGETS} ${target}"
-      continue
-    fi
-  else
-    if ! run_for_target "${target}" cmake --preset "${preset}" -S "${ROOT_DIR}"; then
-      if is_mandatory_target "${target}"; then
-        echo "ERROR: mandatory target ${target} failed to configure"
-        exit 1
-      fi
-      echo "SKIP: ${target}: configure failed"
-      SKIPPED_TARGETS="${SKIPPED_TARGETS} ${target}"
-      continue
-    fi
-  fi
-  if ! run_for_target "${target}" cmake --build --preset "${preset}"; then
-    if is_mandatory_target "${target}"; then
-      echo "ERROR: mandatory target ${target} failed to build"
+  rm -rf "${build_dir}"
+  if [ "${target}" = "arm64-apple-darwin" ] &&
+     ! "${ROOT_DIR}/scripts/cpkt-toolchains.sh" discover "${target}" | grep -qx 'status=ready'; then
+    if [ "${REQUIRE_DARWIN}" = "1" ]; then
+      echo "ERROR: Darwin artifact is required for make release, but osxcross is unavailable" >&2
       exit 1
     fi
-    echo "SKIP: ${target}: build failed"
+    echo "SKIP: ${target}: optional osxcross toolchain unavailable"
     SKIPPED_TARGETS="${SKIPPED_TARGETS} ${target}"
     continue
   fi
+  if ! cmake --preset "${preset}" -S "${ROOT_DIR}"; then
+    echo "ERROR: ${target} failed to configure using its lifecycle toolchain"
+    exit 1
+  fi
+  if ! cmake --build --preset "${preset}"; then
+    echo "ERROR: ${target} failed to build"
+    exit 1
+  fi
+  if [ "${target}" = "x86_64-linux-gnu" ]; then
+    if ! ctest --test-dir "${build_dir}" --output-on-failure; then
+      echo "ERROR: ${target} release tests failed"
+      exit 1
+    fi
+  fi
   rm -rf "${install_dir}"
-  run_for_target "${target}" cmake --install "${build_dir}" --prefix "${install_dir}"
+  cmake --install "${build_dir}" --prefix "${install_dir}"
 
   if [ -d "${install_dir}/lib" ]; then
     install_libdir="lib"
@@ -125,6 +102,12 @@ done
 
 if [ -z "${BUILT_TARGETS}" ]; then
   echo "ERROR: no release targets were packaged"
+  exit 1
+fi
+
+if [ "${REQUIRE_DARWIN}" = "1" ] &&
+   ! printf '%s\n' "${BUILT_TARGETS}" | grep -Eq '(^|[[:space:]])arm64-apple-darwin([[:space:]]|$)'; then
+  echo "ERROR: Darwin artifact is required for make release" >&2
   exit 1
 fi
 

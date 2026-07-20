@@ -19,8 +19,9 @@ help: ## Show this help
 
 .PHONY: format
 format: ## Format source files with clang-format
-	@find include src tests examples lua -name '*.c' -o -name '*.h' | sort | \
-		xargs clang-format -i -style=file --fallback-style=none 2>/dev/null || true
+	@command -v clang-format >/dev/null 2>&1 || { echo "ERROR: clang-format is required" >&2; exit 1; }
+	@find include src tests examples lua \( -name '*.c' -o -name '*.h' \) \
+		-exec clang-format -i -style=file --fallback-style=none {} +
 
 .PHONY: deps-debug
 deps-debug: ## Configure debug build dependencies
@@ -29,6 +30,10 @@ deps-debug: ## Configure debug build dependencies
 .PHONY: deps-release
 deps-release: ## Configure release build dependencies
 	@cmake --preset x86_64-linux-gnu-release
+
+.PHONY: deps-cross
+deps-cross: ## Provision and inspect all pinned cross toolchains
+	@./scripts/cpkt-toolchains.sh ensure all
 
 .PHONY: build
 build: ## Build debug target
@@ -51,12 +56,54 @@ test: build-debug ## Run debug tests
 test-debug: test ## Run debug tests
 
 .PHONY: test-all
-test-all: test asan ## Run all local tests
+test-all: test asan valgrind-portable fuzz-portable lua-test ## Run all deterministic local tests
 
 .PHONY: asan
 asan: ## Run ASan+UBSan tests
 	@cmake --preset asan && cmake --build --preset asan && \
 		cd $(BUILD_DIR)/asan && ctest --output-on-failure
+
+.PHONY: valgrind
+valgrind: ## Run native Valgrind Memcheck tests
+	@command -v valgrind >/dev/null 2>&1 || { echo "ERROR: valgrind is required for the native memory-check gate" >&2; exit 1; }
+	@cmake --preset valgrind
+	@cmake --build --preset valgrind
+	@cd $(BUILD_DIR)/valgrind && \
+		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 ./tests/test_softline
+	@cd $(BUILD_DIR)/valgrind && \
+		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 \
+			--trace-children=yes ./tests/test_examples \
+			./examples/example_simple ./examples/example_chat
+
+.PHONY: valgrind-portable
+valgrind-portable: ## Run native Valgrind on supported Linux hosts, skip where unsupported
+	@case "$$(uname -s):$$(uname -m)" in \
+		Linux:x86_64|Linux:amd64) $(MAKE) valgrind ;; \
+		*) echo "SKIP: valgrind requires native x86_64 Linux" ;; \
+	esac
+
+.PHONY: fuzz-smoke
+fuzz-smoke: ## Build and execute a bounded native AFL++ smoke run
+	@timeout 600 ./scripts/cpkt-aflpp.sh ensure
+	@cmake --preset fuzz
+	@cmake --build --preset fuzz
+	@timeout 15 "$${CPKT_AFL_SHOWMAP:-$$(./scripts/cpkt-aflpp.sh discover | sed -n 's/^afl_showmap=//p')}" -q -o /dev/null -- ./build/fuzz/softline_stdin_fuzz < fuzz/corpus/basic
+
+.PHONY: fuzz-portable
+fuzz-portable: ## Run native fuzz smoke on x86_64 hosts, skip where unsupported
+	@case "$$(uname -s):$$(uname -m)" in \
+		Linux:x86_64|Linux:amd64) $(MAKE) fuzz-smoke ;; \
+		*) echo "SKIP: fuzz-smoke requires native x86_64 Linux" ;; \
+	esac
+
+.PHONY: fuzz
+fuzz: fuzz-smoke ## Run the standard bounded native AFL++ fuzz gate
+
+.PHONY: fuzz-long
+fuzz-long: ## Run a longer opt-in native AFL++ fuzz session
+	@cmake --preset fuzz
+	@cmake --build --preset fuzz
+	@"$$(./scripts/cpkt-aflpp.sh discover | sed -n 's/^afl_fuzz=//p')" -i fuzz/corpus -o build/fuzz-findings -- ./build/fuzz/softline_stdin_fuzz
 
 .PHONY: lua-rock
 lua-rock: ## Build and install Lua facade into repo-local LuaRocks tree
@@ -107,7 +154,7 @@ package-source: ## Create source archive
 	@./scripts/package-source.sh
 
 .PHONY: package-source-smoke
-package-source-smoke: ## Verify source archive builds
+package-source-smoke: package-source ## Verify source archive builds
 	@./scripts/package-source-smoke.sh
 
 .PHONY: package-consumer-smoke
@@ -125,6 +172,14 @@ test-darwin-linker-route: ## Verify osxcross Darwin links use the target linker
 .PHONY: test-release-version
 test-release-version: ## Verify release version source precedence
 	@./scripts/test_release_version.sh
+
+.PHONY: test-package-source-worktree
+test-package-source-worktree: ## Verify source packaging from a linked Git worktree
+	@./scripts/test_package_source_worktree.sh
+
+.PHONY: test-toolchain-contract
+test-toolchain-contract: ## Verify toolchain provisioning and environment contracts
+	@./scripts/test_toolchain_contract.sh
 
 .PHONY: test-lifecycle-surface
 test-lifecycle-surface: ## Verify standard lifecycle command and preset surfaces
@@ -146,6 +201,10 @@ release-lua-artifacts: ## Build Lua source package, release rockspec, and source
 validate-luarocks: ## Verify LuaRocks release artifacts
 	@./scripts/validate_luarocks.sh
 
+.PHONY: test-lua-artifact-privacy
+test-lua-artifact-privacy: ## Verify Lua release artifacts fail on local path leaks
+	@./scripts/test_lua_artifact_privacy.sh
+
 .PHONY: verify-release-archives
 verify-release-archives: package-verify ## Verify all release archives
 
@@ -161,14 +220,30 @@ release-matrix: ## Build, package, checksum, and verify all release targets
 finalize-slice: format test ## Pre-commit gate: format + debug tests
 
 .PHONY: prerelease
-prerelease: format test asan test-tool-discovery test-darwin-linker-route test-release-version test-lifecycle-surface test-clangd test-public-header-docs package-consumer-smoke lua-test ## Deterministic pre-release verification
+prerelease: ## Deterministic pre-release verification
+	@$(MAKE) release-pipeline
 
 .PHONY: prerelease-hardening
-prerelease-hardening: prerelease release-matrix ## Expensive hardening gate
+prerelease-hardening: ## Expensive hardening gate
+	@$(MAKE) release-pipeline
 
 .PHONY: release
 release: ## Clean release build
-	@./scripts/release.sh
+	@$(MAKE) lifecycle-version-contract
+	@$(MAKE) clean
+	@SOFTLINE_REQUIRE_DARWIN=1 $(MAKE) release-pipeline
+
+.PHONY: release-pipeline
+release-pipeline: ## Shared clean release proof graph
+	@$(MAKE) prerelease-checks
+	@$(MAKE) release-matrix
+
+.PHONY: prerelease-checks
+prerelease-checks: format test-all test-tool-discovery test-toolchain-contract test-darwin-linker-route test-release-version test-package-source-worktree test-lifecycle-surface test-lua-artifact-privacy test-clangd test-public-header-docs package-consumer-smoke package-source package-source-smoke
+
+.PHONY: lifecycle-version-contract
+lifecycle-version-contract: ## Verify exact lightweight-tag release version behavior
+	@./scripts/lifecycle-version-contract.sh
 
 .PHONY: print-release-version
 print-release-version: ## Print the current release version

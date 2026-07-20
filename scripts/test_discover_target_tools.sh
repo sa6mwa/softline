@@ -58,6 +58,13 @@ cat > "${cache_dir}/CMakeCache.txt" <<EOF
 CMAKE_C_COMPILER:FILEPATH=cc
 EOF
 PATH="${path_dir}:${PATH}" out="$("${ROOT_DIR}/scripts/discover_target_tools.sh" "${cache_dir}" x86_64-linux-gnu)"
-assert_contains "${out}" "READELF='${path_dir}/readelf'"
+bootlin_readelf="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" discover x86_64-linux-gnu |
+  sed -n 's/^readelf=//p')"
+assert_contains "${out}" "READELF='${bootlin_readelf}'"
+if printf '%s\n' "${out}" | grep -F "${path_dir}/readelf" >/dev/null; then
+  echo "ERROR: Linux discovery must not fall back to ambient PATH readelf" >&2
+  printf '%s\n' "${out}" >&2
+  exit 1
+fi
 
 echo "Target tool discovery tests passed."

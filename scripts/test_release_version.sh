@@ -19,7 +19,7 @@ make_cmake_fixture() {
   cp "${ROOT_DIR}/cmake/softline_version.h.in" "${fixture}/cmake/"
   cat > "${fixture}/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.16)
-project(softline_version_probe VERSION 0.0.0 LANGUAGES C)
+project(softline_version_probe VERSION 0.0.0 LANGUAGES NONE)
 include(cmake/softline_version.cmake)
 file(WRITE "${CMAKE_BINARY_DIR}/detected-version.txt" "${PROJECT_VERSION}\n")
 EOF

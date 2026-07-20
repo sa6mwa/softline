@@ -460,8 +460,8 @@ static void test_example_chat_leaves_alt_screen_on_ctrl_c(const char *path) {
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
                             sizeof(terminal), "\033[?1049l") == 0,
               "alternate screen was not restored");
-  close(master_fd);
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  close(master_fd);
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 130,
               "chat example did not exit as interrupted");
   PASS();

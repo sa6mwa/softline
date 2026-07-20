@@ -2,13 +2,12 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-. "${ROOT_DIR}/scripts/release-targets.sh"
-
 target="arm64-apple-darwin"
-osxcross_root="${OSXCROSS_ROOT:-${HOME}/.local/cross/osxcross}"
-osxcross_host="${CPKT_OSXCROSS_HOST:-arm64-apple-darwin25}"
-cc="$(softline_target_default_cc "${target}")"
-ld="${osxcross_root}/bin/${osxcross_host}-ld"
+description="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" discover "${target}")"
+cc="$(printf '%s\n' "${description}" | sed -n 's/^cc=//p')"
+ld="$(printf '%s\n' "${description}" | sed -n 's/^ld=//p')"
+osxcross_root="$(printf '%s\n' "${description}" | sed -n 's/^root=//p')"
+osxcross_host="$(printf '%s\n' "${description}" | sed -n 's/^prefix=//p')"
 
 if [ ! -x "${cc}" ] || [ ! -x "${ld}" ]; then
   echo "SKIP: Darwin linker route test: osxcross compiler/linker unavailable"
@@ -36,7 +35,7 @@ case "${ambient_out}" in
     ;;
 esac
 
-fixed_out="$(dry_run "$(softline_target_path_prefix "${target}"):${PATH}")"
+fixed_out="$(dry_run "$(dirname "${cc}"):${PATH}")"
 case "${fixed_out}" in
   *"${ld}"*) ;;
   *)

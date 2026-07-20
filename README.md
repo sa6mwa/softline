@@ -83,8 +83,7 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 the terminal, and prints output through the region above the prompt.
 
 ```sh
-cmake --preset debug
-cmake --build --preset debug
+make build
 build/debug/examples/example_simple
 build/debug/examples/example_chat
 ```
@@ -133,9 +132,10 @@ static int next_chunk(sl_t *sl, void *userdata,
 make build
 make test
 make asan
+make valgrind
 make package-consumer-smoke
 make lua-test
-make release-matrix
+make prerelease
 ```
 
 The core library is compiled as C89 with POSIX terminal APIs. Shared builds use
@@ -143,12 +143,33 @@ the separate CMake `SOFTLINE_ABI_VERSION`, currently `0`, for SONAME/SOVERSION.
 That ABI version is bumped only for shared-library ABI breaks, not for every
 project release-version bump.
 
-`make release-matrix` builds the standard Linux GNU/musl target matrix,
+On supported Linux development hosts, ordinary debug, sanitizer, Valgrind,
+package-consumer, and release package builds use the pinned native GNU Bootlin
+toolchain. The current pinned Bootlin compiler executables are x86_64-hosted, so
+native lifecycle builds are selected automatically only on x86_64 Linux hosts.
+The release matrix still ships the supported Linux target artifacts
+(`x86_64`, `aarch64`, and `armhf`, each GNU and musl) from those pinned
+toolchains. Fuzzing remains native `x86_64-linux-gnu` only. Unsupported native
+architectures and non-Linux hosts may fall back to the host compiler for local
+development presets, but explicit Linux package/release targets fail closed
+instead of silently using host tools.
+Host `clangd`, `clang-format`, Valgrind, Lua 5.5, LuaRocks, and packaging
+utilities are development tools; the C compiler, linker, archiver, and sysroot
+for project-owned Linux release builds come from the lifecycle toolchain
+resolver.
+
+`make prerelease` is the deterministic local gate: formatting, debug and
+sanitizer tests, native Valgrind, Lua, toolchain, editor, header, and
+install-tree consumer checks. `make release-matrix` builds the standard Linux GNU/musl target matrix,
 generates source and Lua release artifacts, writes checksums, and verifies
-package layout, runtime loader metadata, and release privacy. The optional
-Darwin target is part of the configured matrix and is packaged only when a
-working osxcross toolchain is available; packaged Darwin artifacts require
-target-correct Mach-O inspection.
+package layout, runtime loader metadata, and release privacy. The rehearsal
+matrix may skip Darwin when osxcross is unavailable. `make release` is stricter:
+it requires the Darwin toolchain and a verified Darwin artifact; packaged Darwin
+artifacts require target-correct Mach-O inspection.
+
+`v99.99.99` is permanently reserved for the release-version contract check and
+is never a valid softline release tag. The Lua facade supports Lua 5.5 only;
+LuaRocks builds must select Lua 5.5.
 
 Installed CMake consumers should use the canonical imported target:
 
@@ -160,7 +181,8 @@ target_link_libraries(app PRIVATE softline::softline)
 Plain C consumers can use the installed pkg-config metadata:
 
 ```sh
-cc $(pkg-config --cflags softline) app.c $(pkg-config --libs softline)
+eval "$(./scripts/cpkt-toolchains.sh env x86_64-linux-gnu)"
+"$CC" $(pkg-config --cflags softline) app.c $(pkg-config --libs softline)
 ```
 
 Lua 5.5 consumers can use the Lua facade from the LuaRocks package:

@@ -16,6 +16,6 @@ description = {
 }
 build = {
    type = "command",
-   build_command = [[./scripts/build_lua_rock.sh "$(CC)" "$(CFLAGS)" "$(LIBFLAG)" "$(OBJ_EXTENSION)" "$(LIB_EXTENSION)" "$(LUA_INCDIR)" "$(LUA_VERSION)"]],
+   build_command = [[./scripts/build_lua_rock.sh "$(CC)" "$(CFLAGS)" "$(LIBFLAG)" "$(OBJ_EXTENSION)" "$(LIB_EXTENSION)" "$(LUA_INCDIR)"]],
    install_command = [[mkdir -p "$(LIBDIR)" && cp build/lua-rock/softline.$(LIB_EXTENSION) "$(LIBDIR)/softline.$(LIB_EXTENSION)"]],
 }

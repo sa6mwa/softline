@@ -10,6 +10,7 @@ option(SL_BUILD_EXAMPLES "Build softline examples" ON)
 option(SL_BUILD_TESTS "Build softline tests" ON)
 option(SL_INSTALL "Generate install rules" ON)
 option(SL_ENABLE_COVERAGE "Enable code coverage" OFF)
+option(SL_BUILD_FUZZERS "Build native AFL++ fuzz targets" OFF)
 option(SL_WARNINGS_AS_ERRORS "Treat project warnings as errors" ON)
 
 if(NOT SL_BUILD_STATIC AND NOT SL_BUILD_SHARED)
@@ -26,6 +27,72 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+function(softline_toolchain_value description key output)
+  string(REGEX MATCH "(^|\n)${key}=([^\r\n]+)" _softline_match
+    "${description}")
+  if(NOT _softline_match)
+    message(FATAL_ERROR "Lifecycle resolver did not report ${key}")
+  endif()
+  set(${output} "${CMAKE_MATCH_2}" PARENT_SCOPE)
+endfunction()
+
+function(softline_reject_stale_linux_toolchain_cache)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    return()
+  endif()
+
+  set(_softline_expected_target "${SL_TARGET_ID}")
+  set(_softline_resolver "${CMAKE_SOURCE_DIR}/scripts/cpkt-toolchains.sh")
+  if(NOT _softline_expected_target)
+    execute_process(
+      COMMAND "${_softline_resolver}" native-linux-target
+      RESULT_VARIABLE _softline_native_result
+      OUTPUT_VARIABLE _softline_expected_target
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT _softline_native_result EQUAL 0)
+      return()
+    endif()
+  endif()
+
+  if(NOT _softline_expected_target MATCHES "-linux-")
+    return()
+  endif()
+
+  execute_process(
+    COMMAND "${_softline_resolver}" discover "${_softline_expected_target}"
+    RESULT_VARIABLE _softline_discover_result
+    OUTPUT_VARIABLE _softline_description
+    ERROR_VARIABLE _softline_discover_error)
+  if(NOT _softline_discover_result EQUAL 0)
+    message(FATAL_ERROR
+      "Unable to inspect lifecycle toolchain for ${_softline_expected_target}: "
+      "${_softline_discover_error}")
+  endif()
+
+  softline_toolchain_value("${_softline_description}" cc _softline_expected_cc)
+  softline_toolchain_value("${_softline_description}" ld _softline_expected_ld)
+
+  if(NOT SL_BUILD_FUZZERS AND
+     NOT CMAKE_C_COMPILER STREQUAL _softline_expected_cc)
+    message(FATAL_ERROR
+      "Stale or incompatible CMake cache: ${CMAKE_BINARY_DIR} uses "
+      "${CMAKE_C_COMPILER}, but ${_softline_expected_target} requires "
+      "${_softline_expected_cc}. Remove this build directory and reconfigure "
+      "with the lifecycle preset.")
+  endif()
+
+  if(CMAKE_LINKER AND NOT CMAKE_LINKER STREQUAL _softline_expected_ld)
+    message(FATAL_ERROR
+      "Stale or incompatible CMake cache: ${CMAKE_BINARY_DIR} uses linker "
+      "${CMAKE_LINKER}, but ${_softline_expected_target} requires "
+      "${_softline_expected_ld}. Remove this build directory and reconfigure "
+      "with the lifecycle preset.")
+  endif()
+endfunction()
+
+softline_reject_stale_linux_toolchain_cache()
+
 function(softline_apply_warnings target)
   if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(${target}
@@ -36,6 +103,11 @@ function(softline_apply_warnings target)
     endif()
   endif()
 endfunction()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  add_link_options(-Wl,--fatal-warnings)
+endif()
 
 add_library(sl_lib_obj OBJECT src/softline.c)
 set_target_properties(sl_lib_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -98,6 +170,12 @@ endif()
 if(SL_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(SL_BUILD_FUZZERS)
+  add_executable(softline_stdin_fuzz fuzz/softline_stdin_fuzz.c)
+  target_link_libraries(softline_stdin_fuzz PRIVATE softline)
+  softline_apply_warnings(softline_stdin_fuzz)
 endif()
 
 if(SL_INSTALL)

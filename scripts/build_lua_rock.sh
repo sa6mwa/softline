@@ -1,24 +1,59 @@
 #!/bin/sh
 set -eu
 
-CC="${1:?missing compiler}"
+CC="${SOFTLINE_LUA_CC:-${1:?missing compiler}}"
 CFLAGS="${2:?missing CFLAGS}"
 LIBFLAG="${3:?missing LIBFLAG}"
 OBJ_EXTENSION="${4:?missing object extension}"
 LIB_EXTENSION="${5:?missing library extension}"
 LUA_INCDIR="${6:?missing Lua include directory}"
-LUA_VERSION="${7:?missing Lua version}"
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build/lua-rock"
 OBJ="${BUILD_DIR}/softline_lua.${OBJ_EXTENSION}"
 MOD="${BUILD_DIR}/softline.${LIB_EXTENSION}"
+LUA_COMPILE_INCDIR="${LUA_INCDIR}"
 
 mkdir -p "${BUILD_DIR}"
 
-if [ "${LUA_VERSION}" != "5.5" ]; then
-  echo "ERROR: softline Lua facade supports Lua 5.5; got Lua ${LUA_VERSION}" >&2
+LUA_HEADER="${LUA_INCDIR}/lua.h"
+if [ ! -f "${LUA_HEADER}" ]; then
+  echo "ERROR: LuaRocks selected Lua headers are missing ${LUA_HEADER}" >&2
   exit 1
+fi
+
+# LUA_INCDIR is LuaRocks' selected runtime contract. Do not consult an ambient
+# lua executable: it can select a different installed runtime.
+LUA_VERSION_MAJOR="$(awk '$1 == "#define" && $2 == "LUA_VERSION_MAJOR_N" { print $3; exit }' "${LUA_HEADER}")"
+LUA_VERSION_MINOR="$(awk '$1 == "#define" && $2 == "LUA_VERSION_MINOR_N" { print $3; exit }' "${LUA_HEADER}")"
+LUA_VERSION_NUM="$(awk '$1 == "#define" && $2 == "LUA_VERSION_NUM" { print $3; exit }' "${LUA_HEADER}")"
+if [ -z "${LUA_VERSION_MAJOR}" ] || [ -z "${LUA_VERSION_MINOR}" ]; then
+  if [ "${LUA_VERSION_NUM}" = "505" ]; then
+    LUA_VERSION_MAJOR=5
+    LUA_VERSION_MINOR=5
+  else
+    LUA_VERSION_MAJOR="${LUA_VERSION_NUM:-missing}"
+    LUA_VERSION_MINOR=""
+  fi
+fi
+if [ "${LUA_VERSION_MAJOR}" != "5" ] || [ "${LUA_VERSION_MINOR}" != "5" ]; then
+  echo "ERROR: softline Lua facade supports Lua 5.5 only; selected headers report ${LUA_VERSION_MAJOR:-missing}.${LUA_VERSION_MINOR:-missing}" >&2
+  exit 1
+fi
+
+if [ -n "${SOFTLINE_LUA_CC:-}" ]; then
+  LUA_COMPILE_INCDIR="${BUILD_DIR}/lua-include"
+  rm -rf "${LUA_COMPILE_INCDIR}"
+  mkdir -p "${LUA_COMPILE_INCDIR}"
+  cp "${LUA_INCDIR}/"*.h "${LUA_COMPILE_INCDIR}/"
+  if grep -q 'lua5.5-deb-multiarch.h' "${LUA_COMPILE_INCDIR}/"*.h; then
+    LUA_MULTIARCH_HEADER="$(find /usr/include -name lua5.5-deb-multiarch.h -print | sed -n '1p')"
+    if [ -z "${LUA_MULTIARCH_HEADER}" ]; then
+      echo "ERROR: Lua headers reference lua5.5-deb-multiarch.h but it was not found under /usr/include" >&2
+      exit 1
+    fi
+    cp "${LUA_MULTIARCH_HEADER}" "${LUA_COMPILE_INCDIR}/"
+  fi
 fi
 
 if [ -n "${SOFTLINE_INCLUDE_DIR:-}" ] && [ -n "${SOFTLINE_LIB_DIR:-}" ]; then
@@ -42,6 +77,6 @@ else
   exit 1
 fi
 
-"${CC}" ${CFLAGS} -Wall -Wextra -Werror -I"${LUA_INCDIR}" \
+"${CC}" ${CFLAGS} -Wall -Wextra -Werror -I"${LUA_COMPILE_INCDIR}" \
   ${SOFTLINE_CFLAGS} -c "${ROOT_DIR}/lua/softline_lua.c" -o "${OBJ}"
 "${CC}" ${LIBFLAG} -o "${MOD}" "${OBJ}" ${SOFTLINE_LIBS}

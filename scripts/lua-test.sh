@@ -12,17 +12,13 @@ if [ -n "${INSTALL_LIBDIR}" ]; then
   INSTALL_LIBDIR_ARG="-DCMAKE_INSTALL_LIBDIR=${INSTALL_LIBDIR}"
 fi
 
-cmake -S "${ROOT_DIR}" -B "${ROOT_DIR}/build/lua-sdk-build" \
-  -DSL_BUILD_EXAMPLES=OFF \
-  -DSL_BUILD_TESTS=OFF \
-  -DSL_BUILD_STATIC=ON \
-  -DSL_BUILD_SHARED=ON \
-  -DSL_INSTALL=ON \
-  -DCMAKE_INSTALL_PREFIX="${SDK_DIR}" \
-  ${INSTALL_LIBDIR_ARG}
-cmake --build "${ROOT_DIR}/build/lua-sdk-build"
+(
+  cd "${ROOT_DIR}"
+  cmake --preset debug-lua ${INSTALL_LIBDIR_ARG}
+  cmake --build --preset debug-lua
+)
 rm -rf "${SDK_DIR}"
-cmake --install "${ROOT_DIR}/build/lua-sdk-build" --prefix "${SDK_DIR}"
+cmake --install "${ROOT_DIR}/build/debug-lua" --prefix "${SDK_DIR}"
 
 if [ -d "${SDK_DIR}/lib/pkgconfig" ]; then
   SDK_LIB_DIR="${SDK_DIR}/lib"
@@ -35,9 +31,18 @@ fi
 
 "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${ROCKSPEC}" >/dev/null
 rm -rf "${LUA_TREE}"
-PKG_CONFIG_PATH="${SDK_LIB_DIR}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}" \
-  SOFTLINE_DIR="${SDK_DIR}" \
-  luarocks --tree "${LUA_TREE}" make "${ROCKSPEC}"
+if NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target 2>/dev/null)"; then
+  "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
+  eval "$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
+  SOFTLINE_LUA_CC="${CC}"
+  export CC LD AR RANLIB SOFTLINE_LUA_CC
+fi
+(
+  cd "${ROOT_DIR}"
+  PKG_CONFIG_PATH="${SDK_LIB_DIR}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}" \
+    SOFTLINE_DIR="${SDK_DIR}" \
+    luarocks --tree "${LUA_TREE}" make "${ROCKSPEC}"
+)
 
 eval "$("${ROOT_DIR}/scripts/lua-env.sh")"
 lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'

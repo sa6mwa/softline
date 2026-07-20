@@ -10,14 +10,26 @@ if [ "${MODE}" = "env" ]; then
   exec "${ROOT_DIR}/scripts/lua-debug-env.sh"
 fi
 
-cmake --preset debug
-cmake --build --preset debug
+(
+  cd "${ROOT_DIR}"
+  cmake --preset debug
+  cmake --build --preset debug
+)
 
 "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${ROCKSPEC}" >/dev/null
 rm -rf "${LUA_TREE}"
-SOFTLINE_INCLUDE_DIR="${ROOT_DIR}/include" \
-  SOFTLINE_LIB_DIR="${ROOT_DIR}/build/debug" \
-  luarocks --tree "${LUA_TREE}" make "${ROCKSPEC}"
+if NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target 2>/dev/null)"; then
+  "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
+  eval "$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
+  SOFTLINE_LUA_CC="${CC}"
+  export CC LD AR RANLIB SOFTLINE_LUA_CC
+fi
+(
+  cd "${ROOT_DIR}"
+  SOFTLINE_INCLUDE_DIR="${ROOT_DIR}/include" \
+    SOFTLINE_LIB_DIR="${ROOT_DIR}/build/debug" \
+    luarocks --tree "${LUA_TREE}" make "${ROCKSPEC}"
+)
 
 eval "$("${ROOT_DIR}/scripts/lua-debug-env.sh")"
 

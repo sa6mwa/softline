@@ -13,7 +13,13 @@ VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 CHECKSUM_FILE="${DIST_DIR}/softline-${VERSION}-CHECKSUMS"
 
 cd "${DIST_DIR}"
-ARTIFACTS="$(find . -maxdepth 1 -type f \( -name 'softline-*.tar.gz' -o -name 'softline-*.rockspec' -o -name 'softline-*.src.rock' \) | sed 's|^\./||' | sort)"
+ARTIFACTS="$(find . -maxdepth 1 -type f \( \
+  -name "softline-${VERSION}.tar.gz" -o \
+  -name "softline-${VERSION}-*.tar.gz" -o \
+  -name "softline-lua-${VERSION}.tar.gz" -o \
+  -name "softline-${VERSION}-1.rockspec" -o \
+  -name "softline-${VERSION}-1.src.rock" \
+  \) | sed 's|^\./||' | sort)"
 if [ -z "${ARTIFACTS}" ]; then
   echo "No release artifacts to checksum in ${DIST_DIR}/"
   exit 1

@@ -5,7 +5,22 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-0}"
+BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
+BOOTLIN_TARGET=""
+BOOTLIN_TOOLCHAIN_ARG=""
+BOOTLIN_TARGET_ARG=""
+CONSUMER_CC="${CC:-cc}"
 trap 'rm -rf "${TMP_DIR}"' EXIT
+
+if BOOTLIN_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target 2>/dev/null)"; then
+  "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${BOOTLIN_TARGET}" >/dev/null
+  eval "$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${BOOTLIN_TARGET}")"
+  BOOTLIN_TOOLCHAIN_ARG="-DCMAKE_TOOLCHAIN_FILE=${BOOTLIN_TOOLCHAIN}"
+  BOOTLIN_TARGET_ARG="-DSL_TARGET_ID=${BOOTLIN_TARGET}"
+  CONSUMER_CC="${CC}"
+else
+  echo "No supported native Bootlin Linux target selected; using host toolchain for package consumer smoke" >&2
+fi
 
 APP_DIR="${TMP_DIR}/consumer"
 
@@ -106,6 +121,9 @@ install_disabled_smoke() {
   install_dir="${TMP_DIR}/install-disabled"
 
   cmake -S "${ROOT_DIR}" -B "${build_dir}" \
+    -G Ninja \
+    ${BOOTLIN_TOOLCHAIN_ARG:+"${BOOTLIN_TOOLCHAIN_ARG}"} \
+    ${BOOTLIN_TARGET_ARG:+"${BOOTLIN_TARGET_ARG}"} \
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
     -DSL_INSTALL=OFF \
@@ -126,6 +144,9 @@ verify_shared_abi() {
   abi_lib="${libdir}/libsoftline.so.${SOFTLINE_ABI_VERSION}"
   soname=""
 
+  if [ -z "${BOOTLIN_TARGET}" ] && [ -e "${libdir}/libsoftline.dylib" ]; then
+    return
+  fi
   if [ ! -e "${shared_lib}" ]; then
     echo "ERROR: shared install missing libsoftline.so"
     exit 1
@@ -134,13 +155,22 @@ verify_shared_abi() {
     echo "ERROR: shared install missing ABI symlink ${abi_lib}"
     exit 1
   fi
-  if command -v readelf >/dev/null 2>&1; then
-    soname="$(readelf -d "${shared_lib}" |
-      sed -n 's/.*Library soname: \[\(.*\)\].*/\1/p')"
-    if [ "${soname}" != "libsoftline.so.${SOFTLINE_ABI_VERSION}" ]; then
-      echo "ERROR: shared install SONAME ${soname} does not match ABI ${SOFTLINE_ABI_VERSION}"
-      exit 1
-    fi
+  if [ -n "${BOOTLIN_TARGET}" ] && { [ -z "${READELF:-}" ] || [ ! -x "${READELF}" ]; }; then
+    echo "ERROR: lifecycle readelf is required for package consumer ABI verification" >&2
+    exit 1
+  fi
+  if [ -z "${READELF:-}" ] || [ ! -x "${READELF}" ]; then
+    READELF="$(command -v readelf || true)"
+  fi
+  if [ -z "${READELF}" ]; then
+    echo "SKIP: shared SONAME check requires readelf" >&2
+    return
+  fi
+  soname="$("${READELF}" -d "${shared_lib}" |
+    sed -n 's/.*Library soname: \[\(.*\)\].*/\1/p')"
+  if [ "${soname}" != "libsoftline.so.${SOFTLINE_ABI_VERSION}" ]; then
+    echo "ERROR: shared install SONAME ${soname} does not match ABI ${SOFTLINE_ABI_VERSION}"
+    exit 1
   fi
 }
 
@@ -161,6 +191,9 @@ smoke_mode() {
   fi
 
   cmake -S "${ROOT_DIR}" -B "${build_dir}" \
+    -G Ninja \
+    ${BOOTLIN_TOOLCHAIN_ARG:+"${BOOTLIN_TOOLCHAIN_ARG}"} \
+    ${BOOTLIN_TARGET_ARG:+"${BOOTLIN_TARGET_ARG}"} \
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
     -DSL_BUILD_STATIC="${build_static}" \
@@ -184,6 +217,9 @@ smoke_mode() {
   fi
 
   cmake -S "${APP_DIR}" -B "${app_build_dir}" \
+    -G Ninja \
+    ${BOOTLIN_TOOLCHAIN_ARG:+"${BOOTLIN_TOOLCHAIN_ARG}"} \
+    ${BOOTLIN_TARGET_ARG:+"${BOOTLIN_TARGET_ARG}"} \
     -DCMAKE_PREFIX_PATH="${install_dir}" \
     -Dsoftline_DIR="${install_libdir}/cmake/softline"
   cmake --build "${app_build_dir}"
@@ -197,7 +233,8 @@ smoke_mode() {
   export PKG_CONFIG_PATH
   pkg-config --exists softline
   test "$(pkg-config --modversion softline)" = "${VERSION}"
-  cc $(pkg-config --cflags softline) "${APP_DIR}/main.c" \
+  "${CONSUMER_CC}" -std=c89 -Wall -Wextra -Wpedantic -Werror \
+    $(pkg-config --cflags softline) "${APP_DIR}/main.c" \
     $(pkg-config --libs softline) -Wl,-rpath,"${install_libdir}" \
     -o "${pkg_consumer}"
   "${pkg_consumer}"
