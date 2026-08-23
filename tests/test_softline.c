@@ -1976,6 +1976,17 @@ static int run_pty_themed_readline_case(sl_prompt_theme_t theme, char *terminal,
   return 0;
 }
 
+static int set_status_idle_marker_key(sl_t *sl, sl_key_t key, void *userdata,
+                                      sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_spinner(sl, 0) != SL_OK ||
+      sl_set_status_busy(sl, 0) != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
 static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
                                    char *result, size_t result_cap,
                                    int *exit_status) {
@@ -2019,6 +2030,9 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
         sl_set_status_elements(sl, elements,
                                sizeof(elements) / sizeof(elements[0])) != SL_OK)
       _exit(2);
+    if (sl_bind_key(sl, SL_KEY_ALT_M, set_status_idle_marker_key, NULL) !=
+        SL_OK)
+      _exit(4);
     line = sl_readline(sl, "status> ");
     if (!line)
       _exit(3);
@@ -2058,6 +2072,24 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     tries++;
   }
   if (!contains_bytes(terminal, "\033[38;2;54;249;246m- "))
+    return -1;
+  if (write(master_fd, "\033m", 2) != 2)
+    return -1;
+  tries = 0;
+  while (!contains_bytes(terminal, "\033[38;2;57;255;20m@ ") && tries < 3) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, "\033[38;2;57;255;20m@ "))
     return -1;
   if (write(master_fd, "ok\r", 3) != 3)
     return -1;
@@ -2877,6 +2909,8 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
               "status spinner marker missing");
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246m- "),
               "status spinner did not advance");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;57;255;20m@ "),
+              "status idle marker missing");
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;172;164;184me0"),
               "status starting palette colour missing");
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246me1"),

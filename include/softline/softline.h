@@ -354,7 +354,7 @@ struct sl {
                              size_t count);
   /** Set, replace, or clear one retained status-line element. */
   int (*set_status_element)(sl_t *self, size_t index, const char *element);
-  /** Set busy state; the default markers are x while busy and : while idle. */
+  /** Set busy state; the default markers are x while busy and @ while idle. */
   int (*set_status_busy)(sl_t *self, int busy);
   /** Enable or disable the 500ms /-\\| busy spinner. */
   int (*set_status_spinner)(sl_t *self, int enabled);
@@ -454,7 +454,7 @@ int sl_set_status_elements(sl_t *self, const char *const *elements,
 int sl_set_status_element(sl_t *self, size_t index, const char *element);
 
 /** Set the status-line busy state. With the spinner disabled, busy renders x
- * and idle renders :. */
+ * and idle renders @. */
 int sl_set_status_busy(sl_t *self, int busy);
 
 /** Enable or disable the 500ms /-\\| spinner used while status is busy. */

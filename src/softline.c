@@ -2060,7 +2060,7 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
     (void)sl_statusline_spinner_advance(statusline);
     marker[0] = spinner_frames[statusline->spinner_frame];
   } else {
-    marker[0] = statusline->busy ? 'x' : ':';
+    marker[0] = statusline->busy ? 'x' : '@';
   }
   marker[1] = ' ';
   marker[2] = '\0';
