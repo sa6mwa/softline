@@ -49,6 +49,7 @@ typedef struct sl_statusline {
   int enabled;
   int busy;
   int spinner;
+  char idle_marker;
   int truncated;
   int spinner_frame;
   int spinner_time_valid;

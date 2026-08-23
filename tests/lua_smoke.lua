@@ -42,12 +42,15 @@ local status = assert(softline.new({
   statusline_start_element = 15,
   status_spinner = true,
   status_busy = true,
+  status_idle_marker = "-",
 }))
 assert(status:set_statusline(true, 15))
 assert(status:set_status_elements({ "model", "context" }))
 assert(status:set_status_element(1, "context 36%"))
 assert(status:set_status_busy(false))
 assert(status:set_status_spinner(false))
+assert(status:set_status_idle_marker("-"))
+assert(status:set_status_idle_marker(nil))
 assert(softline.PROMPT_THEME_DRACULA)
 assert(softline.PROMPT_THEME_SYNTHWAVE)
 status:close()

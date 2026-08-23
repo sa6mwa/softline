@@ -2047,6 +2047,7 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   char marker[3];
   char style[32];
   int col;
+  int marker_width;
   int have_element;
   size_t i;
   impl = sl_impl(self);
@@ -2059,23 +2060,34 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   if (statusline->spinner && statusline->busy) {
     (void)sl_statusline_spinner_advance(statusline);
     marker[0] = spinner_frames[statusline->spinner_frame];
+    marker[1] = ' ';
+    marker[2] = '\0';
+    marker_width = 2;
+  } else if (statusline->busy) {
+    marker[0] = 'x';
+    marker[1] = ' ';
+    marker[2] = '\0';
+    marker_width = 2;
   } else {
-    marker[0] = statusline->busy ? 'x' : '@';
+    marker[0] = statusline->idle_marker;
+    marker[1] = statusline->idle_marker ? ' ' : '\0';
+    marker[2] = '\0';
+    marker_width = statusline->idle_marker ? 2 : 0;
   }
-  marker[1] = ' ';
-  marker[2] = '\0';
-  if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+  if (marker_width > 0 && palette &&
+      impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
     sl_rgb_t colour;
     colour = statusline->busy ? busy_colour : idle_colour;
     if (sl_rgb_style(style, sizeof(style), colour, 0) != 0 ||
         sl_row_append_styled(&render->rows[render->count - 1], marker, style) !=
             0)
       return -1;
-  } else if (sl_row_append_cells(&render->rows[render->count - 1], marker, 2,
-                                 2) != 0) {
+  } else if (marker_width > 0 &&
+             sl_row_append_cells(&render->rows[render->count - 1], marker,
+                                 (size_t)marker_width, marker_width) != 0) {
     return -1;
   }
-  col = 2;
+  col = marker_width;
   have_element = 0;
   for (i = 0; i < statusline->count; i++) {
     const char *element;
@@ -2085,7 +2097,7 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
     if (!element || element[0] == '\0')
       continue;
     element_width = sl_text_width(element, strlen(element));
-    indent = width > 2 ? 2 : 0;
+    indent = marker_width > 0 && width > 2 ? 2 : 0;
     if ((have_element && element_width + 3 > width - col) ||
         (!have_element && element_width > width - col)) {
       if (sl_render_new_row_at(render, 0, 0) != 0 ||
@@ -4000,6 +4012,19 @@ static int sl_set_status_spinner_method(sl_t *self, int enabled) {
   return SL_OK;
 }
 
+static int sl_set_status_idle_marker_method(sl_t *self, char marker) {
+  sl_impl_t *impl;
+  unsigned char value;
+  impl = sl_impl(self);
+  value = (unsigned char)marker;
+  if (!impl || (marker != '\0' && (value < 0x20 || value > 0x7e))) {
+    sl_set_error(self, "invalid status idle marker");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.idle_marker = marker;
+  return SL_OK;
+}
+
 static int sl_set_bounds_method(sl_t *self, int x, int y, int width,
                                 int height) {
   sl_impl_t *impl;
@@ -4066,6 +4091,7 @@ void sl_config_init(sl_config_t *config) {
   config->statusline_start_element = 0;
   config->status_spinner = 0;
   config->status_busy = 0;
+  config->status_idle_marker = '\0';
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
@@ -4084,8 +4110,11 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
       config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
       config->prompt_theme > SL_PROMPT_THEME_SYNTHWAVE ||
       config->statusline < 0 || config->status_spinner < 0 ||
-      config->status_busy < 0 || config->line_max_len == 0 ||
-      config->line_max_len > (size_t)INT_MAX - 2)
+      config->status_busy < 0 ||
+      (config->status_idle_marker != '\0' &&
+       ((unsigned char)config->status_idle_marker < 0x20 ||
+        (unsigned char)config->status_idle_marker > 0x7e)) ||
+      config->line_max_len == 0 || config->line_max_len > (size_t)INT_MAX - 2)
     return NULL;
   self = (sl_t *)calloc(1, sizeof(*self));
   impl = (sl_impl_t *)calloc(1, sizeof(*impl));
@@ -4124,6 +4153,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->set_status_element = sl_set_status_element_method;
   self->set_status_busy = sl_set_status_busy_method;
   self->set_status_spinner = sl_set_status_spinner_method;
+  self->set_status_idle_marker = sl_set_status_idle_marker_method;
   impl->input_fd = config->input_fd >= 0 ? config->input_fd : STDIN_FILENO;
   impl->output_fd = config->output_fd >= 0 ? config->output_fd : STDOUT_FILENO;
   impl->screen_x = config->screen_x;
@@ -4142,6 +4172,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->statusline.start_element = config->statusline_start_element;
   impl->statusline.spinner = config->status_spinner;
   impl->statusline.busy = config->status_busy;
+  impl->statusline.idle_marker = config->status_idle_marker;
   impl->history.max_len = config->history_max_len;
   impl->history_index = -1;
   if (sl_buf_reserve(self, 1) != 0) {
@@ -4267,6 +4298,12 @@ int sl_set_status_spinner(sl_t *self, int enabled) {
   if (!self || !self->set_status_spinner)
     return SL_ERROR_INVALID;
   return self->set_status_spinner(self, enabled);
+}
+
+int sl_set_status_idle_marker(sl_t *self, char marker) {
+  if (!self || !self->set_status_idle_marker)
+    return SL_ERROR_INVALID;
+  return self->set_status_idle_marker(self, marker);
 }
 
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,

@@ -126,6 +126,8 @@ static void softline_lua_idle_callback(sl_t *sl, void *userdata) {
 }
 
 static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
+  const char *idle_marker;
+  size_t idle_marker_len;
   if (lua_isnoneornil(L, index))
     return;
   luaL_checktype(L, index, LUA_TTABLE);
@@ -195,6 +197,14 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   lua_getfield(L, index, "status_busy");
   if (!lua_isnil(L, -1))
     config->status_busy = lua_toboolean(L, -1);
+  lua_pop(L, 1);
+  lua_getfield(L, index, "status_idle_marker");
+  if (!lua_isnil(L, -1)) {
+    idle_marker = luaL_checklstring(L, -1, &idle_marker_len);
+    if (idle_marker_len != 1)
+      luaL_error(L, "status_idle_marker must be one byte");
+    config->status_idle_marker = idle_marker[0];
+  }
   lua_pop(L, 1);
 
   lua_getfield(L, index, "history_max_len");
@@ -402,6 +412,20 @@ static int softline_lua_set_status_spinner(lua_State *L) {
   handle = softline_lua_check(L, 1);
   return softline_lua_status(
       L, sl_set_status_spinner(handle->sl, lua_toboolean(L, 2)));
+}
+
+static int softline_lua_set_status_idle_marker(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *marker;
+  size_t marker_len;
+  handle = softline_lua_check(L, 1);
+  if (lua_isnil(L, 2))
+    return softline_lua_status(L, sl_set_status_idle_marker(handle->sl, '\0'));
+  marker = luaL_checklstring(L, 2, &marker_len);
+  if (marker_len != 1)
+    return luaL_argerror(L, 2, "must be one byte or nil");
+  return softline_lua_status(L,
+                             sl_set_status_idle_marker(handle->sl, marker[0]));
 }
 
 static int softline_lua_insert(lua_State *L) {
@@ -617,6 +641,7 @@ static const luaL_Reg softline_lua_methods[] = {
     {"set_status_element", softline_lua_set_status_element},
     {"set_status_busy", softline_lua_set_status_busy},
     {"set_status_spinner", softline_lua_set_status_spinner},
+    {"set_status_idle_marker", softline_lua_set_status_idle_marker},
     {"insert", softline_lua_insert},
     {"set_buffer", softline_lua_set_buffer},
     {"buffer", softline_lua_buffer},

@@ -90,7 +90,8 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 unchanged, shows a palette-driven status line, and emits a random simulated
 peer message every two seconds while the
 editor is active. Its status demo advances every five seconds through spinner
-idle `@`/spinner twice, then static busy `x`/idle `@` twice, and repeats.
+and static busy phases. It alternates complete 40-second cycles between no
+idle marker and a green idle `-` marker.
 Ctrl-C cancels the active editor and keeps the chat open.
 The queue UI, status line, and simulated peer activate only when both standard
 input and standard output are terminals, so piped use remains plain
@@ -185,14 +186,16 @@ static const char *const status[] = {
 
 sl->set_statusline(sl, 1, 0);
 sl->set_status_elements(sl, status, 4);
+sl->set_status_idle_marker(sl, '-');  /* optional green idle marker */
 sl->set_status_busy(sl, 1);    /* x by default, or /-\\| with spinner enabled */
 sl->set_status_spinner(sl, 1);
 ```
 
-The static marker is green `@` while idle and red `x` while busy. The busy
-spinner uses that same red, is off by default, and advances every 500ms only
-when both spinner and busy are enabled. Elements wrap between elements when
-possible; an oversized element
+Idle has no marker by default. Set one printable ASCII character with
+`sl_set_status_idle_marker()` to render a green marker while idle, or pass
+`'\0'` to clear it. Busy uses red `x`; the busy spinner uses that same red, is
+off by default, and advances every 500ms only when both spinner and busy are
+enabled. Elements wrap between elements when possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
 

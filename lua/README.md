@@ -39,6 +39,7 @@ config table mirrors `sl_config_t`:
 - `statusline_start_element`
 - `status_spinner`
 - `status_busy`
+- `status_idle_marker`
 - `history_max_len`
 - `line_max_len`
 
@@ -79,8 +80,10 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
   are retained; longer input uses the first 31 followed by `...`.
 - `sl:set_status_element(index, value)` updates one zero-based element; pass
   `nil` as `value` to clear it.
-- `sl:set_status_busy(busy)` selects the default busy `x` or idle `@` marker.
+- `sl:set_status_busy(busy)` selects the red busy `x` or spinner marker.
 - `sl:set_status_spinner(enabled)` enables the 500ms `/ - \\ |` busy spinner.
+- `sl:set_status_idle_marker(marker)` selects a one-byte printable ASCII green
+  idle marker; pass `nil` to clear it. Idle has no marker by default.
 - `sl:insert(text)` inserts text bytes at the active cursor.
 - `sl:set_buffer(text)` replaces the active buffer and moves the cursor to the
   end.

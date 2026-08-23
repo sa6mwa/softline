@@ -94,6 +94,7 @@ struct chat_idle_state {
   time_t next_message_at;
   time_t status_started_at;
   int status_phase;
+  int status_marker_cycle;
 };
 
 static int update_status_presentation(sl_t *sl, struct chat_idle_state *state,
@@ -101,19 +102,24 @@ static int update_status_presentation(sl_t *sl, struct chat_idle_state *state,
   int busy;
   int spinner;
   int phase;
+  int marker_cycle;
   if (!sl || !state)
     return SL_ERROR_INVALID;
   if (state->status_started_at == (time_t)0)
     state->status_started_at = now;
   phase = (int)(((now - state->status_started_at) / 5) % 8);
-  if (phase == state->status_phase)
+  marker_cycle = (int)(((now - state->status_started_at) / 40) % 2);
+  if (phase == state->status_phase &&
+      marker_cycle == state->status_marker_cycle)
     return SL_OK;
   spinner = phase == 1 || phase == 3;
   busy = spinner || phase == 4 || phase == 6;
-  if (sl->set_status_spinner(sl, spinner) != SL_OK ||
+  if (sl->set_status_idle_marker(sl, marker_cycle ? '-' : '\0') != SL_OK ||
+      sl->set_status_spinner(sl, spinner) != SL_OK ||
       sl->set_status_busy(sl, busy) != SL_OK)
     return SL_ERROR;
   state->status_phase = phase;
+  state->status_marker_cycle = marker_cycle;
   return SL_OK;
 }
 
@@ -175,6 +181,7 @@ int main(void) {
     idle_state.next_message_at = time(NULL) + 2;
     idle_state.status_started_at = time(NULL);
     idle_state.status_phase = -1;
+    idle_state.status_marker_cycle = -1;
     srand((unsigned int)(time(NULL) ^ (time_t)getpid()));
     if (sl->set_idle_callback(sl, run_chat_idle, &idle_state) != SL_OK) {
       fprintf(stderr, "failed to enable simulated peer messages\n");
@@ -204,8 +211,8 @@ int main(void) {
 
   if (interactive &&
       print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
-                        "the newest queued prompt. Status cycles every five "
-                        "seconds.") != SL_OK) {
+                        "the newest queued prompt. Status alternates "
+                        "40-second idle-marker cycles.") != SL_OK) {
     (void)print_last_error(sl);
     sl->destroy(sl);
     return 1;
