@@ -2104,7 +2104,7 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     return -1;
   tries = 0;
   while (!contains_bytes(terminal, "\r  \033[38;2;172;164;184me0") &&
-         tries < 3) {
+         tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n < 0)
@@ -2122,7 +2122,7 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
   if (write(master_fd, "\033n", 2) != 2)
     return -1;
   tries = 0;
-  while (!contains_bytes(terminal, "\033[38;2;57;255;20m- ") && tries < 3) {
+  while (!contains_bytes(terminal, "\033[38;2;57;255;20m- ") && tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n < 0)

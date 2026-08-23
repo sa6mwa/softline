@@ -424,7 +424,7 @@ static void test_example_chat_uses_normal_scrollback(const char *path) {
   terminal_len = 0;
   terminal[0] = '\0';
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "chat> ") == 0,
+                            sizeof(terminal), "> ") == 0,
               "initial prompt missing");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[?1049h"),
               "chat entered the alternate screen");
@@ -436,7 +436,7 @@ static void test_example_chat_uses_normal_scrollback(const char *path) {
               "direct chat message missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
                                   sizeof(terminal), "[direct] hello\r\n",
-                                  "chat> ") == 0,
+                                  "> ") == 0,
               "next chat prompt did not follow output");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
@@ -455,7 +455,7 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   terminal_len = 0;
   terminal[0] = '\0';
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "chat> ") == 0,
+                            sizeof(terminal), "> ") == 0,
               "initial prompt missing");
   ASSERT_TRUE(write(master_fd, "queued\tcurrent\r", 15) == 15,
               "write queue input failed");
@@ -490,7 +490,7 @@ test_example_chat_keeps_empty_direct_message_separate(const char *path) {
   terminal_len = 0;
   terminal[0] = '\0';
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "chat> ") == 0,
+                            sizeof(terminal), "> ") == 0,
               "initial prompt missing");
   ASSERT_TRUE(write(master_fd, "queued\t\r", 8) == 8,
               "write queue-and-empty-submit input failed");
@@ -518,7 +518,7 @@ static void test_example_chat_receives_peer_messages(const char *path) {
   terminal_len = 0;
   terminal[0] = '\0';
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "chat> ") == 0,
+                            sizeof(terminal), "> ") == 0,
               "initial prompt missing");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
                             sizeof(terminal), "[peer] ") == 0,
@@ -545,7 +545,7 @@ test_example_chat_updates_editor_in_normal_scrollback(const char *path) {
   terminal_len = 0;
   terminal[0] = '\0';
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "chat> ") == 0,
+                            sizeof(terminal), "> ") == 0,
               "initial prompt missing");
   for (tries = 0; tries < 10; tries++) {
     n = read_some_with_timeout(master_fd, buf, sizeof(buf));
@@ -590,7 +590,7 @@ static void test_example_chat_ctrl_c_cancels_and_continues(const char *path) {
   terminal_len = 0;
   terminal[0] = '\0';
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "chat> ") == 0,
+                            sizeof(terminal), "> ") == 0,
               "initial prompt missing");
   ASSERT_TRUE(write(master_fd, "\003", 1) == 1, "write Ctrl-C failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,

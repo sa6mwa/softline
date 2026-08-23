@@ -91,7 +91,7 @@ local function run()
   end
 
   while true do
-    local line, source_or_status = sl:next_prompt("chat> ")
+    local line, source_or_status = sl:next_prompt()
     if line then
       if line == "exit" then
         break

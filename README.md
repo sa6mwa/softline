@@ -151,7 +151,7 @@ sl->set_prompt_queue(sl, 1, 64, 3);
 sl->set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT);
 
 for (;;) {
-  char *line = sl->next_prompt(sl, "chat> ", &source);
+  char *line = sl->next_prompt(sl, NULL, &source);
   if (!line)
     break;
   /* source is SL_PROMPT_SOURCE_DIRECT or SL_PROMPT_SOURCE_QUEUED. */

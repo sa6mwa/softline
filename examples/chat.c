@@ -232,7 +232,7 @@ int main(void) {
   }
   for (;;) {
     source = SL_PROMPT_SOURCE_NONE;
-    line = sl->next_prompt(sl, "chat> ", &source);
+    line = sl->next_prompt(sl, NULL, &source);
     if (!line) {
       status = sl->last_readline_status(sl);
       if (status == SL_READLINE_CANCELLED ||

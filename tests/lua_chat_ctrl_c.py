@@ -46,7 +46,7 @@ def main():
     )
     os.close(slave)
     try:
-        initial = read_until(master, b"chat> ")
+        initial = read_until(master, b"> ")
         if b"\x1b[?1049h" in initial:
             raise AssertionError("lua chat entered the alternate screen")
         read_until(master, b"[peer] ", timeout=4.0)
