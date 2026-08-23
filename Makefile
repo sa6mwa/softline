@@ -55,6 +55,10 @@ run-simple: build-debug ## Run C simple example (THEME=plain|accent|riced)
 run-chat: build-debug ## Run C chat example (THEME=plain|accent|riced)
 	@$(EXAMPLE_THEME_ENV) ./build/debug/examples/example_chat
 
+.PHONY: run-chat-riced
+run-chat-riced: build-debug ## Run C chat example with the riced theme
+	@SOFTLINE_PROMPT_THEME="riced" ./build/debug/examples/example_chat
+
 .PHONY: build-release
 build-release: ## Build release target
 	@cmake --preset x86_64-linux-gnu-release

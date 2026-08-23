@@ -96,13 +96,14 @@ output are terminals, so piped use remains plain line-oriented input/output.
 ```sh
 make run-simple
 make run-chat
-make run-chat THEME=riced
+make run-chat-riced
 ```
 
-`run-simple` and `run-chat` build the C examples before launching them. Both C
-and Lua examples accept `SOFTLINE_PROMPT_THEME=plain`, `accent`, or `riced`;
-the Make targets expose that as `THEME=...`. The simple examples default to
-`plain`; chat examples default to `accent`.
+`run-simple`, `run-chat`, and `run-chat-riced` build the C examples before
+launching them. Both C and Lua examples accept
+`SOFTLINE_PROMPT_THEME=plain`, `accent`, or `riced`; the generic Make targets
+also expose that as `THEME=...`. The simple examples default to `plain`; chat
+examples default to `accent`.
 
 ## Bounded prompts
 
