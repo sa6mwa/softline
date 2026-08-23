@@ -49,7 +49,7 @@ lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
 lua "${ROOT_DIR}/tests/lua_smoke.lua"
 printf 'hello\n' | lua "${ROOT_DIR}/tests/lua_readline.lua"
 SOFTLINE_LUA_CHAT_OUTPUT="$(printf 'hello\nexit\n' | lua "${ROOT_DIR}/examples/chat.lua")"
-if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "[direct] I read back: hello" ]; then
+if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "hello" ]; then
   echo "ERROR: non-tty Lua chat output mismatch: ${SOFTLINE_LUA_CHAT_OUTPUT}" >&2
   exit 1
 fi

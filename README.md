@@ -86,9 +86,9 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` stays in ordinary terminal scrollback. It replies to dispatched
-work as `[direct|queued] I read back: <prompt>`, shows a palette-driven status
-line, and emits a random simulated peer message every two seconds while the
+`example_chat` stays in ordinary terminal scrollback. It posts dispatched text
+unchanged, shows a palette-driven status line, and emits a random simulated
+peer message every two seconds while the
 editor is active. Its status demo advances every five seconds through spinner
 idle `@`/spinner twice, then static busy `x`/idle `@` twice, and repeats.
 Ctrl-C cancels the active editor and keeps the chat open.

@@ -37,11 +37,6 @@ local function print_message(parts)
   end
 end
 
-local function print_reply(source, line)
-  local label = source == softline.PROMPT_SOURCE_QUEUED and "[queued] " or "[direct] "
-  print_message({ label, "I read back: ", line, "\n" })
-end
-
 local function update_status_presentation(now)
   local phase = math.floor((now - status_started_at) / 5) % 8
   local spinner = phase == 1 or phase == 3
@@ -96,7 +91,7 @@ local function run()
       if line == "exit" then
         break
       end
-      print_reply(source_or_status, line)
+      print_message({ line, "\n" })
     elseif source_or_status == softline.READLINE_CANCELLED or source_or_status == softline.READLINE_INTERRUPTED then
       if interactive then
         print_message({ "[cancelled]\n" })

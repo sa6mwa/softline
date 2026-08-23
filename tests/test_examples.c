@@ -430,13 +430,12 @@ static void test_example_chat_uses_normal_scrollback(const char *path) {
               "chat entered the alternate screen");
   ASSERT_TRUE(write(master_fd, "hello\r", 6) == 6,
               "write first message failed");
-  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal),
-                            "[direct] I read back: hello") == 0,
-              "direct chat reply missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal),
-                                  "[direct] I read back: hello", "chat> ") == 0,
+                                  sizeof(terminal), "\033[?2004l",
+                                  "hello\r\n") == 0,
+              "direct chat message missing");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "hello\r\n", "chat> ") == 0,
               "next chat prompt did not follow output");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
@@ -449,7 +448,7 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   char terminal[16384];
   size_t terminal_len;
 
-  TEST("example_chat labels direct and queued dispatches");
+  TEST("example_chat posts direct and queued messages FIFO");
   pid = spawn_example(path, &master_fd, 40, 8);
   ASSERT_TRUE(pid > 0, "spawn failed");
   terminal_len = 0;
@@ -460,14 +459,13 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   ASSERT_TRUE(write(master_fd, "queued\tcurrent\r", 15) == 15,
               "write queue input failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal),
-                                  "[direct] I read back: current",
-                                  "[queued] I read back: queued") == 0,
+                                  sizeof(terminal), "\033[?2004l",
+                                  "current\r\nqueued\r\n") == 0,
               "queue dispatch output missing or out of order");
-  ASSERT_TRUE(
-      wait_for_text_after(master_fd, terminal, &terminal_len, sizeof(terminal),
-                          "[queued] I read back: queued", "\033[?2004h") == 0,
-      "chat prompt did not resume after queued dispatch");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "queued\r\n",
+                                  "\033[?2004h") == 0,
+              "chat prompt did not resume after queued dispatch");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[?1049h"),
               "chat entered the alternate screen");
   ASSERT_TRUE(!contains_bytes(terminal, "\r\r\n"),
@@ -478,7 +476,7 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
 }
 
 static void
-test_example_chat_keeps_empty_direct_reply_separate(const char *path) {
+test_example_chat_keeps_empty_direct_message_separate(const char *path) {
   int master_fd;
   pid_t pid;
   char terminal[16384];
@@ -495,13 +493,10 @@ test_example_chat_keeps_empty_direct_reply_separate(const char *path) {
   ASSERT_TRUE(write(master_fd, "queued\t\r", 8) == 8,
               "write queue-and-empty-submit input failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal),
-                            "[queued] I read back: queued") == 0,
-              "queued reply missing");
-  ASSERT_TRUE(
-      contains_bytes(terminal,
-                     "[direct] I read back: \r\n[queued] I read back: queued"),
-      "empty direct reply merged with queued reply");
+                            sizeof(terminal), "\033[?2004l\r\nqueued\r\n") == 0,
+              "queued message missing");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[?2004l\r\nqueued\r\n"),
+              "empty direct message merged with queued message");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
@@ -567,13 +562,12 @@ test_example_chat_updates_editor_in_normal_scrollback(const char *path) {
               "editor update missing");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal),
-                            "[direct] I read back: hello") == 0,
+                            sizeof(terminal), "\033[?2004lhello\r\n") == 0,
               "submitted message missing");
-  ASSERT_TRUE(
-      wait_for_text_after(master_fd, terminal, &terminal_len, sizeof(terminal),
-                          "[direct] I read back: hello", "\033[?2004h") == 0,
-      "next prompt did not start");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "hello\r\n",
+                                  "\033[?2004h") == 0,
+              "next prompt did not start");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
@@ -654,8 +648,7 @@ static void test_example_chat_is_plain_without_tty(const char *path) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "non-tty chat child failed");
-  ASSERT_TRUE(strcmp(output, "[direct] I read back: hello\n") == 0,
-              "non-tty chat output mismatch");
+  ASSERT_TRUE(strcmp(output, "hello\n") == 0, "non-tty chat output mismatch");
   ASSERT_TRUE(!contains_bytes(output, "\033["),
               "non-tty chat emitted terminal control sequences");
   PASS();
@@ -674,7 +667,7 @@ int main(int argc, char **argv) {
   test_example_simple_wraps_near_bottom(argv[1]);
   test_example_chat_uses_normal_scrollback(argv[2]);
   test_example_chat_dispatches_queued_prompts(argv[2]);
-  test_example_chat_keeps_empty_direct_reply_separate(argv[2]);
+  test_example_chat_keeps_empty_direct_message_separate(argv[2]);
   test_example_chat_receives_peer_messages(argv[2]);
   test_example_chat_updates_editor_in_normal_scrollback(argv[2]);
   test_example_chat_ctrl_c_cancels_and_continues(argv[2]);
