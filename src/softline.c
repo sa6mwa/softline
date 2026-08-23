@@ -3451,6 +3451,10 @@ static int sl_set_prompt_queue_method(sl_t *self, int enabled, int max_entries,
     sl_set_error(self, "invalid prompt queue configuration");
     return SL_ERROR_INVALID;
   }
+  if (enabled && impl->prompt_queue.len > max_entries) {
+    sl_set_error(self, "prompt queue exceeds requested capacity");
+    return SL_ERROR_INVALID;
+  }
   if (!enabled)
     sl_prompt_queue_clear(&impl->prompt_queue);
   impl->prompt_queue.enabled = enabled;

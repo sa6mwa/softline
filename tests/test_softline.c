@@ -1196,6 +1196,13 @@ struct idle_ready_state {
   int ready;
 };
 
+struct idle_queue_limit_state {
+  const char *expected_buffer;
+  int max_entries;
+  int status;
+  int attempted;
+};
+
 struct text_stream_state {
   const char *chunks[4];
   int index;
@@ -1370,6 +1377,20 @@ static void idle_signal_ready_once(sl_t *sl, void *userdata) {
     return;
   state->ready = 1;
   (void)write(state->fd, "R", 1);
+}
+
+static void idle_reduce_prompt_queue_limit(sl_t *sl, void *userdata) {
+  struct idle_queue_limit_state *state;
+  const char *buffer;
+  state = (struct idle_queue_limit_state *)userdata;
+  if (!state || state->attempted)
+    return;
+  buffer = sl->buffer(sl);
+  if (!buffer || strcmp(buffer, state->expected_buffer) != 0)
+    return;
+  state->attempted = 1;
+  state->status = sl->set_prompt_queue(sl, 1, state->max_entries, 1);
+  (void)sl->submit(sl);
 }
 
 static void append_terminal_bytes(char *terminal, size_t *terminal_len,
@@ -1708,10 +1729,10 @@ static int run_pty_key_binding_case(const char *input, sl_key_t key,
 }
 
 static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
-                                     int bounded, int expected_prompts,
-                                     char *terminal, size_t terminal_cap,
-                                     char *result, size_t result_cap,
-                                     int *exit_status) {
+                                     int bounded, int reduced_max_entries,
+                                     int expected_prompts, char *terminal,
+                                     size_t terminal_cap, char *result,
+                                     size_t result_cap, int *exit_status) {
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -1733,7 +1754,10 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
   if (pid == 0) {
     sl_config_t cfg;
     sl_t *sl;
+    char header[32];
     char output[512];
+    struct idle_queue_limit_state limit_state;
+    size_t header_len;
     size_t used;
     int i;
     close(master_fd);
@@ -1753,6 +1777,14 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
+    memset(&limit_state, 0, sizeof(limit_state));
+    limit_state.expected_buffer = "third";
+    limit_state.max_entries = reduced_max_entries;
+    limit_state.status = SL_ERROR;
+    if (reduced_max_entries > 0 &&
+        sl->set_idle_callback(sl, idle_reduce_prompt_queue_limit,
+                              &limit_state) != SL_OK)
+      _exit(5);
     used = 0;
     output[0] = '\0';
     for (i = 0; i < expected_prompts; i++) {
@@ -1769,6 +1801,18 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
       if (written < 0 || (size_t)written >= sizeof(output) - used)
         _exit(4);
       used += (size_t)written;
+    }
+    if (reduced_max_entries > 0) {
+      int written;
+      written = snprintf(header, sizeof(header), "%d;", limit_state.status);
+      if (written < 0 || written >= (int)sizeof(header))
+        _exit(6);
+      header_len = (size_t)written;
+      if (header_len > sizeof(output) - used)
+        _exit(7);
+      memmove(output + header_len, output, used);
+      memcpy(output, header, header_len);
+      used += header_len;
     }
     (void)write(result_pipe[1], output, used);
     sl_destroy(sl);
@@ -2492,8 +2536,8 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
 
   TEST("prompt queue previews and dispatches FIFO across themes");
   ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\tthird\r",
-                                        SL_PROMPT_THEME_PLAIN, 1, 3, terminal,
-                                        sizeof(terminal), result,
+                                        SL_PROMPT_THEME_PLAIN, 1, 0, 3,
+                                        terminal, sizeof(terminal), result,
                                         sizeof(result), &status) == 0,
               "plain prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -2508,7 +2552,7 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "plain overflow count missing");
 
   ASSERT_TRUE(run_pty_prompt_queue_case(
-                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 1, 2, terminal,
+                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 1, 0, 2, terminal,
                   sizeof(terminal), result, sizeof(result), &status) == 0,
               "accent prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -2520,7 +2564,7 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "accent full prompt treatment missing");
 
   ASSERT_TRUE(run_pty_prompt_queue_case(
-                  "first\tsecond\r", SL_PROMPT_THEME_RICED, 1, 2, terminal,
+                  "first\tsecond\r", SL_PROMPT_THEME_RICED, 1, 0, 2, terminal,
                   sizeof(terminal), result, sizeof(result), &status) == 0,
               "riced prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -2540,7 +2584,7 @@ static void test_prompt_queue_dispatches_fifo_in_normal_scrollback(void) {
 
   TEST("prompt queue dispatches FIFO in normal scrollback");
   ASSERT_TRUE(run_pty_prompt_queue_case(
-                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 0, 2, terminal,
+                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 0, 0, 2, terminal,
                   sizeof(terminal), result, sizeof(result), &status) == 0,
               "normal prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -2553,6 +2597,24 @@ static void test_prompt_queue_dispatches_fifo_in_normal_scrollback(void) {
   PASS();
 }
 
+static void test_prompt_queue_rejects_reduced_capacity(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue rejects reduced capacity with pending prompts");
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\tthird",
+                                        SL_PROMPT_THEME_PLAIN, 0, 1, 3,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "queue capacity pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queue capacity child failed");
+  ASSERT_TRUE(strcmp(result, "-2;1:third|2:first|2:second") == 0,
+              "reduced capacity changed queued dispatch");
+  PASS();
+}
+
 static void test_prompt_queue_alt_e_recalls_newest(void) {
   char terminal[16384];
   char result[512];
@@ -2560,8 +2622,8 @@ static void test_prompt_queue_alt_e_recalls_newest(void) {
 
   TEST("Alt-E recalls the newest queued prompt into the editor");
   ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\t\033e\r",
-                                        SL_PROMPT_THEME_PLAIN, 1, 2, terminal,
-                                        sizeof(terminal), result,
+                                        SL_PROMPT_THEME_PLAIN, 1, 0, 2,
+                                        terminal, sizeof(terminal), result,
                                         sizeof(result), &status) == 0,
               "Alt-E prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -5406,6 +5468,7 @@ int main(void) {
   test_key_binding_tab_inserts_text();
   test_prompt_queue_dispatches_fifo_with_themes();
   test_prompt_queue_dispatches_fifo_in_normal_scrollback();
+  test_prompt_queue_rejects_reduced_capacity();
   test_prompt_queue_alt_e_recalls_newest();
   test_prompt_themes_style_normal_readline();
   test_key_binding_alt_m_inserts_text();
