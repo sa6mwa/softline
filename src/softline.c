@@ -22,10 +22,12 @@ typedef struct sl_render {
   int count;
   int cursor_row;
   int cursor_col;
+  int editor_first;
 } sl_render_t;
 
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
+static int sl_render_clear_active(sl_t *self);
 
 static sl_impl_t *sl_impl(sl_t *self) {
   if (!self)
@@ -67,6 +69,75 @@ static char *sl_strdup(const char *s) {
   if (copy)
     memcpy(copy, s, n);
   return copy;
+}
+
+static void sl_prompt_queue_clear(sl_prompt_queue_t *queue) {
+  int i;
+  if (!queue)
+    return;
+  for (i = 0; i < queue->len; i++)
+    free(queue->items[i]);
+  free(queue->items);
+  queue->items = NULL;
+  queue->len = 0;
+  queue->cap = 0;
+}
+
+static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
+  char **items;
+  int cap;
+  if (!queue)
+    return -1;
+  if (entries <= queue->cap)
+    return 0;
+  cap = queue->cap > 0 ? queue->cap : 8;
+  while (cap < entries) {
+    if (cap > INT_MAX / 2) {
+      cap = entries;
+      break;
+    }
+    cap *= 2;
+  }
+  items = (char **)realloc(queue->items, (size_t)cap * sizeof(*items));
+  if (!items)
+    return -1;
+  queue->items = items;
+  queue->cap = cap;
+  return 0;
+}
+
+static int sl_prompt_queue_append(sl_impl_t *impl, const char *text) {
+  char *copy;
+  if (!impl || !text)
+    return -1;
+  if (impl->prompt_queue.len >= impl->prompt_queue.max_entries)
+    return 1;
+  copy = sl_strdup(text);
+  if (!copy)
+    return -1;
+  if (sl_prompt_queue_reserve(&impl->prompt_queue,
+                              impl->prompt_queue.len + 1) != 0) {
+    free(copy);
+    return -1;
+  }
+  impl->prompt_queue.items[impl->prompt_queue.len++] = copy;
+  return 0;
+}
+
+static char *sl_prompt_queue_take(sl_prompt_queue_t *queue, int index) {
+  char *item;
+  int i;
+  if (!queue || index < 0 || index >= queue->len)
+    return NULL;
+  item = queue->items[index];
+  for (i = index; i + 1 < queue->len; i++)
+    queue->items[i] = queue->items[i + 1];
+  queue->len--;
+  return item;
+}
+
+static int sl_prompt_queue_enabled(const sl_impl_t *impl) {
+  return impl && impl->bounded && impl->prompt_queue.enabled;
 }
 
 static int sl_write_all(int fd, const char *buf, size_t len) {
@@ -1455,6 +1526,128 @@ static int sl_word_width(const char *buf, size_t len, size_t pos,
   return width;
 }
 
+static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
+                                       int available) {
+  size_t pos;
+  size_t len;
+  int cols;
+  int clipped;
+  if (!row || !text || available < 1)
+    return 0;
+  pos = 0;
+  len = strlen(text);
+  cols = 0;
+  clipped = 0;
+  while (pos < len && text[pos] != '\n') {
+    int cells;
+    size_t n;
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0)
+      n = 1;
+    if (cells > 0 && cols + cells > available) {
+      clipped = 1;
+      break;
+    }
+    if (sl_row_append_cells(row, text + pos, n, cells) != 0)
+      return -1;
+    cols += cells;
+    pos += n;
+  }
+  if (pos < len)
+    clipped = 1;
+  if (clipped && available - cols >= 3 &&
+      sl_row_append_cells(row, "...", 3, 3) != 0)
+    return -1;
+  return 0;
+}
+
+static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
+                                        int width) {
+  sl_impl_t *impl;
+  sl_prompt_queue_t *queue;
+  const char *header_prefix;
+  const char *entry_prefix;
+  const char *style;
+  const char *reset;
+  char header[64];
+  int i;
+  int shown;
+  impl = sl_impl(self);
+  if (!sl_prompt_queue_enabled(impl) || !render)
+    return 0;
+  queue = &impl->prompt_queue;
+  if (queue->len == 0)
+    return 0;
+  header_prefix = "Queued (";
+  entry_prefix = "  ";
+  style = "";
+  reset = "";
+  if (queue->theme == SL_PROMPT_QUEUE_THEME_ACCENT) {
+    header_prefix = "[ queued: ";
+    entry_prefix = " > ";
+    style = "\033[36m";
+    reset = "\033[0m";
+  } else if (queue->theme == SL_PROMPT_QUEUE_THEME_RICED) {
+    header_prefix = "<< queue: ";
+    entry_prefix = " :: ";
+    style = "\033[1;95m";
+    reset = "\033[0m";
+  }
+  if (queue->theme == SL_PROMPT_QUEUE_THEME_PLAIN)
+    (void)snprintf(header, sizeof(header), "%s%d)", header_prefix, queue->len);
+  else
+    (void)snprintf(header, sizeof(header), "%s%d >>", header_prefix,
+                   queue->len);
+  if (sl_render_new_row_at(render, 0, 0) != 0)
+    return -1;
+  if (sl_row_append(&render->rows[render->count - 1], style, strlen(style)) !=
+          0 ||
+      sl_row_append_cells(&render->rows[render->count - 1], header,
+                          strlen(header),
+                          sl_text_width(header, strlen(header))) != 0 ||
+      sl_row_append(&render->rows[render->count - 1], reset, strlen(reset)) !=
+          0)
+    return -1;
+  shown = queue->preview_entries;
+  if (shown > queue->len)
+    shown = queue->len;
+  for (i = 0; i < shown; i++) {
+    char number[24];
+    int prefix_width;
+    sl_row_t *row;
+    if (sl_render_new_row_at(render, 0, 0) != 0)
+      return -1;
+    row = &render->rows[render->count - 1];
+    (void)snprintf(number, sizeof(number), "%d. ", i + 1);
+    prefix_width = sl_text_width(entry_prefix, strlen(entry_prefix)) +
+                   sl_text_width(number, strlen(number));
+    if (sl_row_append(row, style, strlen(style)) != 0 ||
+        sl_row_append_cells(
+            row, entry_prefix, strlen(entry_prefix),
+            sl_text_width(entry_prefix, strlen(entry_prefix))) != 0 ||
+        sl_row_append_cells(row, number, strlen(number),
+                            sl_text_width(number, strlen(number))) != 0 ||
+        sl_queue_row_append_preview(row, queue->items[i],
+                                    width - prefix_width) != 0 ||
+        sl_row_append(row, reset, strlen(reset)) != 0)
+      return -1;
+  }
+  if (shown < queue->len) {
+    char more[64];
+    (void)snprintf(more, sizeof(more), "  ... %d more", queue->len - shown);
+    if (sl_render_new_row_at(render, 0, 0) != 0 ||
+        sl_row_append(&render->rows[render->count - 1], style, strlen(style)) !=
+            0 ||
+        sl_row_append_cells(&render->rows[render->count - 1], more,
+                            strlen(more),
+                            sl_text_width(more, strlen(more))) != 0 ||
+        sl_row_append(&render->rows[render->count - 1], reset, strlen(reset)) !=
+            0)
+      return -1;
+  }
+  return 0;
+}
+
 static int sl_render_build(sl_t *self, const char *prompt,
                            sl_render_t *render) {
   sl_impl_t *impl;
@@ -1472,6 +1665,9 @@ static int sl_render_build(sl_t *self, const char *prompt,
   width = sl_terminal_width(impl);
   if (width < 1)
     width = 1;
+  if (sl_render_append_queue_panel(self, render, width) != 0)
+    return -1;
+  render->editor_first = render->count;
   prompt_width = prompt ? sl_text_width(prompt, strlen(prompt)) : 0;
   if (sl_render_new_row_at(render, 0, prompt_width) != 0)
     return -1;
@@ -1483,7 +1679,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
     indent = width > 1 ? width - 1 : 0;
   col = prompt_width;
   if (impl->cursor == 0) {
-    render->cursor_row = 0;
+    render->cursor_row = render->editor_first;
     render->cursor_col = col;
   }
   i = 0;
@@ -1637,7 +1833,7 @@ static int sl_move_visual(sl_t *self, const char *prompt, int direction) {
     return 0;
   }
   target_row = render.cursor_row + direction;
-  if (target_row < 0 || target_row >= render.count) {
+  if (target_row < render.editor_first || target_row >= render.count) {
     sl_render_free(&render);
     return 0;
   }
@@ -1822,6 +2018,8 @@ static int sl_render_finish(sl_t *self) {
   if (!impl)
     return -1;
   if (sl_bounded_mode(impl)) {
+    if (sl_prompt_queue_enabled(impl) && sl_render_clear_active(self) != 0)
+      return -1;
     if (sl_write_cursor_pos(impl->output_fd, sl_box_bottom(impl) + 1, 0) != 0)
       return -1;
     sl_render_store_clear(impl);
@@ -2691,6 +2889,37 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
       case SL_KEY_ENTER:
         done = 1;
         break;
+      case SL_KEY_TAB:
+        if (sl_prompt_queue_enabled(impl) && impl->len > 0) {
+          int queue_rc;
+          queue_rc = sl_prompt_queue_append(impl, impl->buf);
+          if (queue_rc < 0) {
+            sl_set_error(self, "failed to queue prompt");
+            failed = 1;
+            done = 1;
+          } else if (queue_rc > 0) {
+            sl_set_error(self, "prompt queue is full");
+          } else if (sl_buf_set(self, "") != 0) {
+            sl_set_error(self, "failed to clear queued prompt");
+            failed = 1;
+            done = 1;
+          }
+        }
+        break;
+      case SL_KEY_ALT_BASE + 'e':
+        if (sl_prompt_queue_enabled(impl) && impl->prompt_queue.len > 0) {
+          char *queued;
+          queued = sl_prompt_queue_take(&impl->prompt_queue,
+                                        impl->prompt_queue.len - 1);
+          if (!queued || sl_buf_set(self, queued) != 0) {
+            free(queued);
+            sl_set_error(self, "failed to recall queued prompt");
+            failed = 1;
+            done = 1;
+          }
+          free(queued);
+        }
+        break;
       case SL_KEY_CTRL_J:
         if (sl_buf_insert(self, impl->cursor, "\n", 1) == 0)
           impl->cursor++;
@@ -2874,6 +3103,33 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   return result;
 }
 
+static char *sl_next_prompt_method(sl_t *self, const char *prompt,
+                                   sl_prompt_source_t *source) {
+  sl_impl_t *impl;
+  char *result;
+  if (source)
+    *source = SL_PROMPT_SOURCE_NONE;
+  impl = sl_impl(self);
+  if (!impl)
+    return NULL;
+  if (sl_prompt_queue_enabled(impl) && impl->prompt_queue.len > 0) {
+    result = sl_prompt_queue_take(&impl->prompt_queue, 0);
+    if (!result) {
+      sl_set_error(self, "failed to dequeue prompt");
+      sl_set_readline_status(self, SL_READLINE_ERROR);
+      return NULL;
+    }
+    sl_set_readline_status(self, SL_READLINE_SUBMITTED);
+    if (source)
+      *source = SL_PROMPT_SOURCE_QUEUED;
+    return result;
+  }
+  result = sl_readline_method(self, prompt);
+  if (result && source)
+    *source = SL_PROMPT_SOURCE_DIRECT;
+  return result;
+}
+
 static void sl_destroy_method(sl_t *self) {
   sl_impl_t *impl;
   impl = sl_impl(self);
@@ -2882,6 +3138,7 @@ static void sl_destroy_method(sl_t *self) {
   if (impl) {
     sl_disable_raw(self);
     sl_history_clear(&impl->history);
+    sl_prompt_queue_clear(&impl->prompt_queue);
     sl_render_store_clear(impl);
     free(impl->history_edit);
     free(impl->buf);
@@ -2904,6 +3161,39 @@ static int sl_set_screen_width_method(sl_t *self, int width) {
   }
   impl->screen_width = width;
   impl->dynamic_width = width == 0;
+  return SL_OK;
+}
+
+static int sl_set_prompt_queue_method(sl_t *self, int enabled, int max_entries,
+                                      int preview_entries) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0 || max_entries < 1 || preview_entries < 1) {
+    sl_set_error(self, "invalid prompt queue configuration");
+    return SL_ERROR_INVALID;
+  }
+  if (enabled && !impl->bounded) {
+    sl_set_error(self, "prompt queue requires bounded prompt mode");
+    return SL_ERROR_INVALID;
+  }
+  if (!enabled)
+    sl_prompt_queue_clear(&impl->prompt_queue);
+  impl->prompt_queue.enabled = enabled;
+  impl->prompt_queue.max_entries = max_entries;
+  impl->prompt_queue.preview_entries = preview_entries;
+  return SL_OK;
+}
+
+static int sl_set_prompt_queue_theme_method(sl_t *self,
+                                            sl_prompt_queue_theme_t theme) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || theme < SL_PROMPT_QUEUE_THEME_PLAIN ||
+      theme > SL_PROMPT_QUEUE_THEME_RICED) {
+    sl_set_error(self, "invalid prompt queue theme");
+    return SL_ERROR_INVALID;
+  }
+  impl->prompt_queue.theme = theme;
   return SL_OK;
 }
 
@@ -2965,6 +3255,10 @@ void sl_config_init(sl_config_t *config) {
   config->bounded = 0;
   config->history_max_len = SL_HISTORY_DEFAULT_MAX;
   config->line_max_len = SL_LINE_DEFAULT_MAX;
+  config->prompt_queue = 0;
+  config->prompt_queue_max_entries = SL_PROMPT_QUEUE_DEFAULT_MAX;
+  config->prompt_queue_preview_entries = SL_PROMPT_QUEUE_DEFAULT_PREVIEWS;
+  config->prompt_queue_theme = SL_PROMPT_QUEUE_THEME_PLAIN;
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
@@ -2978,6 +3272,12 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   if (config->history_max_len < 0 || config->screen_x < 0 ||
       config->screen_y < 0 || config->screen_width < 0 ||
       config->screen_height < 0 || config->bounded < 0 ||
+      config->prompt_queue < 0 || config->prompt_queue_max_entries < 1 ||
+      config->prompt_queue_preview_entries < 1 ||
+      config->prompt_queue_theme < SL_PROMPT_QUEUE_THEME_PLAIN ||
+      config->prompt_queue_theme > SL_PROMPT_QUEUE_THEME_RICED ||
+      (config->prompt_queue && !config->bounded &&
+       config->screen_height == 0) ||
       config->line_max_len == 0 || config->line_max_len > (size_t)INT_MAX - 2)
     return NULL;
   self = (sl_t *)calloc(1, sizeof(*self));
@@ -3009,6 +3309,9 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->last_readline_status = sl_last_readline_status_method;
   self->last_error = sl_last_error_method;
   self->impl = impl;
+  self->next_prompt = sl_next_prompt_method;
+  self->set_prompt_queue = sl_set_prompt_queue_method;
+  self->set_prompt_queue_theme = sl_set_prompt_queue_theme_method;
   impl->input_fd = config->input_fd >= 0 ? config->input_fd : STDIN_FILENO;
   impl->output_fd = config->output_fd >= 0 ? config->output_fd : STDOUT_FILENO;
   impl->screen_x = config->screen_x;
@@ -3019,6 +3322,10 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->dynamic_width = config->screen_width == 0;
   impl->dynamic_height = config->bounded && config->screen_height == 0;
   impl->bounded = config->bounded || config->screen_height > 0;
+  impl->prompt_queue.enabled = config->prompt_queue;
+  impl->prompt_queue.max_entries = config->prompt_queue_max_entries;
+  impl->prompt_queue.preview_entries = config->prompt_queue_preview_entries;
+  impl->prompt_queue.theme = config->prompt_queue_theme;
   impl->history.max_len = config->history_max_len;
   impl->history_index = -1;
   if (sl_buf_reserve(self, 1) != 0) {
@@ -3043,6 +3350,15 @@ char *sl_readline(sl_t *self, const char *prompt) {
   if (!self || !self->readline)
     return NULL;
   return self->readline(self, prompt);
+}
+
+char *sl_next_prompt(sl_t *self, const char *prompt,
+                     sl_prompt_source_t *source) {
+  if (source)
+    *source = SL_PROMPT_SOURCE_NONE;
+  if (!self || !self->next_prompt)
+    return NULL;
+  return self->next_prompt(self, prompt, source);
 }
 
 void sl_destroy(sl_t *self) {
@@ -3091,6 +3407,19 @@ int sl_set_screen_width(sl_t *self, int width) {
   if (!self || !self->set_screen_width)
     return SL_ERROR_INVALID;
   return self->set_screen_width(self, width);
+}
+
+int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
+                        int preview_entries) {
+  if (!self || !self->set_prompt_queue)
+    return SL_ERROR_INVALID;
+  return self->set_prompt_queue(self, enabled, max_entries, preview_entries);
+}
+
+int sl_set_prompt_queue_theme(sl_t *self, sl_prompt_queue_theme_t theme) {
+  if (!self || !self->set_prompt_queue_theme)
+    return SL_ERROR_INVALID;
+  return self->set_prompt_queue_theme(self, theme);
 }
 
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,

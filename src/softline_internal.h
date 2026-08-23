@@ -14,6 +14,8 @@
 #define SL_BUF_INITIAL 256
 #define SL_LINE_DEFAULT_MAX 4096
 #define SL_HISTORY_DEFAULT_MAX 100
+#define SL_PROMPT_QUEUE_DEFAULT_MAX 64
+#define SL_PROMPT_QUEUE_DEFAULT_PREVIEWS 3
 #define SL_ERROR_LEN 160
 #define SL_DEFAULT_PROMPT "> "
 #define SL_MAX_KEY_BINDINGS 64
@@ -29,6 +31,16 @@ typedef struct sl_history {
   int len;
   int max_len;
 } sl_history_t;
+
+typedef struct sl_prompt_queue {
+  char **items;
+  int len;
+  int cap;
+  int max_entries;
+  int preview_entries;
+  int enabled;
+  sl_prompt_queue_theme_t theme;
+} sl_prompt_queue_t;
 
 typedef struct sl_impl {
   int input_fd;
@@ -48,6 +60,7 @@ typedef struct sl_impl {
   int raw_active;
   struct termios original_termios;
   sl_history_t history;
+  sl_prompt_queue_t prompt_queue;
   int history_index;
   char *history_edit;
   int bracketed_paste;

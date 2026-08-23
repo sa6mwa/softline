@@ -123,6 +123,12 @@ static void test_config_init(void) {
   ASSERT_TRUE(cfg.bounded == 0, "bounded default");
   ASSERT_TRUE(cfg.history_max_len == 100, "history max default");
   ASSERT_TRUE(cfg.line_max_len == 4096, "line max default");
+  ASSERT_TRUE(cfg.prompt_queue == 0, "prompt queue default");
+  ASSERT_TRUE(cfg.prompt_queue_max_entries == 64, "prompt queue max default");
+  ASSERT_TRUE(cfg.prompt_queue_preview_entries == 3,
+              "prompt queue preview default");
+  ASSERT_TRUE(cfg.prompt_queue_theme == SL_PROMPT_QUEUE_THEME_PLAIN,
+              "prompt queue theme default");
   PASS();
 }
 
@@ -133,6 +139,7 @@ static void test_receiver_shell(void) {
   sl = sl_create();
   ASSERT_TRUE(sl != NULL, "create failed");
   ASSERT_TRUE(sl->readline != NULL, "readline method missing");
+  ASSERT_TRUE(sl->next_prompt != NULL, "next_prompt method missing");
   ASSERT_TRUE(sl->destroy != NULL, "destroy method missing");
   ASSERT_TRUE(sl->free_string != NULL, "free_string method missing");
   ASSERT_TRUE(sl->history_add != NULL, "history_add method missing");
@@ -142,6 +149,9 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->history_load != NULL, "history_load method missing");
   ASSERT_TRUE(sl->set_bounds != NULL, "set_bounds method missing");
   ASSERT_TRUE(sl->set_screen_width != NULL, "set_screen_width method missing");
+  ASSERT_TRUE(sl->set_prompt_queue != NULL, "set_prompt_queue method missing");
+  ASSERT_TRUE(sl->set_prompt_queue_theme != NULL,
+              "set_prompt_queue_theme method missing");
   ASSERT_TRUE(sl->set_idle_callback != NULL,
               "set_idle_callback method missing");
   ASSERT_TRUE(sl->bind_key != NULL, "bind_key method missing");
@@ -176,6 +186,11 @@ static void test_free_function_wrappers_use_receiver_methods(void) {
   ASSERT_TRUE(sl_set_screen_width(sl, 12) == SL_OK,
               "wrapper screen width failed");
   ASSERT_TRUE(sl_set_bounds(sl, 1, 2, 12, 4) == SL_OK, "wrapper bounds failed");
+  ASSERT_TRUE(sl_set_prompt_queue(sl, 1, 4, 2) == SL_OK,
+              "wrapper prompt queue failed");
+  ASSERT_TRUE(sl_set_prompt_queue_theme(sl, SL_PROMPT_QUEUE_THEME_ACCENT) ==
+                  SL_OK,
+              "wrapper prompt queue theme failed");
   ASSERT_TRUE(sl_set_buffer(sl, "draft") == SL_OK, "wrapper set_buffer failed");
   ASSERT_TRUE(strcmp(sl_buffer(sl), "draft") == 0, "wrapper buffer mismatch");
   ASSERT_TRUE(sl_set_cursor(sl, 2) == SL_OK, "wrapper set_cursor failed");
@@ -252,6 +267,11 @@ static void test_invalid_config_is_rejected(void) {
   sl_config_init(&cfg);
   cfg.bounded = -1;
   ASSERT_TRUE(sl_create_with_config(&cfg) == NULL, "negative bounded accepted");
+  sl_config_init(&cfg);
+  cfg.prompt_queue = 1;
+  cfg.bounded = 0;
+  ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
+              "unbounded prompt queue accepted");
   PASS();
 }
 
@@ -279,6 +299,13 @@ static void test_invalid_receiver_arguments(void) {
   ASSERT_TRUE(sl_insert(NULL, "x") == SL_ERROR_INVALID, "NULL insert accepted");
   ASSERT_TRUE(sl_set_buffer(NULL, "x") == SL_ERROR_INVALID,
               "NULL set_buffer accepted");
+  ASSERT_TRUE(sl_next_prompt(NULL, "p> ", NULL) == NULL,
+              "NULL next_prompt accepted");
+  ASSERT_TRUE(sl_set_prompt_queue(NULL, 1, 1, 1) == SL_ERROR_INVALID,
+              "NULL prompt queue accepted");
+  ASSERT_TRUE(sl_set_prompt_queue_theme(NULL, SL_PROMPT_QUEUE_THEME_PLAIN) ==
+                  SL_ERROR_INVALID,
+              "NULL prompt queue theme accepted");
   ASSERT_TRUE(sl_buffer(NULL) == NULL, "NULL buffer returned text");
   ASSERT_TRUE(sl_cursor(NULL) == 0, "NULL cursor returned offset");
   ASSERT_TRUE(sl_set_cursor(NULL, 0) == SL_ERROR_INVALID,
@@ -301,6 +328,11 @@ static void test_invalid_receiver_arguments(void) {
               "negative screen width accepted");
   ASSERT_TRUE(sl->set_bounds(sl, -1, 0, 1, 1) == SL_ERROR_INVALID,
               "negative bound accepted");
+  ASSERT_TRUE(sl->set_prompt_queue(sl, 1, 1, 1) == SL_ERROR_INVALID,
+              "unbounded prompt queue enabled");
+  ASSERT_TRUE(sl->set_prompt_queue_theme(sl, (sl_prompt_queue_theme_t)99) ==
+                  SL_ERROR_INVALID,
+              "invalid prompt queue theme accepted");
   ASSERT_TRUE(sl->bind_key(sl, SL_KEY_NONE, NULL, NULL) == SL_ERROR_INVALID,
               "SL_KEY_NONE binding accepted");
   ASSERT_TRUE(sl->insert(sl, NULL) == SL_ERROR_INVALID,
@@ -1625,6 +1657,109 @@ static int run_pty_key_binding_case(const char *input, sl_key_t key,
   return 0;
 }
 
+static int run_pty_prompt_queue_case(const char *input,
+                                     sl_prompt_queue_theme_t theme,
+                                     int expected_prompts, char *terminal,
+                                     size_t terminal_cap, char *result,
+                                     size_t result_cap, int *exit_status) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0 ||
+      pipe(result_pipe) != 0)
+    return -1;
+  pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char output[512];
+    size_t used;
+    int i;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 40;
+    cfg.screen_height = 8;
+    cfg.bounded = 1;
+    cfg.prompt_queue = 1;
+    cfg.prompt_queue_max_entries = 8;
+    cfg.prompt_queue_preview_entries = 1;
+    cfg.prompt_queue_theme = theme;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    used = 0;
+    output[0] = '\0';
+    for (i = 0; i < expected_prompts; i++) {
+      char *line;
+      sl_prompt_source_t source;
+      int written;
+      source = SL_PROMPT_SOURCE_NONE;
+      line = sl_next_prompt(sl, "chat> ", &source);
+      if (!line)
+        _exit(3);
+      written = snprintf(output + used, sizeof(output) - used, "%s%d:%s",
+                         i == 0 ? "" : "|", (int)source, line);
+      sl_free_string(sl, line);
+      if (written < 0 || (size_t)written >= sizeof(output) - used)
+        _exit(4);
+      used += (size_t)written;
+    }
+    (void)write(result_pipe[1], output, used);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "chat> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n <= 0)
+      return -1;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    if (terminal_len >= terminal_cap - 1)
+      return -1;
+  }
+  if (write(master_fd, input, strlen(input)) != (ssize_t)strlen(input))
+    return -1;
+  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  if (n <= 0)
+    return -1;
+  result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+  } while (n > 0 && terminal_len < terminal_cap - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  *exit_status = status;
+  return 0;
+}
+
 static int termios_same_observable(const struct termios *a,
                                    const struct termios *b) {
   int i;
@@ -2224,6 +2359,74 @@ static void test_key_binding_tab_inserts_text(void) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "aCOMPb") == 0, "TAB binding result mismatch");
+  PASS();
+}
+
+static void test_prompt_queue_dispatches_fifo_with_themes(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue previews and dispatches FIFO across themes");
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\tthird\r",
+                                        SL_PROMPT_QUEUE_THEME_PLAIN, 3,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "plain prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "plain prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:third|2:first|2:second") == 0,
+              "plain prompt queue dispatch order mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "Queued (2)"),
+              "plain queue count missing");
+  ASSERT_TRUE(contains_bytes(terminal, "1. first"),
+              "plain FIFO preview missing");
+  ASSERT_TRUE(contains_bytes(terminal, "... 1 more"),
+              "plain overflow count missing");
+
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_QUEUE_THEME_ACCENT, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "accent prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "accent prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "accent prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "[ queued: 1 >>") &&
+                  contains_bytes(terminal, "\033[36m"),
+              "accent queue treatment missing");
+
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_QUEUE_THEME_RICED, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "riced prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "riced prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "riced prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "<< queue: 1 >>") &&
+                  contains_bytes(terminal, "\033[1;95m"),
+              "riced queue treatment missing");
+  PASS();
+}
+
+static void test_prompt_queue_alt_e_recalls_newest(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("Alt-E recalls the newest queued prompt into the editor");
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\t\033e\r",
+                                        SL_PROMPT_QUEUE_THEME_PLAIN, 2,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "Alt-E prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "Alt-E prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "Alt-E did not restore queue tail");
+  ASSERT_TRUE(contains_bytes(terminal, "Queued (1)"),
+              "Alt-E did not redraw reduced queue count");
   PASS();
 }
 
@@ -4742,6 +4945,16 @@ static void test_key_binding_tab_inserts_text(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_prompt_queue_dispatches_fifo_with_themes(void) {
+  TEST("prompt queue previews and dispatches FIFO across themes");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_prompt_queue_alt_e_recalls_newest(void) {
+  TEST("Alt-E recalls the newest queued prompt into the editor");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_key_binding_alt_m_inserts_text(void) {
   TEST("key binding Alt-M inserts text");
   printf("SKIP\n");
@@ -4988,6 +5201,8 @@ int main(void) {
   test_bracketed_paste_stops_at_line_max();
   test_tab_render_expands_beyond_line_bytes();
   test_key_binding_tab_inserts_text();
+  test_prompt_queue_dispatches_fifo_with_themes();
+  test_prompt_queue_alt_e_recalls_newest();
   test_key_binding_alt_m_inserts_text();
   test_key_binding_f1_submits();
   test_key_binding_can_edit_buffer_and_submit();

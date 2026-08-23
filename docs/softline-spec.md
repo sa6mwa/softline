@@ -102,6 +102,27 @@ Bounded mode is intended for alternate-screen applications such as chat-style
 interfaces. In that mode, `print_above()` streams output through the area above
 the prompt without overwriting the active input buffer.
 
+### Bounded Prompt Queue
+
+Bounded handles can opt into a prompt queue through configuration or
+`set_prompt_queue()`. The queue is intentionally unavailable for normal and
+non-TTY prompt paths. Tab moves a nonempty active editor into the queue and
+clears the editor; Tab on an empty editor does nothing. Alt-E removes the most
+recent queue entry and restores it to the active editor for editing.
+
+`next_prompt()` is the dispatch boundary. It removes an existing queue entry in
+FIFO order before opening the editor, reporting `SL_PROMPT_SOURCE_QUEUED`; when
+the queue is empty it acts like `readline()` and reports
+`SL_PROMPT_SOURCE_DIRECT` for submitted text. Existing `readline()` callers
+remain direct-only.
+
+While a bounded editor is active, the renderer owns a queue panel above it. The
+panel shows a total count plus a capped oldest-first preview list, and supports
+the `plain`, `accent`, and `riced` built-in themes. It is not built with
+`print_above()` because queue entries must be removable and must reflow with the
+active editor. Application key bindings retain precedence over the Tab and
+Alt-E defaults.
+
 ## Current Extension Points
 
 ### Key Bindings

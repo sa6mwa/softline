@@ -149,6 +149,23 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   if (!lua_isnil(L, -1))
     config->bounded = lua_toboolean(L, -1);
   lua_pop(L, 1);
+  lua_getfield(L, index, "prompt_queue");
+  if (!lua_isnil(L, -1))
+    config->prompt_queue = lua_toboolean(L, -1);
+  lua_pop(L, 1);
+  lua_getfield(L, index, "prompt_queue_max_entries");
+  if (!lua_isnil(L, -1))
+    config->prompt_queue_max_entries = (int)luaL_checkinteger(L, -1);
+  lua_pop(L, 1);
+  lua_getfield(L, index, "prompt_queue_preview_entries");
+  if (!lua_isnil(L, -1))
+    config->prompt_queue_preview_entries = (int)luaL_checkinteger(L, -1);
+  lua_pop(L, 1);
+  lua_getfield(L, index, "prompt_queue_theme");
+  if (!lua_isnil(L, -1))
+    config->prompt_queue_theme =
+        (sl_prompt_queue_theme_t)luaL_checkinteger(L, -1);
+  lua_pop(L, 1);
 
   lua_getfield(L, index, "history_max_len");
   if (!lua_isnil(L, -1))
@@ -217,6 +234,26 @@ static int softline_lua_readline(lua_State *L) {
   return 1;
 }
 
+static int softline_lua_next_prompt(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *prompt;
+  char *line;
+  sl_prompt_source_t source;
+  handle = softline_lua_check(L, 1);
+  prompt = luaL_optstring(L, 2, NULL);
+  source = SL_PROMPT_SOURCE_NONE;
+  line = sl_next_prompt(handle->sl, prompt, &source);
+  if (!line) {
+    lua_pushnil(L);
+    lua_pushinteger(L, sl_last_readline_status(handle->sl));
+    return 2;
+  }
+  lua_pushstring(L, line);
+  lua_pushinteger(L, source);
+  sl_free_string(handle->sl, line);
+  return 2;
+}
+
 static int softline_lua_history_add(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -260,6 +297,23 @@ static int softline_lua_set_screen_width(lua_State *L) {
   handle = softline_lua_check(L, 1);
   return softline_lua_status(
       L, sl_set_screen_width(handle->sl, (int)luaL_checkinteger(L, 2)));
+}
+
+static int softline_lua_set_prompt_queue(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(
+      L, sl_set_prompt_queue(handle->sl, lua_toboolean(L, 2),
+                             (int)luaL_checkinteger(L, 3),
+                             (int)luaL_checkinteger(L, 4)));
+}
+
+static int softline_lua_set_prompt_queue_theme(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(
+      L, sl_set_prompt_queue_theme(
+             handle->sl, (sl_prompt_queue_theme_t)luaL_checkinteger(L, 2)));
 }
 
 static int softline_lua_insert(lua_State *L) {
@@ -434,12 +488,15 @@ static int softline_lua_print_above(lua_State *L) {
 
 static const luaL_Reg softline_lua_methods[] = {
     {"readline", softline_lua_readline},
+    {"next_prompt", softline_lua_next_prompt},
     {"history_add", softline_lua_history_add},
     {"history_set_max_len", softline_lua_history_set_max_len},
     {"history_save", softline_lua_history_save},
     {"history_load", softline_lua_history_load},
     {"set_bounds", softline_lua_set_bounds},
     {"set_screen_width", softline_lua_set_screen_width},
+    {"set_prompt_queue", softline_lua_set_prompt_queue},
+    {"set_prompt_queue_theme", softline_lua_set_prompt_queue_theme},
     {"insert", softline_lua_insert},
     {"set_buffer", softline_lua_set_buffer},
     {"buffer", softline_lua_buffer},
@@ -482,6 +539,18 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "READLINE_ERROR");
   lua_pushinteger(L, SL_OK);
   lua_setfield(L, -2, "OK");
+  lua_pushinteger(L, SL_PROMPT_SOURCE_NONE);
+  lua_setfield(L, -2, "PROMPT_SOURCE_NONE");
+  lua_pushinteger(L, SL_PROMPT_SOURCE_DIRECT);
+  lua_setfield(L, -2, "PROMPT_SOURCE_DIRECT");
+  lua_pushinteger(L, SL_PROMPT_SOURCE_QUEUED);
+  lua_setfield(L, -2, "PROMPT_SOURCE_QUEUED");
+  lua_pushinteger(L, SL_PROMPT_QUEUE_THEME_PLAIN);
+  lua_setfield(L, -2, "PROMPT_QUEUE_THEME_PLAIN");
+  lua_pushinteger(L, SL_PROMPT_QUEUE_THEME_ACCENT);
+  lua_setfield(L, -2, "PROMPT_QUEUE_THEME_ACCENT");
+  lua_pushinteger(L, SL_PROMPT_QUEUE_THEME_RICED);
+  lua_setfield(L, -2, "PROMPT_QUEUE_THEME_RICED");
   lua_pushinteger(L, SL_KEY_CTRL_C);
   lua_setfield(L, -2, "KEY_CTRL_C");
   lua_pushinteger(L, SL_KEY_ACTION_PASS);

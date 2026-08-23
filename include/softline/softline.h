@@ -189,6 +189,26 @@ typedef enum sl_readline_status {
   SL_READLINE_ERROR = 5
 } sl_readline_status_t;
 
+/** How a text value returned by next_prompt() entered the application. */
+typedef enum sl_prompt_source {
+  /** No prompt text was returned. */
+  SL_PROMPT_SOURCE_NONE = 0,
+  /** The user submitted the active editor with Enter. */
+  SL_PROMPT_SOURCE_DIRECT = 1,
+  /** The user previously queued the text with Tab. */
+  SL_PROMPT_SOURCE_QUEUED = 2
+} sl_prompt_source_t;
+
+/** Renderer-owned visual treatment for the bounded prompt queue panel. */
+typedef enum sl_prompt_queue_theme {
+  /** Compact, uncoloured text. */
+  SL_PROMPT_QUEUE_THEME_PLAIN = 0,
+  /** A restrained cyan accent treatment. */
+  SL_PROMPT_QUEUE_THEME_ACCENT = 1,
+  /** A vivid magenta terminal-rice treatment. */
+  SL_PROMPT_QUEUE_THEME_RICED = 2
+} sl_prompt_queue_theme_t;
+
 /**
  * Editor configuration initialized by sl_config_init().
  *
@@ -215,6 +235,14 @@ typedef struct sl_config {
   int history_max_len;
   /** Maximum editable line length in bytes; default is 4096. */
   size_t line_max_len;
+  /** Non-zero enables Tab queueing in bounded prompt mode. */
+  int prompt_queue;
+  /** Maximum queued prompts; default is 64 when queueing is enabled. */
+  int prompt_queue_max_entries;
+  /** Maximum FIFO previews shown above the active editor; default is 3. */
+  int prompt_queue_preview_entries;
+  /** Built-in visual treatment for the queue panel. */
+  sl_prompt_queue_theme_t prompt_queue_theme;
 } sl_config_t;
 
 /**
@@ -285,6 +313,14 @@ struct sl {
   const char *(*last_error)(const sl_t *self);
   /** Private implementation pointer; callers must not read or modify it. */
   void *impl;
+  /** Return the next queued prompt FIFO, or read a direct prompt when empty. */
+  char *(*next_prompt)(sl_t *self, const char *prompt,
+                       sl_prompt_source_t *source);
+  /** Enable/configure bounded-mode Tab queueing for this handle. */
+  int (*set_prompt_queue)(sl_t *self, int enabled, int max_entries,
+                          int preview_entries);
+  /** Select one of the built-in queue panel themes. */
+  int (*set_prompt_queue_theme)(sl_t *self, sl_prompt_queue_theme_t theme);
 };
 
 /**
@@ -319,6 +355,15 @@ sl_t *sl_create_with_config(const sl_config_t *config);
 char *sl_readline(sl_t *self, const char *prompt);
 
 /**
+ * Return the next application prompt. Queued prompts are returned FIFO without
+ * entering the terminal editor and set *source to SL_PROMPT_SOURCE_QUEUED.
+ * With no queued prompt this behaves as sl_readline() and sets *source to
+ * SL_PROMPT_SOURCE_DIRECT when text is submitted. source may be NULL.
+ */
+char *sl_next_prompt(sl_t *self, const char *prompt,
+                     sl_prompt_source_t *source);
+
+/**
  * Destroy a handle and restore terminal state owned by it.
  *
  * This function is NULL-safe. Do not use self or any handle-owned buffer after
@@ -349,6 +394,13 @@ int sl_set_bounds(sl_t *self, int x, int y, int width, int height);
 
 /** Set normal prompt wrapping width; zero returns to terminal-width probing. */
 int sl_set_screen_width(sl_t *self, int width);
+
+/** Enable/configure bounded-mode Tab queueing; disabling clears the queue. */
+int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
+                        int preview_entries);
+
+/** Select a built-in bounded prompt queue panel theme. */
+int sl_set_prompt_queue_theme(sl_t *self, sl_prompt_queue_theme_t theme);
 
 /** Register or clear an idle callback for this handle. */
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,

@@ -31,6 +31,10 @@ config table mirrors `sl_config_t`:
 - `screen_width`
 - `screen_height`
 - `bounded`
+- `prompt_queue`
+- `prompt_queue_max_entries`
+- `prompt_queue_preview_entries`
+- `prompt_queue_theme`
 - `history_max_len`
 - `line_max_len`
 
@@ -41,6 +45,9 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
 
 - `sl:readline([prompt])` returns a submitted string, or `nil, status` for EOF,
   cancellation, interrupt, or error.
+- `sl:next_prompt([prompt])` returns `line, source`, dispatching queued Tab
+  entries FIFO before opening a direct editor. On no result it returns
+  `nil, status`.
 - `sl:history_add(line)` adds one history entry.
 - `sl:history_set_max_len(max_len)` changes the retained history cap; `0`
   clears and disables history.
@@ -50,6 +57,11 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
   width or height uses dynamic terminal bounds.
 - `sl:set_screen_width(width)` sets normal prompt wrapping width; `0` returns
   to terminal-width probing.
+- `sl:set_prompt_queue(enabled, max_entries, preview_entries)` enables the
+  bounded chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
+  queued entry into the editor.
+- `sl:set_prompt_queue_theme(theme)` selects `PROMPT_QUEUE_THEME_PLAIN`,
+  `PROMPT_QUEUE_THEME_ACCENT`, or `PROMPT_QUEUE_THEME_RICED`.
 - `sl:insert(text)` inserts text bytes at the active cursor.
 - `sl:set_buffer(text)` replaces the active buffer and moves the cursor to the
   end.

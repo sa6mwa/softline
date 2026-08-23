@@ -74,6 +74,7 @@ static int print_message(sl_t *sl, const char *text) {
 int main(void) {
   sl_t *sl;
   char *line;
+  sl_prompt_source_t source;
 
   enter_alt_screen();
 
@@ -83,16 +84,20 @@ int main(void) {
     return 1;
   }
   (void)sl->set_bounds(sl, 0, 0, 0, 0);
+  (void)sl->set_prompt_queue(sl, 1, 64, 3);
+  (void)sl->set_prompt_queue_theme(sl, SL_PROMPT_QUEUE_THEME_ACCENT);
 
-  (void)print_message(sl, "softline chat example. Type exit or press Ctrl-D.");
+  (void)print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
+                          "the newest queued prompt.");
   for (;;) {
-    line = sl->readline(sl, "chat> ");
+    line = sl->next_prompt(sl, "chat> ", &source);
     if (!line)
       break;
     if (strcmp(line, "exit") == 0) {
       sl->free_string(sl, line);
       break;
     }
+    (void)source;
     (void)print_message(sl, line);
     sl->free_string(sl, line);
   }
