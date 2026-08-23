@@ -101,6 +101,7 @@ line-oriented input/output.
 ```sh
 make run-simple
 make run-chat
+make run-chat-plain
 make run-chat-riced
 make run-chat-monogreen
 make run-chat-monochrome

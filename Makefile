@@ -59,6 +59,10 @@ run-chat: build-debug ## Run C chat example (Gruvbox by default; THEME=... overr
 run-chat-riced: build-debug ## Run C chat example with the riced theme
 	@SOFTLINE_PROMPT_THEME="riced" ./build/debug/examples/example_chat
 
+.PHONY: run-chat-plain
+run-chat-plain: build-debug ## Run C chat example with the uncoloured plain theme
+	@SOFTLINE_PROMPT_THEME="plain" ./build/debug/examples/example_chat
+
 .PHONY: run-chat-monogreen
 run-chat-monogreen: build-debug ## Run C chat example with the monogreen theme
 	@SOFTLINE_PROMPT_THEME="monogreen" ./build/debug/examples/example_chat
