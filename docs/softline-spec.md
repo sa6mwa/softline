@@ -118,10 +118,11 @@ remain direct-only.
 
 While a bounded editor is active, the renderer owns a queue panel above it. The
 panel shows a total count plus a capped oldest-first preview list, and supports
-the `plain`, `accent`, and `riced` built-in themes. It is not built with
-`print_above()` because queue entries must be removable and must reflow with the
-active editor. Application key bindings retain precedence over the Tab and
-Alt-E defaults.
+the `plain`, `accent`, and `riced` built-in themes. The selected prompt theme
+also styles the active editor in both normal and bounded modes. The panel is
+not built with `print_above()` because queue entries must be removable and must
+reflow with the active editor. Application key bindings retain precedence over
+the Tab and Alt-E defaults.
 
 ## Current Extension Points
 

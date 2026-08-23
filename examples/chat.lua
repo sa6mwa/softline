@@ -5,7 +5,7 @@ io.write("\27[?1049h\27[2J\27[H")
 local sl = softline.new()
 sl:set_bounds(0, 0, 0, 0)
 sl:set_prompt_queue(true, 64, 3)
-sl:set_prompt_queue_theme(softline.PROMPT_QUEUE_THEME_ACCENT)
+sl:set_prompt_theme(softline.PROMPT_THEME_ACCENT)
 sl:bind_key(softline.KEY_CTRL_C, function()
   return softline.KEY_ACTION_CANCEL
 end)

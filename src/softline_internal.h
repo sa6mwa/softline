@@ -39,7 +39,6 @@ typedef struct sl_prompt_queue {
   int max_entries;
   int preview_entries;
   int enabled;
-  sl_prompt_queue_theme_t theme;
 } sl_prompt_queue_t;
 
 typedef struct sl_impl {
@@ -61,6 +60,7 @@ typedef struct sl_impl {
   struct termios original_termios;
   sl_history_t history;
   sl_prompt_queue_t prompt_queue;
+  sl_prompt_theme_t prompt_theme;
   int history_index;
   char *history_edit;
   int bracketed_paste;

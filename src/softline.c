@@ -1561,6 +1561,14 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
   return 0;
 }
 
+static const char *sl_prompt_theme_style(sl_prompt_theme_t theme) {
+  if (theme == SL_PROMPT_THEME_ACCENT)
+    return "\033[1;36m";
+  if (theme == SL_PROMPT_THEME_RICED)
+    return "\033[1;95m";
+  return "";
+}
+
 static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
                                         int width) {
   sl_impl_t *impl;
@@ -1582,18 +1590,18 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   entry_prefix = "  ";
   style = "";
   reset = "";
-  if (queue->theme == SL_PROMPT_QUEUE_THEME_ACCENT) {
+  if (impl->prompt_theme == SL_PROMPT_THEME_ACCENT) {
     header_prefix = "[ queued: ";
     entry_prefix = " > ";
-    style = "\033[36m";
+    style = sl_prompt_theme_style(impl->prompt_theme);
     reset = "\033[0m";
-  } else if (queue->theme == SL_PROMPT_QUEUE_THEME_RICED) {
+  } else if (impl->prompt_theme == SL_PROMPT_THEME_RICED) {
     header_prefix = "<< queue: ";
     entry_prefix = " :: ";
-    style = "\033[1;95m";
+    style = sl_prompt_theme_style(impl->prompt_theme);
     reset = "\033[0m";
   }
-  if (queue->theme == SL_PROMPT_QUEUE_THEME_PLAIN)
+  if (impl->prompt_theme == SL_PROMPT_THEME_PLAIN)
     (void)snprintf(header, sizeof(header), "%s%d)", header_prefix, queue->len);
   else
     (void)snprintf(header, sizeof(header), "%s%d >>", header_prefix,
@@ -1655,6 +1663,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
   int col;
   int prompt_width;
   int indent;
+  const char *prompt_style;
   size_t i;
   memset(render, 0, sizeof(*render));
   impl = sl_impl(self);
@@ -1668,11 +1677,15 @@ static int sl_render_build(sl_t *self, const char *prompt,
   if (sl_render_append_queue_panel(self, render, width) != 0)
     return -1;
   render->editor_first = render->count;
+  prompt_style = sl_prompt_theme_style(impl->prompt_theme);
   prompt_width = prompt ? sl_text_width(prompt, strlen(prompt)) : 0;
   if (sl_render_new_row_at(render, 0, prompt_width) != 0)
     return -1;
   if (prompt && prompt[0] != '\0' &&
-      sl_row_append(&render->rows[0], prompt, strlen(prompt)) != 0)
+      (sl_row_append(&render->rows[render->editor_first], prompt_style,
+                     strlen(prompt_style)) != 0 ||
+       sl_row_append(&render->rows[render->editor_first], prompt,
+                     strlen(prompt)) != 0))
     return -1;
   indent = prompt_width;
   if (indent >= width)
@@ -2017,6 +2030,9 @@ static int sl_render_finish(sl_t *self) {
   impl = sl_impl(self);
   if (!impl)
     return -1;
+  if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN &&
+      sl_wstr(impl->output_fd, "\033[0m") != 0)
+    return -1;
   if (sl_bounded_mode(impl)) {
     if (sl_prompt_queue_enabled(impl) && sl_render_clear_active(self) != 0)
       return -1;
@@ -2048,6 +2064,9 @@ static int sl_render_clear_active(sl_t *self) {
         return -1;
     }
     sl_render_store_clear(impl);
+    if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN &&
+        sl_wstr(impl->output_fd, "\033[0m") != 0)
+      return -1;
     return 0;
   }
   rows = impl->rendered_rows;
@@ -2065,6 +2084,9 @@ static int sl_render_clear_active(sl_t *self) {
       sl_wchar(impl->output_fd, '\r') != 0)
     return -1;
   sl_render_store_clear(impl);
+  if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN &&
+      sl_wstr(impl->output_fd, "\033[0m") != 0)
+    return -1;
   return 0;
 }
 
@@ -3184,16 +3206,14 @@ static int sl_set_prompt_queue_method(sl_t *self, int enabled, int max_entries,
   return SL_OK;
 }
 
-static int sl_set_prompt_queue_theme_method(sl_t *self,
-                                            sl_prompt_queue_theme_t theme) {
+static int sl_set_prompt_theme_method(sl_t *self, sl_prompt_theme_t theme) {
   sl_impl_t *impl;
   impl = sl_impl(self);
-  if (!impl || theme < SL_PROMPT_QUEUE_THEME_PLAIN ||
-      theme > SL_PROMPT_QUEUE_THEME_RICED) {
-    sl_set_error(self, "invalid prompt queue theme");
+  if (!impl || theme < SL_PROMPT_THEME_PLAIN || theme > SL_PROMPT_THEME_RICED) {
+    sl_set_error(self, "invalid prompt theme");
     return SL_ERROR_INVALID;
   }
-  impl->prompt_queue.theme = theme;
+  impl->prompt_theme = theme;
   return SL_OK;
 }
 
@@ -3258,7 +3278,7 @@ void sl_config_init(sl_config_t *config) {
   config->prompt_queue = 0;
   config->prompt_queue_max_entries = SL_PROMPT_QUEUE_DEFAULT_MAX;
   config->prompt_queue_preview_entries = SL_PROMPT_QUEUE_DEFAULT_PREVIEWS;
-  config->prompt_queue_theme = SL_PROMPT_QUEUE_THEME_PLAIN;
+  config->prompt_theme = SL_PROMPT_THEME_PLAIN;
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
@@ -3274,8 +3294,8 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
       config->screen_height < 0 || config->bounded < 0 ||
       config->prompt_queue < 0 || config->prompt_queue_max_entries < 1 ||
       config->prompt_queue_preview_entries < 1 ||
-      config->prompt_queue_theme < SL_PROMPT_QUEUE_THEME_PLAIN ||
-      config->prompt_queue_theme > SL_PROMPT_QUEUE_THEME_RICED ||
+      config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
+      config->prompt_theme > SL_PROMPT_THEME_RICED ||
       (config->prompt_queue && !config->bounded &&
        config->screen_height == 0) ||
       config->line_max_len == 0 || config->line_max_len > (size_t)INT_MAX - 2)
@@ -3311,7 +3331,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->impl = impl;
   self->next_prompt = sl_next_prompt_method;
   self->set_prompt_queue = sl_set_prompt_queue_method;
-  self->set_prompt_queue_theme = sl_set_prompt_queue_theme_method;
+  self->set_prompt_theme = sl_set_prompt_theme_method;
   impl->input_fd = config->input_fd >= 0 ? config->input_fd : STDIN_FILENO;
   impl->output_fd = config->output_fd >= 0 ? config->output_fd : STDOUT_FILENO;
   impl->screen_x = config->screen_x;
@@ -3325,7 +3345,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->prompt_queue.enabled = config->prompt_queue;
   impl->prompt_queue.max_entries = config->prompt_queue_max_entries;
   impl->prompt_queue.preview_entries = config->prompt_queue_preview_entries;
-  impl->prompt_queue.theme = config->prompt_queue_theme;
+  impl->prompt_theme = config->prompt_theme;
   impl->history.max_len = config->history_max_len;
   impl->history_index = -1;
   if (sl_buf_reserve(self, 1) != 0) {
@@ -3416,10 +3436,10 @@ int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
   return self->set_prompt_queue(self, enabled, max_entries, preview_entries);
 }
 
-int sl_set_prompt_queue_theme(sl_t *self, sl_prompt_queue_theme_t theme) {
-  if (!self || !self->set_prompt_queue_theme)
+int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme) {
+  if (!self || !self->set_prompt_theme)
     return SL_ERROR_INVALID;
-  return self->set_prompt_queue_theme(self, theme);
+  return self->set_prompt_theme(self, theme);
 }
 
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,

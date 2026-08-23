@@ -199,15 +199,15 @@ typedef enum sl_prompt_source {
   SL_PROMPT_SOURCE_QUEUED = 2
 } sl_prompt_source_t;
 
-/** Renderer-owned visual treatment for the bounded prompt queue panel. */
-typedef enum sl_prompt_queue_theme {
-  /** Compact, uncoloured text. */
-  SL_PROMPT_QUEUE_THEME_PLAIN = 0,
+/** Renderer-owned visual treatment for an interactive prompt UI. */
+typedef enum sl_prompt_theme {
+  /** Compact, uncoloured prompt UI. */
+  SL_PROMPT_THEME_PLAIN = 0,
   /** A restrained cyan accent treatment. */
-  SL_PROMPT_QUEUE_THEME_ACCENT = 1,
+  SL_PROMPT_THEME_ACCENT = 1,
   /** A vivid magenta terminal-rice treatment. */
-  SL_PROMPT_QUEUE_THEME_RICED = 2
-} sl_prompt_queue_theme_t;
+  SL_PROMPT_THEME_RICED = 2
+} sl_prompt_theme_t;
 
 /**
  * Editor configuration initialized by sl_config_init().
@@ -241,8 +241,8 @@ typedef struct sl_config {
   int prompt_queue_max_entries;
   /** Maximum FIFO previews shown above the active editor; default is 3. */
   int prompt_queue_preview_entries;
-  /** Built-in visual treatment for the queue panel. */
-  sl_prompt_queue_theme_t prompt_queue_theme;
+  /** Built-in visual treatment for interactive prompt UI. */
+  sl_prompt_theme_t prompt_theme;
 } sl_config_t;
 
 /**
@@ -319,8 +319,8 @@ struct sl {
   /** Enable/configure bounded-mode Tab queueing for this handle. */
   int (*set_prompt_queue)(sl_t *self, int enabled, int max_entries,
                           int preview_entries);
-  /** Select one of the built-in queue panel themes. */
-  int (*set_prompt_queue_theme)(sl_t *self, sl_prompt_queue_theme_t theme);
+  /** Select one of the built-in interactive prompt themes. */
+  int (*set_prompt_theme)(sl_t *self, sl_prompt_theme_t theme);
 };
 
 /**
@@ -399,8 +399,8 @@ int sl_set_screen_width(sl_t *self, int width);
 int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
                         int preview_entries);
 
-/** Select a built-in bounded prompt queue panel theme. */
-int sl_set_prompt_queue_theme(sl_t *self, sl_prompt_queue_theme_t theme);
+/** Select a built-in interactive prompt theme. */
+int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
 
 /** Register or clear an idle callback for this handle. */
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,

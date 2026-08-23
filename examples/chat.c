@@ -85,7 +85,7 @@ int main(void) {
   }
   (void)sl->set_bounds(sl, 0, 0, 0, 0);
   (void)sl->set_prompt_queue(sl, 1, 64, 3);
-  (void)sl->set_prompt_queue_theme(sl, SL_PROMPT_QUEUE_THEME_ACCENT);
+  (void)sl->set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT);
 
   (void)print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
                           "the newest queued prompt.");

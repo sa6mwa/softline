@@ -61,7 +61,7 @@ Currently implemented:
   draft, Alt-E recalls the newest queued draft for editing, and
   `next_prompt()` returns queued work before opening a direct editor while
   identifying whether the result was queued or direct. The renderer ships
-  plain, accent, and riced queue-panel themes.
+  plain, accent, and riced prompt themes.
 - UTF-8 input is preserved, common Unicode clusters are kept intact by
   cursor/delete operations, and rendering accounts for combining marks, East
   Asian wide characters, and common emoji widths.
@@ -119,7 +119,7 @@ sl_prompt_source_t source;
 
 sl->set_bounds(sl, 0, 0, 0, 0);
 sl->set_prompt_queue(sl, 1, 64, 3);
-sl->set_prompt_queue_theme(sl, SL_PROMPT_QUEUE_THEME_ACCENT);
+sl->set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT);
 
 for (;;) {
   char *line = sl->next_prompt(sl, "chat> ", &source);
@@ -134,9 +134,10 @@ Tab queues a nonempty active editor and leaves a FIFO preview panel above the
 current input; Tab on an empty editor is a no-op. The panel shows a total count
 and a bounded number of oldest-first previews. Alt-E removes the newest queued
 entry and restores it to the editor. Explicit key bindings continue to override
-these defaults. Queue panel appearance is renderer-owned so it remains safe
-with bounded layout: `plain` is uncoloured, `accent` uses cyan, and `riced`
-uses vivid magenta styling.
+these defaults. Prompt appearance is renderer-owned so it remains safe with
+layout: `plain` is uncoloured, `accent` uses cyan, and `riced` uses vivid
+magenta styling. The selected theme applies to every interactive prompt,
+including normal readline prompts and bounded queue panels.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.
