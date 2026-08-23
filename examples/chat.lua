@@ -21,6 +21,8 @@ end
 local interactive = is_interactive_terminal()
 local sl
 local next_peer_message_at
+local status_started_at
+local status_phase
 local peer_messages = {
   "I found a calm corner of the conversation.",
   "The kettle is on; take your time.",
@@ -40,8 +42,19 @@ local function print_reply(source, line)
   print_message({ label, "I read back: ", line, "\n" })
 end
 
+local function update_status_presentation(now)
+  local phase = math.floor((now - status_started_at) / 5) % 8
+  if phase == status_phase then
+    return
+  end
+  assert(sl:set_status_spinner(phase == 1 or phase == 3))
+  assert(sl:set_status_busy(phase < 5 or phase == 6))
+  status_phase = phase
+end
+
 local function print_peer_message()
   local now = os.time()
+  update_status_presentation(now)
   if now < next_peer_message_at then
     return
   end
@@ -69,8 +82,11 @@ local function run()
     end))
     math.randomseed(os.time())
     next_peer_message_at = os.time() + 2
+    status_started_at = os.time()
+    status_phase = nil
+    update_status_presentation(status_started_at)
     assert(sl:set_idle_callback(print_peer_message))
-    print_message({ "softline Lua chat example. Tab queues; Alt-E recalls the newest queued prompt.\n" })
+    print_message({ "softline Lua chat example. Tab queues; Alt-E recalls the newest queued prompt. Status cycles every five seconds.\n" })
   end
 
   while true do

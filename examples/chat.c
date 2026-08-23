@@ -101,23 +101,47 @@ static int print_reply(sl_t *sl, sl_prompt_source_t source, const char *text) {
   return sl->print_above(sl, next_message_chunk, &stream);
 }
 
-struct peer_state {
+struct chat_idle_state {
   time_t next_message_at;
+  time_t status_started_at;
+  int status_phase;
 };
 
-static void print_peer_message(sl_t *sl, void *userdata) {
+static int update_status_presentation(sl_t *sl, struct chat_idle_state *state,
+                                      time_t now) {
+  int busy;
+  int spinner;
+  int phase;
+  if (!sl || !state)
+    return SL_ERROR_INVALID;
+  if (state->status_started_at == (time_t)0)
+    state->status_started_at = now;
+  phase = (int)(((now - state->status_started_at) / 5) % 8);
+  if (phase == state->status_phase)
+    return SL_OK;
+  spinner = phase == 1 || phase == 3;
+  busy = phase < 5 || phase == 6;
+  if (sl->set_status_spinner(sl, spinner) != SL_OK ||
+      sl->set_status_busy(sl, busy) != SL_OK)
+    return SL_ERROR;
+  state->status_phase = phase;
+  return SL_OK;
+}
+
+static void run_chat_idle(sl_t *sl, void *userdata) {
   static const char *const messages[] = {
       "[peer] I found a calm corner of the conversation.",
       "[peer] The kettle is on; take your time.",
       "[peer] A small detail can change the whole picture.",
       "[peer] I am following along from the other side of the room."};
-  struct peer_state *state;
+  struct chat_idle_state *state;
   time_t now;
   size_t count;
-  state = (struct peer_state *)userdata;
+  state = (struct chat_idle_state *)userdata;
   if (!state)
     return;
   now = time(NULL);
+  (void)update_status_presentation(sl, state, now);
   if (now < state->next_message_at)
     return;
   state->next_message_at = now + 2;
@@ -141,7 +165,7 @@ int main(void) {
   char *line;
   sl_prompt_source_t source;
   sl_readline_status_t status;
-  struct peer_state peer;
+  struct chat_idle_state idle_state;
   int interactive;
   int exit_code;
 
@@ -160,9 +184,11 @@ int main(void) {
   }
   if (interactive) {
     (void)signal(SIGINT, keep_chat_on_interrupt);
-    peer.next_message_at = time(NULL) + 2;
+    idle_state.next_message_at = time(NULL) + 2;
+    idle_state.status_started_at = time(NULL);
+    idle_state.status_phase = -1;
     srand((unsigned int)(time(NULL) ^ (time_t)getpid()));
-    if (sl->set_idle_callback(sl, print_peer_message, &peer) != SL_OK) {
+    if (sl->set_idle_callback(sl, run_chat_idle, &idle_state) != SL_OK) {
       fprintf(stderr, "failed to enable simulated peer messages\n");
       sl->destroy(sl);
       return 1;
@@ -181,10 +207,17 @@ int main(void) {
     sl->destroy(sl);
     return 1;
   }
+  if (interactive &&
+      update_status_presentation(sl, &idle_state, time(NULL)) != SL_OK) {
+    fprintf(stderr, "failed to start chat status demonstration\n");
+    sl->destroy(sl);
+    return 1;
+  }
 
   if (interactive &&
       print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
-                        "the newest queued prompt.") != SL_OK) {
+                        "the newest queued prompt. Status cycles every five "
+                        "seconds.") != SL_OK) {
     (void)print_last_error(sl);
     sl->destroy(sl);
     return 1;
