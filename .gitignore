@@ -1,4 +1,5 @@
 /build/
+/stash/
 /dist/
 /.cache/
 /VERSION
