@@ -51,7 +51,8 @@ Currently implemented:
 - Long input wraps by words where possible and reflows after terminal resize.
 - Bracketed paste is enabled while editing so pasted carriage returns become
   buffer content instead of submitting the prompt.
-- Non-tty input uses a plain silent line reader and does not emit prompts.
+- Non-tty input uses a plain silent line reader and does not emit prompts;
+  streamed output uses LF line endings instead of terminal CRLF.
 - Keys such as TAB, Enter, function keys, and Alt-letter combinations can be
   bound per handle. A binding may handle the key, pass through to the built-in
   behavior, submit, cancel, interrupt, or mutate the active buffer.
@@ -86,6 +87,10 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 
 `example_chat` enters the alternate screen, keeps the prompt at the bottom of
 the terminal, and prints output through the region above the prompt.
+It labels delivered work as `[direct]` or `[queued]`; Ctrl-C cancels the active
+editor and keeps the chat open. The alternate-screen and queue UI activate only
+when both standard input and standard output are terminals, so piped use remains
+plain line-oriented input/output.
 
 ```sh
 make run-simple

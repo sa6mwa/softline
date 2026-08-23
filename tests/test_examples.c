@@ -441,14 +441,42 @@ static void test_example_chat_reflows_after_resize(const char *path) {
   PASS();
 }
 
-static void test_example_chat_leaves_alt_screen_on_ctrl_c(const char *path) {
+static void test_example_chat_dispatches_queued_prompts(const char *path) {
+  int master_fd;
+  pid_t pid;
+  char terminal[16384];
+  size_t terminal_len;
+
+  TEST("example_chat labels direct and queued dispatches");
+  pid = spawn_example(path, &master_fd, 40, 8);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "chat> ") == 0,
+              "initial prompt missing");
+  ASSERT_TRUE(write(master_fd, "queued\tcurrent\r", 15) == 15,
+              "write queue input failed");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[direct] current",
+                                  "[queued] queued") == 0,
+              "queue dispatch output missing or out of order");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[queued] queued",
+                                  "\033[?2004h") == 0,
+              "chat prompt did not resume after queued dispatch");
+  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  PASS();
+}
+
+static void test_example_chat_ctrl_c_cancels_and_continues(const char *path) {
   int master_fd;
   pid_t pid;
   char terminal[8192];
   size_t terminal_len;
-  int status;
 
-  TEST("example_chat leaves alternate screen on Ctrl-C");
+  TEST("example_chat Ctrl-C cancels and continues");
   pid = spawn_example(path, &master_fd, 40, 6);
   ASSERT_TRUE(pid > 0, "spawn failed");
   terminal_len = 0;
@@ -458,12 +486,69 @@ static void test_example_chat_leaves_alt_screen_on_ctrl_c(const char *path) {
               "initial prompt missing");
   ASSERT_TRUE(write(master_fd, "\003", 1) == 1, "write Ctrl-C failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "\033[?1049l") == 0,
-              "alternate screen was not restored");
+                            sizeof(terminal), "[cancelled]") == 0,
+              "cancel acknowledgement missing");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[cancelled]",
+                                  "\033[?2004h") == 0,
+              "chat prompt did not resume after Ctrl-C");
+  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  PASS();
+}
+
+static void test_example_chat_is_plain_without_tty(const char *path) {
+  int input_pipe[2];
+  int output_pipe[2];
+  pid_t pid;
+  char output[1024];
+  char *argv[2];
+  size_t output_len;
+  ssize_t n;
+  int status;
+
+  TEST("example_chat stays plain without terminals");
+  ASSERT_TRUE(pipe(input_pipe) == 0, "input pipe failed");
+  ASSERT_TRUE(pipe(output_pipe) == 0, "output pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    argv[0] = (char *)path;
+    argv[1] = NULL;
+    close(input_pipe[1]);
+    close(output_pipe[0]);
+    (void)dup2(input_pipe[0], STDIN_FILENO);
+    (void)dup2(output_pipe[1], STDOUT_FILENO);
+    (void)dup2(output_pipe[1], STDERR_FILENO);
+    close(input_pipe[0]);
+    close(output_pipe[1]);
+    execv(path, argv);
+    _exit(127);
+  }
+  close(input_pipe[0]);
+  close(output_pipe[1]);
+  ASSERT_TRUE(write(input_pipe[1], "hello\nexit\n", 11) == 11,
+              "write non-tty input failed");
+  close(input_pipe[1]);
+  output_len = 0;
+  while (output_len < sizeof(output) - 1) {
+    n = read(output_pipe[0], output + output_len,
+             sizeof(output) - 1 - output_len);
+    if (n < 0)
+      FAIL("read non-tty output failed");
+    if (n == 0)
+      break;
+    output_len += (size_t)n;
+  }
+  output[output_len] = '\0';
+  close(output_pipe[0]);
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
-  close(master_fd);
-  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 130,
-              "chat example did not exit as interrupted");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "non-tty chat child failed");
+  ASSERT_TRUE(strcmp(output, "[direct] hello\n") == 0,
+              "non-tty chat output mismatch");
+  ASSERT_TRUE(!contains_bytes(output, "\033["),
+              "non-tty chat emitted terminal control sequences");
   PASS();
 }
 
@@ -479,7 +564,9 @@ int main(int argc, char **argv) {
 
   test_example_simple_wraps_near_bottom(argv[1]);
   test_example_chat_reflows_after_resize(argv[2]);
-  test_example_chat_leaves_alt_screen_on_ctrl_c(argv[2]);
+  test_example_chat_dispatches_queued_prompts(argv[2]);
+  test_example_chat_ctrl_c_cancels_and_continues(argv[2]);
+  test_example_chat_is_plain_without_tty(argv[2]);
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;

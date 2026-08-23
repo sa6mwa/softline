@@ -48,6 +48,9 @@ def main():
     try:
         read_until(master, b"chat> ")
         os.write(master, b"\x03")
+        read_until(master, b"[cancelled]")
+        time.sleep(0.1)
+        os.write(master, b"exit\r")
         read_until(master, b"\x1b[?1049l")
         status = proc.wait(timeout=5.0)
         if status != 0:

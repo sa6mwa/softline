@@ -81,6 +81,27 @@ static int one_chunk_stream(sl_t *sl, void *userdata, const char **chunk,
   return SL_OK;
 }
 
+struct one_chunk_once {
+  const char *text;
+  int sent;
+};
+
+static int one_chunk_once_stream(sl_t *sl, void *userdata, const char **chunk,
+                                 size_t *len) {
+  struct one_chunk_once *stream;
+  (void)sl;
+  stream = (struct one_chunk_once *)userdata;
+  if (!stream || stream->sent) {
+    *chunk = NULL;
+    *len = 0;
+    return SL_OK;
+  }
+  stream->sent = 1;
+  *chunk = stream->text;
+  *len = strlen(stream->text);
+  return SL_OK;
+}
+
 static int failing_stream(sl_t *sl, void *userdata, const char **chunk,
                           size_t *len) {
   (void)sl;
@@ -798,6 +819,35 @@ static void test_stream_failures_are_reported(void) {
               "closed output fd did not fail");
   sl->destroy(sl);
   close(out_pipe[0]);
+  PASS();
+}
+
+static void test_print_above_uses_lf_for_non_tty_output(void) {
+  int out_pipe[2];
+  sl_config_t cfg;
+  sl_t *sl;
+  char out[64];
+  ssize_t n;
+  struct one_chunk_once stream;
+
+  TEST("print_above uses LF for non-tty output");
+  ASSERT_TRUE(pipe(out_pipe) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = out_pipe[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL, "create failed");
+  stream.text = "alpha\n";
+  stream.sent = 0;
+  ASSERT_TRUE(sl->print_above(sl, one_chunk_once_stream, &stream) == SL_OK,
+              "print_above failed");
+  sl->destroy(sl);
+  close(out_pipe[1]);
+  n = read(out_pipe[0], out, sizeof(out) - 1);
+  ASSERT_TRUE(n >= 0, "read output failed");
+  out[n] = '\0';
+  close(out_pipe[0]);
+  ASSERT_TRUE(strcmp(out, "alpha\n") == 0,
+              "non-tty stream output did not use LF");
   PASS();
 }
 
@@ -5280,6 +5330,7 @@ int main(void) {
   test_history_round_trips_multiline_entries();
   test_history_rejects_oversized_entries();
   test_stream_failures_are_reported();
+  test_print_above_uses_lf_for_non_tty_output();
   test_bounded_print_above_without_space_is_error();
   test_pty_enter_and_ctrl_j();
   test_pty_readline_uses_default_prompt();

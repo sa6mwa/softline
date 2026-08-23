@@ -9,6 +9,10 @@ CACHE_DIR := $(ROOT_DIR)/.cache
 
 NINJA := $(shell command -v ninja 2>/dev/null || command -v ninja-build 2>/dev/null)
 
+ifneq ($(strip $(THEME)),)
+EXAMPLE_THEME_ENV := SOFTLINE_PROMPT_THEME="$(THEME)"
+endif
+
 .PHONY: help
 help: ## Show this help
 	@echo "softline -- C89 multiline readline replacement derived from linenoise"
@@ -45,11 +49,11 @@ build-debug: build ## Build debug target
 
 .PHONY: run-simple
 run-simple: build-debug ## Run C simple example (THEME=plain|accent|riced)
-	@SOFTLINE_PROMPT_THEME="$(THEME)" ./build/debug/examples/example_simple
+	@$(EXAMPLE_THEME_ENV) ./build/debug/examples/example_simple
 
 .PHONY: run-chat
 run-chat: build-debug ## Run C chat example (THEME=plain|accent|riced)
-	@SOFTLINE_PROMPT_THEME="$(THEME)" ./build/debug/examples/example_chat
+	@$(EXAMPLE_THEME_ENV) ./build/debug/examples/example_chat
 
 .PHONY: build-release
 build-release: ## Build release target
@@ -139,11 +143,11 @@ lua-debug-env: ## Print shell exports for Lua facade against build/debug/libsoft
 
 .PHONY: lua-debug-simple
 lua-debug-simple: ## Run examples/simple.lua against build/debug/libsoftline
-	@SOFTLINE_PROMPT_THEME="$(THEME)" ./scripts/lua-debug.sh simple
+	@$(EXAMPLE_THEME_ENV) ./scripts/lua-debug.sh simple
 
 .PHONY: lua-debug-chat
 lua-debug-chat: ## Run examples/chat.lua against build/debug/libsoftline
-	@SOFTLINE_PROMPT_THEME="$(THEME)" ./scripts/lua-debug.sh chat
+	@$(EXAMPLE_THEME_ENV) ./scripts/lua-debug.sh chat
 
 .PHONY: package
 package: ## Build release packages

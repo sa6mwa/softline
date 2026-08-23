@@ -39,28 +39,32 @@ static void leave_alt_screen(void) {
   alt_screen_active = 0;
 }
 
-static void leave_alt_screen_on_signal(int signo) {
+static void leave_alt_screen_on_terminate(int signo) {
   leave_alt_screen();
   _exit(128 + signo);
 }
 
+static void keep_chat_on_interrupt(int signo) { (void)signo; }
+
 static void install_signal_cleanup(void) {
-  (void)signal(SIGINT, leave_alt_screen_on_signal);
-  (void)signal(SIGTERM, leave_alt_screen_on_signal);
+  (void)signal(SIGINT, keep_chat_on_interrupt);
+  (void)signal(SIGTERM, leave_alt_screen_on_terminate);
 }
 
-static void enter_alt_screen(void) {
-  if (!isatty(STDOUT_FILENO))
-    return;
+static int enter_alt_screen(void) {
+  if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO))
+    return 0;
   if (write(STDOUT_FILENO, "\033[?1049h\033[2J\033[H", 15) == 15) {
     alt_screen_active = 1;
     (void)atexit(leave_alt_screen);
     install_signal_cleanup();
+    return 1;
   }
+  return 0;
 }
 
 struct message_stream {
-  const char *chunks[2];
+  const char *chunks[3];
   int index;
 };
 
@@ -70,7 +74,7 @@ static int next_message_chunk(sl_t *sl, void *userdata, const char **chunk,
   const char *text;
   (void)sl;
   stream = (struct message_stream *)userdata;
-  if (!stream || stream->index >= 2) {
+  if (!stream || stream->index >= 3) {
     *chunk = NULL;
     *len = 0;
     return SL_OK;
@@ -91,24 +95,58 @@ static int print_message(sl_t *sl, const char *text) {
   struct message_stream stream;
   stream.chunks[0] = text;
   stream.chunks[1] = "\n";
+  stream.chunks[2] = NULL;
   stream.index = 0;
   return sl->print_above(sl, next_message_chunk, &stream);
+}
+
+static int print_dispatch(sl_t *sl, sl_prompt_source_t source,
+                          const char *text) {
+  struct message_stream stream;
+  stream.chunks[0] =
+      source == SL_PROMPT_SOURCE_QUEUED ? "[queued] " : "[direct] ";
+  stream.chunks[1] = text;
+  stream.chunks[2] = "\n";
+  stream.index = 0;
+  return sl->print_above(sl, next_message_chunk, &stream);
+}
+
+static int print_last_error(sl_t *sl) {
+  const char *error;
+  error = sl->last_error(sl);
+  if (!error)
+    error = "unknown softline failure";
+  return print_message(sl, error);
 }
 
 int main(void) {
   sl_t *sl;
   char *line;
   sl_prompt_source_t source;
+  sl_readline_status_t status;
+  int interactive;
+  int exit_code;
 
-  enter_alt_screen();
+  interactive = enter_alt_screen();
+  exit_code = 0;
 
   sl = sl_create();
   if (!sl) {
     fprintf(stderr, "failed to create softline\n");
     return 1;
   }
-  (void)sl->set_bounds(sl, 0, 0, 0, 0);
-  (void)sl->set_prompt_queue(sl, 1, 64, 3);
+  if (interactive && sl->set_bounds(sl, 0, 0, 0, 0) != SL_OK) {
+    fprintf(stderr, "failed to set chat bounds\n");
+    sl->destroy(sl);
+    leave_alt_screen();
+    return 1;
+  }
+  if (interactive && sl->set_prompt_queue(sl, 1, 64, 3) != SL_OK) {
+    fprintf(stderr, "failed to enable prompt queue\n");
+    sl->destroy(sl);
+    leave_alt_screen();
+    return 1;
+  }
   if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_ACCENT) != 0) {
     fprintf(stderr, "failed to set prompt theme\n");
     sl->destroy(sl);
@@ -116,22 +154,46 @@ int main(void) {
     return 1;
   }
 
-  (void)print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
-                          "the newest queued prompt.");
+  if (interactive &&
+      print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
+                        "the newest queued prompt.") != SL_OK) {
+    (void)print_last_error(sl);
+    sl->destroy(sl);
+    leave_alt_screen();
+    return 1;
+  }
   for (;;) {
     line = sl->next_prompt(sl, "chat> ", &source);
-    if (!line)
+    if (!line) {
+      status = sl->last_readline_status(sl);
+      if (status == SL_READLINE_CANCELLED ||
+          status == SL_READLINE_INTERRUPTED) {
+        if (interactive && print_message(sl, "[cancelled]") != SL_OK) {
+          exit_code = 1;
+          break;
+        }
+        continue;
+      }
+      if (status == SL_READLINE_ERROR) {
+        (void)print_last_error(sl);
+        exit_code = 1;
+      }
       break;
+    }
     if (strcmp(line, "exit") == 0) {
       sl->free_string(sl, line);
       break;
     }
-    (void)source;
-    (void)print_message(sl, line);
+    if (print_dispatch(sl, source, line) != SL_OK) {
+      sl->free_string(sl, line);
+      (void)print_last_error(sl);
+      exit_code = 1;
+      break;
+    }
     sl->free_string(sl, line);
   }
 
   sl->destroy(sl);
   leave_alt_screen();
-  return 0;
+  return exit_code;
 }

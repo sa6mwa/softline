@@ -2090,10 +2090,15 @@ static int sl_render_clear_active(sl_t *self) {
   return 0;
 }
 
-static int sl_write_stream_chunk(int fd, const char *chunk, size_t len) {
+static int sl_write_stream_chunk(sl_impl_t *impl, const char *chunk,
+                                 size_t len) {
   const char *p;
   const char *start;
   size_t n;
+  int fd;
+  if (!impl)
+    return -1;
+  fd = impl->output_fd;
   p = chunk;
   start = chunk;
   while ((size_t)(p - chunk) < len) {
@@ -2101,7 +2106,7 @@ static int sl_write_stream_chunk(int fd, const char *chunk, size_t len) {
       n = (size_t)(p - start);
       if (n > 0 && sl_write_all(fd, start, n) != 0)
         return -1;
-      if (sl_wstr(fd, "\r\n") != 0)
+      if (sl_wstr(fd, isatty(fd) ? "\r\n" : "\n") != 0)
         return -1;
       p++;
       start = p;
@@ -2134,7 +2139,7 @@ static int sl_write_stream(sl_t *self, sl_stream_callback_t callback,
       return SL_OK;
     if (!chunk)
       return SL_ERROR_INVALID;
-    if (sl_write_stream_chunk(impl->output_fd, chunk, len) != 0)
+    if (sl_write_stream_chunk(impl, chunk, len) != 0)
       return SL_ERROR_IO;
   }
 }
