@@ -98,14 +98,19 @@ line-oriented input/output.
 make run-simple
 make run-chat
 make run-chat-riced
+make run-chat-monogreen
+make run-chat-monochrome
+make run-chat-synthwave
 ```
 
-`run-simple`, `run-chat`, and `run-chat-riced` build the C examples before
-launching them. Both C and Lua examples accept
+The chat convenience targets build the C example before launching it.
+`run-chat` uses Gruvbox by default; pass `THEME=...` to override it. Both C
+and Lua examples accept
 `SOFTLINE_PROMPT_THEME=plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
-expose that as `THEME=...`. The simple examples default to `plain`; chat
-examples default to `accent`.
+expose that as `THEME=...`. The simple examples default to `plain`; the chat
+example itself defaults to `accent` when launched without a theme, while
+`make run-chat` supplies Gruvbox.
 
 ## Bounded prompts
 
