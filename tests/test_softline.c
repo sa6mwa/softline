@@ -259,6 +259,7 @@ static void test_destroy_null(void) {
 
 static void test_invalid_config_is_rejected(void) {
   sl_config_t cfg;
+  sl_t *sl;
 
   TEST("invalid create config is rejected");
   sl_config_init(&cfg);
@@ -289,8 +290,9 @@ static void test_invalid_config_is_rejected(void) {
   sl_config_init(&cfg);
   cfg.prompt_queue = 1;
   cfg.bounded = 0;
-  ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
-              "unbounded prompt queue accepted");
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL, "normal prompt queue rejected");
+  sl->destroy(sl);
   PASS();
 }
 
@@ -347,8 +349,8 @@ static void test_invalid_receiver_arguments(void) {
               "negative screen width accepted");
   ASSERT_TRUE(sl->set_bounds(sl, -1, 0, 1, 1) == SL_ERROR_INVALID,
               "negative bound accepted");
-  ASSERT_TRUE(sl->set_prompt_queue(sl, 1, 1, 1) == SL_ERROR_INVALID,
-              "unbounded prompt queue enabled");
+  ASSERT_TRUE(sl->set_prompt_queue(sl, 1, 1, 1) == SL_OK,
+              "normal prompt queue rejected");
   ASSERT_TRUE(sl->set_prompt_theme(sl, (sl_prompt_theme_t)99) ==
                   SL_ERROR_INVALID,
               "invalid prompt theme accepted");
@@ -1706,9 +1708,10 @@ static int run_pty_key_binding_case(const char *input, sl_key_t key,
 }
 
 static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
-                                     int expected_prompts, char *terminal,
-                                     size_t terminal_cap, char *result,
-                                     size_t result_cap, int *exit_status) {
+                                     int bounded, int expected_prompts,
+                                     char *terminal, size_t terminal_cap,
+                                     char *result, size_t result_cap,
+                                     int *exit_status) {
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -1738,9 +1741,11 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
-    cfg.screen_width = 40;
-    cfg.screen_height = 8;
-    cfg.bounded = 1;
+    if (bounded) {
+      cfg.screen_width = 40;
+      cfg.screen_height = 8;
+      cfg.bounded = 1;
+    }
     cfg.prompt_queue = 1;
     cfg.prompt_queue_max_entries = 8;
     cfg.prompt_queue_preview_entries = 1;
@@ -2486,9 +2491,10 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
   int status;
 
   TEST("prompt queue previews and dispatches FIFO across themes");
-  ASSERT_TRUE(run_pty_prompt_queue_case(
-                  "first\tsecond\tthird\r", SL_PROMPT_THEME_PLAIN, 3, terminal,
-                  sizeof(terminal), result, sizeof(result), &status) == 0,
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\tthird\r",
+                                        SL_PROMPT_THEME_PLAIN, 1, 3, terminal,
+                                        sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
               "plain prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "plain prompt queue child failed");
@@ -2502,7 +2508,7 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "plain overflow count missing");
 
   ASSERT_TRUE(run_pty_prompt_queue_case(
-                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 2, terminal,
+                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 1, 2, terminal,
                   sizeof(terminal), result, sizeof(result), &status) == 0,
               "accent prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -2514,7 +2520,7 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "accent full prompt treatment missing");
 
   ASSERT_TRUE(run_pty_prompt_queue_case(
-                  "first\tsecond\r", SL_PROMPT_THEME_RICED, 2, terminal,
+                  "first\tsecond\r", SL_PROMPT_THEME_RICED, 1, 2, terminal,
                   sizeof(terminal), result, sizeof(result), &status) == 0,
               "riced prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -2527,15 +2533,36 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
   PASS();
 }
 
+static void test_prompt_queue_dispatches_fifo_in_normal_scrollback(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue dispatches FIFO in normal scrollback");
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 0, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "normal prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "normal prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "normal prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "[ queued: 1 >>") &&
+                  contains_bytes(terminal, "chat> second"),
+              "normal prompt queue preview missing");
+  PASS();
+}
+
 static void test_prompt_queue_alt_e_recalls_newest(void) {
   char terminal[16384];
   char result[512];
   int status;
 
   TEST("Alt-E recalls the newest queued prompt into the editor");
-  ASSERT_TRUE(run_pty_prompt_queue_case(
-                  "first\tsecond\t\033e\r", SL_PROMPT_THEME_PLAIN, 2, terminal,
-                  sizeof(terminal), result, sizeof(result), &status) == 0,
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\t\033e\r",
+                                        SL_PROMPT_THEME_PLAIN, 1, 2, terminal,
+                                        sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
               "Alt-E prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "Alt-E prompt queue child failed");
@@ -3515,12 +3542,12 @@ static void test_print_above_pulls_stream_chunks(void) {
   PASS();
 }
 
-static void test_bounded_prompt_growth_preserves_sparse_output(void) {
+static void test_bounded_prompt_growth_scrolls_output_region(void) {
   char terminal[8192];
   char result[256];
   int status;
 
-  TEST("bounded prompt growth preserves sparse output");
+  TEST("bounded prompt growth scrolls output region");
   ASSERT_TRUE(run_pty_readline_case("hello world sentence\r", 16, 5, "hello\n",
                                     terminal, sizeof(terminal), result,
                                     sizeof(result), &status) == 0,
@@ -3529,8 +3556,8 @@ static void test_bounded_prompt_growth_preserves_sparse_output(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "hello world sentence") == 0,
               "bounded growth result mismatch");
-  ASSERT_TRUE(count_bytes(terminal, "\033[1;4r") == 1,
-              "prompt growth scrolled output with nothing to displace");
+  ASSERT_TRUE(count_bytes(terminal, "\033[1;4r") >= 2,
+              "prompt growth did not scroll output region");
   PASS();
 }
 
@@ -5378,6 +5405,7 @@ int main(void) {
   test_tab_render_expands_beyond_line_bytes();
   test_key_binding_tab_inserts_text();
   test_prompt_queue_dispatches_fifo_with_themes();
+  test_prompt_queue_dispatches_fifo_in_normal_scrollback();
   test_prompt_queue_alt_e_recalls_newest();
   test_prompt_themes_style_normal_readline();
   test_key_binding_alt_m_inserts_text();
@@ -5399,7 +5427,7 @@ int main(void) {
   test_bounded_wrapped_shrink_clears_continuation_tail();
   test_bounded_viewport_follows_cursor();
   test_print_above_pulls_stream_chunks();
-  test_bounded_prompt_growth_preserves_sparse_output();
+  test_bounded_prompt_growth_scrolls_output_region();
   test_bounded_print_above_does_not_overwrite_prompt();
   test_word_wrap_keeps_words_intact();
   test_word_wrap_cursor_at_skipped_space();

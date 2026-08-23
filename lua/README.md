@@ -62,7 +62,7 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
   callback may use methods such as `print_above`, `insert`, `submit`, or
   `cancel`.
 - `sl:set_prompt_queue(enabled, max_entries, preview_entries)` enables the
-  bounded chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
+  chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
   queued entry into the editor.
 - `sl:set_prompt_theme(theme)` selects `PROMPT_THEME_PLAIN`,
   `PROMPT_THEME_ACCENT`, or `PROMPT_THEME_RICED` for the whole interactive

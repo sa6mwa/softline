@@ -58,7 +58,7 @@ Currently implemented:
   behavior, submit, cancel, interrupt, or mutate the active buffer.
   `SL_KEY_CTRL_ENTER` is available when the terminal sends a distinguishable
   Ctrl-Enter sequence.
-- Bounded chat prompts can opt into a FIFO prompt queue. Tab queues a nonempty
+- Chat-like prompts can opt into a FIFO prompt queue. Tab queues a nonempty
   draft, Alt-E recalls the newest queued draft for editing, and
   `next_prompt()` returns queued work before opening a direct editor while
   identifying whether the result was queued or direct. The renderer ships
@@ -122,18 +122,19 @@ position, preventing visible cursor travel across the prompt area.
 For a persistent bottom prompt, use this bounded mode as a full-screen terminal
 UI on the alternate screen. That keeps the main scrollback intact and lets
 softline manage the prompt box and transcript scroll region coherently.
+Softline never enters or leaves the alternate screen itself: the embedding
+application chooses normal scrollback or an alternate-screen UI.
 
 ## Prompt queueing
 
-Prompt queueing is deliberately limited to bounded, chat-like prompt UIs. It
-does not alter normal scrollback prompts or non-TTY input. Enable it in the
-handle configuration or after setting bounds, and read application work through
+Prompt queueing is available for interactive chat-like prompts, including
+normal scrollback terminals. It does not alter non-TTY input. Enable it in the
+handle configuration or after construction, and read application work through
 `next_prompt()`:
 
 ```c
 sl_prompt_source_t source;
 
-sl->set_bounds(sl, 0, 0, 0, 0);
 sl->set_prompt_queue(sl, 1, 64, 3);
 sl->set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT);
 

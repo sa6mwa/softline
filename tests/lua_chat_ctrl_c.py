@@ -46,13 +46,14 @@ def main():
     )
     os.close(slave)
     try:
-        read_until(master, b"chat> ")
+        initial = read_until(master, b"chat> ")
+        if b"\x1b[?1049h" in initial:
+            raise AssertionError("lua chat entered the alternate screen")
         read_until(master, b"[peer] ", timeout=4.0)
         os.write(master, b"\x03")
         read_until(master, b"[cancelled]")
         time.sleep(0.1)
         os.write(master, b"exit\r")
-        read_until(master, b"\x1b[?1049l")
         status = proc.wait(timeout=5.0)
         if status != 0:
             raise AssertionError(f"lua chat exited with status {status}")

@@ -235,7 +235,7 @@ typedef struct sl_config {
   int history_max_len;
   /** Maximum editable line length in bytes; default is 4096. */
   size_t line_max_len;
-  /** Non-zero enables Tab queueing in bounded prompt mode. */
+  /** Non-zero enables Tab queueing in interactive prompt mode. */
   int prompt_queue;
   /** Maximum queued prompts; default is 64 when queueing is enabled. */
   int prompt_queue_max_entries;
@@ -316,7 +316,7 @@ struct sl {
   /** Return the next queued prompt FIFO, or read a direct prompt when empty. */
   char *(*next_prompt)(sl_t *self, const char *prompt,
                        sl_prompt_source_t *source);
-  /** Enable/configure bounded-mode Tab queueing for this handle. */
+  /** Enable/configure Tab queueing for this handle. */
   int (*set_prompt_queue)(sl_t *self, int enabled, int max_entries,
                           int preview_entries);
   /** Select one of the built-in interactive prompt themes. */
@@ -395,7 +395,7 @@ int sl_set_bounds(sl_t *self, int x, int y, int width, int height);
 /** Set normal prompt wrapping width; zero returns to terminal-width probing. */
 int sl_set_screen_width(sl_t *self, int width);
 
-/** Enable/configure bounded-mode Tab queueing; disabling clears the queue. */
+/** Enable/configure Tab queueing; disabling clears the queue. */
 int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
                         int preview_entries);
 

@@ -13,7 +13,6 @@ local function is_interactive_terminal()
 end
 
 local interactive = is_interactive_terminal()
-local alt_screen_active = false
 local sl
 local next_peer_message_at
 local peer_messages = {
@@ -22,13 +21,6 @@ local peer_messages = {
   "A small detail can change the whole picture.",
   "I am following along from the other side of the room.",
 }
-
-local function leave_alt_screen()
-  if alt_screen_active then
-    io.write("\27[?1049l")
-    alt_screen_active = false
-  end
-end
 
 local function print_message(parts)
   local ok, status = sl:print_above(parts)
@@ -53,16 +45,10 @@ end
 
 local function run()
   assert(themes[theme_name], "invalid SOFTLINE_PROMPT_THEME: " .. theme_name)
-  if interactive then
-    io.write("\27[?1049h\27[2J\27[H")
-    alt_screen_active = true
-  end
-
   sl = softline.new()
   assert(sl:set_prompt_theme(themes[theme_name]))
+  assert(sl:set_prompt_queue(true, 64, 3))
   if interactive then
-    assert(sl:set_bounds(0, 0, 0, 0))
-    assert(sl:set_prompt_queue(true, 64, 3))
     assert(sl:bind_key(softline.KEY_CTRL_C, function()
       return softline.KEY_ACTION_CANCEL
     end))
@@ -95,7 +81,6 @@ local ok, err = pcall(run)
 if sl then
   sl:close()
 end
-leave_alt_screen()
 if not ok then
   io.stderr:write(err, "\n")
   os.exit(1)

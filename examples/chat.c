@@ -7,8 +7,6 @@
 #include <time.h>
 #include <unistd.h>
 
-static volatile sig_atomic_t alt_screen_active = 0;
-
 static int set_prompt_theme_from_environment(sl_t *sl,
                                              sl_prompt_theme_t fallback) {
   const char *name;
@@ -33,36 +31,7 @@ static int set_prompt_theme_from_environment(sl_t *sl,
   return sl_set_prompt_theme(sl, theme) == SL_OK ? 0 : -1;
 }
 
-static void leave_alt_screen(void) {
-  if (!alt_screen_active)
-    return;
-  (void)write(STDOUT_FILENO, "\033[?1049l", 8);
-  alt_screen_active = 0;
-}
-
-static void leave_alt_screen_on_terminate(int signo) {
-  leave_alt_screen();
-  _exit(128 + signo);
-}
-
 static void keep_chat_on_interrupt(int signo) { (void)signo; }
-
-static void install_signal_cleanup(void) {
-  (void)signal(SIGINT, keep_chat_on_interrupt);
-  (void)signal(SIGTERM, leave_alt_screen_on_terminate);
-}
-
-static int enter_alt_screen(void) {
-  if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO))
-    return 0;
-  if (write(STDOUT_FILENO, "\033[?1049h\033[2J\033[H", 15) == 15) {
-    alt_screen_active = 1;
-    (void)atexit(leave_alt_screen);
-    install_signal_cleanup();
-    return 1;
-  }
-  return 0;
-}
 
 struct message_stream {
   const char *chunks[4];
@@ -154,7 +123,7 @@ int main(void) {
   int interactive;
   int exit_code;
 
-  interactive = enter_alt_screen();
+  interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
   exit_code = 0;
 
   sl = sl_create();
@@ -162,32 +131,24 @@ int main(void) {
     fprintf(stderr, "failed to create softline\n");
     return 1;
   }
-  if (interactive && sl->set_bounds(sl, 0, 0, 0, 0) != SL_OK) {
-    fprintf(stderr, "failed to set chat bounds\n");
-    sl->destroy(sl);
-    leave_alt_screen();
-    return 1;
-  }
-  if (interactive && sl->set_prompt_queue(sl, 1, 64, 3) != SL_OK) {
+  if (sl->set_prompt_queue(sl, 1, 64, 3) != SL_OK) {
     fprintf(stderr, "failed to enable prompt queue\n");
     sl->destroy(sl);
-    leave_alt_screen();
     return 1;
   }
   if (interactive) {
+    (void)signal(SIGINT, keep_chat_on_interrupt);
     peer.next_message_at = time(NULL) + 2;
     srand((unsigned int)(time(NULL) ^ (time_t)getpid()));
     if (sl->set_idle_callback(sl, print_peer_message, &peer) != SL_OK) {
       fprintf(stderr, "failed to enable simulated peer messages\n");
       sl->destroy(sl);
-      leave_alt_screen();
       return 1;
     }
   }
   if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_ACCENT) != 0) {
     fprintf(stderr, "failed to set prompt theme\n");
     sl->destroy(sl);
-    leave_alt_screen();
     return 1;
   }
 
@@ -196,7 +157,6 @@ int main(void) {
                         "the newest queued prompt.") != SL_OK) {
     (void)print_last_error(sl);
     sl->destroy(sl);
-    leave_alt_screen();
     return 1;
   }
   for (;;) {
@@ -231,6 +191,5 @@ int main(void) {
   }
 
   sl->destroy(sl);
-  leave_alt_screen();
   return exit_code;
 }
