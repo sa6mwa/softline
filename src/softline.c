@@ -4091,7 +4091,7 @@ void sl_config_init(sl_config_t *config) {
   config->statusline_start_element = 0;
   config->status_spinner = 0;
   config->status_busy = 0;
-  config->status_idle_marker = '\0';
+  config->status_idle_marker = '+';
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {

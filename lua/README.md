@@ -83,7 +83,8 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
 - `sl:set_status_busy(busy)` selects the red busy `x` or spinner marker.
 - `sl:set_status_spinner(enabled)` enables the 500ms `/ - \\ |` busy spinner.
 - `sl:set_status_idle_marker(marker)` selects a one-byte printable ASCII green
-  idle marker; pass `nil` to leave the reserved two-column idle slot blank.
+  idle marker; it defaults to `+`. Pass `nil` to leave the reserved two-column
+  idle slot blank.
 - `sl:insert(text)` inserts text bytes at the active cursor.
 - `sl:set_buffer(text)` replaces the active buffer and moves the cursor to the
   end.

@@ -155,7 +155,7 @@ static void test_config_init(void) {
               "status element start default");
   ASSERT_TRUE(cfg.status_spinner == 0, "status spinner default");
   ASSERT_TRUE(cfg.status_busy == 0, "status busy default");
-  ASSERT_TRUE(cfg.status_idle_marker == '\0', "status idle marker default");
+  ASSERT_TRUE(cfg.status_idle_marker == '+', "status idle marker default");
   PASS();
 }
 
@@ -2011,6 +2011,17 @@ static int set_status_dash_marker_key(sl_t *sl, sl_key_t key, void *userdata,
   return SL_OK;
 }
 
+static int set_status_busy_spinner_key(sl_t *sl, sl_key_t key, void *userdata,
+                                       sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_spinner(sl, 1) != SL_OK ||
+      sl_set_status_busy(sl, 1) != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
 static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
                                    char *result, size_t result_cap,
                                    int *exit_status) {
@@ -2048,7 +2059,7 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     cfg.statusline = 1;
     cfg.statusline_start_element = 15;
     cfg.status_spinner = 1;
-    cfg.status_busy = 1;
+    cfg.status_busy = 0;
     sl = sl_create_with_config(&cfg);
     if (!sl ||
         sl_set_status_elements(sl, elements,
@@ -2060,6 +2071,9 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'n'),
                     set_status_dash_marker_key, NULL) != SL_OK)
       _exit(5);
+    if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'p'),
+                    set_status_busy_spinner_key, NULL) != SL_OK)
+      _exit(6);
     line = sl_readline(sl, "status> ");
     if (!line)
       _exit(3);
@@ -2084,6 +2098,24 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     if (terminal_len >= terminal_cap - 1)
       return -1;
   }
+  tries = 0;
+  while (!contains_bytes(terminal, "\033[38;2;57;255;20m+ ") && tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, "\033[38;2;57;255;20m+ "))
+    return -1;
+  if (write(master_fd, "\033p", 2) != 2)
+    return -1;
   tries = 0;
   while (!contains_bytes(terminal, "\033[38;2;255;51;51m- ") && tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
@@ -2955,6 +2987,8 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
               "status spinner marker missing");
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;255;51;51m- "),
               "status spinner did not advance");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;57;255;20m+ "),
+              "default status idle marker missing");
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;57;255;20m- "),
               "status idle marker missing");
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;172;164;184me0"),

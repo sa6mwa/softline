@@ -192,13 +192,12 @@ sl->set_status_busy(sl, 1);    /* x by default, or /-\\| with spinner enabled */
 sl->set_status_spinner(sl, 1);
 ```
 
-Idle has a blank, two-column marker slot by default, preserving its alignment
-with busy markers. Set one printable ASCII character with
-`sl_set_status_idle_marker()` to render a green marker while idle, or pass
-`'\0'` to leave that slot blank. Busy uses red `x`; the busy spinner uses that
-same red, is off by default, and advances every 500ms only when both spinner
-and busy are enabled. Elements wrap between elements when possible; an
-oversized element
+Idle uses a green `+` by default. Set one printable ASCII character with
+`sl_set_status_idle_marker()` to choose another green marker, or pass `'\0'`
+to leave its reserved two-column marker slot blank while preserving alignment
+with busy markers. Busy uses red `x`; the busy spinner uses that same red, is
+off by default, and advances every 500ms only when both spinner and busy are
+enabled. Elements wrap between elements when possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
 
