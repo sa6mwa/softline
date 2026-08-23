@@ -44,20 +44,27 @@ static int next_message_chunk(sl_t *sl, void *userdata, const char **chunk,
   const char *text;
   (void)sl;
   stream = (struct message_stream *)userdata;
-  if (!stream || stream->index >= 4) {
+  if (!stream) {
     *chunk = NULL;
     *len = 0;
     return SL_OK;
   }
-  text = stream->chunks[stream->index];
-  stream->index++;
-  if (!text) {
-    *chunk = NULL;
-    *len = 0;
+  while (stream->index < 4) {
+    text = stream->chunks[stream->index];
+    stream->index++;
+    if (!text) {
+      *chunk = NULL;
+      *len = 0;
+      return SL_OK;
+    }
+    if (text[0] == '\0')
+      continue;
+    *chunk = text;
+    *len = strlen(text);
     return SL_OK;
   }
-  *chunk = text;
-  *len = strlen(text);
+  *chunk = NULL;
+  *len = 0;
   return SL_OK;
 }
 

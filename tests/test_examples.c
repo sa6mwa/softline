@@ -477,6 +477,36 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   PASS();
 }
 
+static void
+test_example_chat_keeps_empty_direct_reply_separate(const char *path) {
+  int master_fd;
+  pid_t pid;
+  char terminal[16384];
+  size_t terminal_len;
+
+  TEST("example_chat separates empty direct and queued replies");
+  pid = spawn_example(path, &master_fd, 40, 8);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "chat> ") == 0,
+              "initial prompt missing");
+  ASSERT_TRUE(write(master_fd, "queued\t\r", 8) == 8,
+              "write queue-and-empty-submit input failed");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal),
+                            "[queued] I read back: queued") == 0,
+              "queued reply missing");
+  ASSERT_TRUE(
+      contains_bytes(terminal,
+                     "[direct] I read back: \r\n[queued] I read back: queued"),
+      "empty direct reply merged with queued reply");
+  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  PASS();
+}
+
 static void test_example_chat_receives_peer_messages(const char *path) {
   int master_fd;
   pid_t pid;
@@ -644,6 +674,7 @@ int main(int argc, char **argv) {
   test_example_simple_wraps_near_bottom(argv[1]);
   test_example_chat_uses_normal_scrollback(argv[2]);
   test_example_chat_dispatches_queued_prompts(argv[2]);
+  test_example_chat_keeps_empty_direct_reply_separate(argv[2]);
   test_example_chat_receives_peer_messages(argv[2]);
   test_example_chat_updates_editor_in_normal_scrollback(argv[2]);
   test_example_chat_ctrl_c_cancels_and_continues(argv[2]);
