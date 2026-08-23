@@ -8,6 +8,30 @@
 
 static volatile sig_atomic_t alt_screen_active = 0;
 
+static int set_prompt_theme_from_environment(sl_t *sl,
+                                             sl_prompt_theme_t fallback) {
+  const char *name;
+  sl_prompt_theme_t theme;
+  name = getenv("SOFTLINE_PROMPT_THEME");
+  theme = fallback;
+  if (name && name[0] != '\0') {
+    if (strcmp(name, "plain") == 0)
+      theme = SL_PROMPT_THEME_PLAIN;
+    else if (strcmp(name, "accent") == 0)
+      theme = SL_PROMPT_THEME_ACCENT;
+    else if (strcmp(name, "riced") == 0)
+      theme = SL_PROMPT_THEME_RICED;
+    else {
+      fprintf(
+          stderr,
+          "invalid SOFTLINE_PROMPT_THEME: %s (use plain, accent, or riced)\n",
+          name);
+      return -1;
+    }
+  }
+  return sl_set_prompt_theme(sl, theme) == SL_OK ? 0 : -1;
+}
+
 static void leave_alt_screen(void) {
   if (!alt_screen_active)
     return;
@@ -85,7 +109,12 @@ int main(void) {
   }
   (void)sl->set_bounds(sl, 0, 0, 0, 0);
   (void)sl->set_prompt_queue(sl, 1, 64, 3);
-  (void)sl->set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT);
+  if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_ACCENT) != 0) {
+    fprintf(stderr, "failed to set prompt theme\n");
+    sl->destroy(sl);
+    leave_alt_screen();
+    return 1;
+  }
 
   (void)print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
                           "the newest queued prompt.");

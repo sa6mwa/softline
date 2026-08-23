@@ -43,6 +43,14 @@ build: ## Build debug target
 .PHONY: build-debug
 build-debug: build ## Build debug target
 
+.PHONY: run-simple
+run-simple: build-debug ## Run C simple example (THEME=plain|accent|riced)
+	@SOFTLINE_PROMPT_THEME="$(THEME)" ./build/debug/examples/example_simple
+
+.PHONY: run-chat
+run-chat: build-debug ## Run C chat example (THEME=plain|accent|riced)
+	@SOFTLINE_PROMPT_THEME="$(THEME)" ./build/debug/examples/example_chat
+
 .PHONY: build-release
 build-release: ## Build release target
 	@cmake --preset x86_64-linux-gnu-release
@@ -131,11 +139,11 @@ lua-debug-env: ## Print shell exports for Lua facade against build/debug/libsoft
 
 .PHONY: lua-debug-simple
 lua-debug-simple: ## Run examples/simple.lua against build/debug/libsoftline
-	@./scripts/lua-debug.sh simple
+	@SOFTLINE_PROMPT_THEME="$(THEME)" ./scripts/lua-debug.sh simple
 
 .PHONY: lua-debug-chat
 lua-debug-chat: ## Run examples/chat.lua against build/debug/libsoftline
-	@./scripts/lua-debug.sh chat
+	@SOFTLINE_PROMPT_THEME="$(THEME)" ./scripts/lua-debug.sh chat
 
 .PHONY: package
 package: ## Build release packages

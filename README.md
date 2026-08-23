@@ -88,10 +88,15 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 the terminal, and prints output through the region above the prompt.
 
 ```sh
-make build
-build/debug/examples/example_simple
-build/debug/examples/example_chat
+make run-simple
+make run-chat
+make run-chat THEME=riced
 ```
+
+`run-simple` and `run-chat` build the C examples before launching them. Both C
+and Lua examples accept `SOFTLINE_PROMPT_THEME=plain`, `accent`, or `riced`;
+the Make targets expose that as `THEME=...`. The simple examples default to
+`plain`; chat examples default to `accent`.
 
 ## Bounded prompts
 
@@ -245,6 +250,7 @@ To run the Lua facade and examples against the in-tree debug library:
 make lua-debug-test
 make lua-debug-simple
 make lua-debug-chat
+make lua-debug-chat THEME=riced
 ```
 
 For a fuller status and gap list, see `docs/softline-spec.md`.
