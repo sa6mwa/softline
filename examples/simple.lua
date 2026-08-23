@@ -5,7 +5,13 @@ local theme_name = os.getenv("SOFTLINE_PROMPT_THEME") or "plain"
 local themes = {
   plain = softline.PROMPT_THEME_PLAIN,
   accent = softline.PROMPT_THEME_ACCENT,
+  dracula = softline.PROMPT_THEME_DRACULA,
+  gruvbox = softline.PROMPT_THEME_GRUVBOX,
+  monochrome = softline.PROMPT_THEME_MONOCHROME,
+  monogreen = softline.PROMPT_THEME_MONOGREEN,
+  outrun = softline.PROMPT_THEME_OUTRUN,
   riced = softline.PROMPT_THEME_RICED,
+  synthwave = softline.PROMPT_THEME_SYNTHWAVE,
 }
 assert(themes[theme_name], "invalid SOFTLINE_PROMPT_THEME: " .. theme_name)
 assert(sl:set_prompt_theme(themes[theme_name]))

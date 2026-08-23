@@ -205,9 +205,24 @@ typedef enum sl_prompt_theme {
   SL_PROMPT_THEME_PLAIN = 0,
   /** A restrained cyan accent treatment. */
   SL_PROMPT_THEME_ACCENT = 1,
-  /** A vivid magenta terminal-rice treatment. */
-  SL_PROMPT_THEME_RICED = 2
+  /** The Dracula true-colour palette. */
+  SL_PROMPT_THEME_DRACULA = 2,
+  /** The Gruvbox true-colour palette. */
+  SL_PROMPT_THEME_GRUVBOX = 3,
+  /** An amber monochrome CRT palette. */
+  SL_PROMPT_THEME_MONOCHROME = 4,
+  /** A green monochrome terminal palette. */
+  SL_PROMPT_THEME_MONOGREEN = 5,
+  /** The Outrun true-colour palette. */
+  SL_PROMPT_THEME_OUTRUN = 6,
+  /** The Riced true-colour palette. */
+  SL_PROMPT_THEME_RICED = 7,
+  /** The Synthwave true-colour palette. */
+  SL_PROMPT_THEME_SYNTHWAVE = 8
 } sl_prompt_theme_t;
+
+/** Maximum number of retained status-line elements. */
+#define SL_STATUS_MAX_ELEMENTS 32
 
 /**
  * Editor configuration initialized by sl_config_init().
@@ -243,6 +258,15 @@ typedef struct sl_config {
   int prompt_queue_preview_entries;
   /** Built-in visual treatment for interactive prompt UI. */
   sl_prompt_theme_t prompt_theme;
+  /** Non-zero renders the optional status line between queue previews and the
+   * editor. */
+  int statusline;
+  /** Palette index assigned to the first status-line element. */
+  size_t statusline_start_element;
+  /** Non-zero animates /-\\| while the status line is busy. */
+  int status_spinner;
+  /** Non-zero selects the busy status marker. */
+  int status_busy;
 } sl_config_t;
 
 /**
@@ -322,6 +346,18 @@ struct sl {
                           int preview_entries);
   /** Select one of the built-in interactive prompt themes. */
   int (*set_prompt_theme)(sl_t *self, sl_prompt_theme_t theme);
+  /** Enable or disable the status line and select its first palette index. */
+  int (*set_statusline)(sl_t *self, int enabled, size_t starting_element);
+  /** Replace status-line elements; inputs beyond 32 are rendered with a final
+   * ellipsis element. */
+  int (*set_status_elements)(sl_t *self, const char *const *elements,
+                             size_t count);
+  /** Set, replace, or clear one retained status-line element. */
+  int (*set_status_element)(sl_t *self, size_t index, const char *element);
+  /** Set busy state; the default markers are x while busy and : while idle. */
+  int (*set_status_busy)(sl_t *self, int busy);
+  /** Enable or disable the 500ms /-\\| busy spinner. */
+  int (*set_status_spinner)(sl_t *self, int enabled);
 };
 
 /**
@@ -403,6 +439,26 @@ int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
 
 /** Select a built-in interactive prompt theme. */
 int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
+
+/** Enable or disable the status line and choose the palette index used for
+ * its first element. Status elements wrap between elements where possible. */
+int sl_set_statusline(sl_t *self, int enabled, size_t starting_element);
+
+/** Replace all status-line elements. At most 32 elements are retained; longer
+ * input is represented by the first 31 elements followed by `...`. */
+int sl_set_status_elements(sl_t *self, const char *const *elements,
+                           size_t count);
+
+/** Set, replace, or clear one status-line element. index must be below
+ * SL_STATUS_MAX_ELEMENTS. */
+int sl_set_status_element(sl_t *self, size_t index, const char *element);
+
+/** Set the status-line busy state. With the spinner disabled, busy renders x
+ * and idle renders :. */
+int sl_set_status_busy(sl_t *self, int busy);
+
+/** Enable or disable the 500ms /-\\| spinner used while status is busy. */
+int sl_set_status_spinner(sl_t *self, int enabled);
 
 /** Register or clear an idle callback for this handle. */
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,

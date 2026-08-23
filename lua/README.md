@@ -35,6 +35,10 @@ config table mirrors `sl_config_t`:
 - `prompt_queue_max_entries`
 - `prompt_queue_preview_entries`
 - `prompt_theme`
+- `statusline`
+- `statusline_start_element`
+- `status_spinner`
+- `status_busy`
 - `history_max_len`
 - `line_max_len`
 
@@ -64,9 +68,19 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
 - `sl:set_prompt_queue(enabled, max_entries, preview_entries)` enables the
   chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
   queued entry into the editor.
-- `sl:set_prompt_theme(theme)` selects `PROMPT_THEME_PLAIN`,
-  `PROMPT_THEME_ACCENT`, or `PROMPT_THEME_RICED` for the whole interactive
-  prompt UI, including the bounded queue panel when enabled.
+- `sl:set_prompt_theme(theme)` selects one of `PROMPT_THEME_PLAIN`,
+  `PROMPT_THEME_ACCENT`, `PROMPT_THEME_DRACULA`, `PROMPT_THEME_GRUVBOX`,
+  `PROMPT_THEME_MONOCHROME`, `PROMPT_THEME_MONOGREEN`, `PROMPT_THEME_OUTRUN`,
+  `PROMPT_THEME_RICED`, or `PROMPT_THEME_SYNTHWAVE` for the whole interactive
+  prompt UI, including status lines and queue panels.
+- `sl:set_statusline(enabled, starting_element)` enables the optional status
+  line and chooses the palette slot for its first element.
+- `sl:set_status_elements(elements)` replaces all status elements. At most 32
+  are retained; longer input uses the first 31 followed by `...`.
+- `sl:set_status_element(index, value)` updates one zero-based element; pass
+  `nil` as `value` to clear it.
+- `sl:set_status_busy(busy)` selects the default busy `x` or idle `:` marker.
+- `sl:set_status_spinner(enabled)` enables the 500ms `/ - \\ |` busy spinner.
 - `sl:insert(text)` inserts text bytes at the active cursor.
 - `sl:set_buffer(text)` replaces the active buffer and moves the cursor to the
   end.

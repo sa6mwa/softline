@@ -19,7 +19,7 @@ endif()
 
 set(SL_DIST_DIR "${CMAKE_SOURCE_DIR}/dist" CACHE PATH "Release artifact output directory")
 set(SL_TARGET_ID "" CACHE STRING "Release target identifier")
-set(SOFTLINE_ABI_VERSION "0" CACHE STRING "softline shared library ABI version")
+set(SOFTLINE_ABI_VERSION "1" CACHE STRING "softline shared library ABI version")
 
 if(NOT SOFTLINE_ABI_VERSION MATCHES "^[0-9]+$")
   message(FATAL_ERROR "SOFTLINE_ABI_VERSION must be a non-negative integer")

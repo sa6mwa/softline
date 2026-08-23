@@ -15,13 +15,25 @@ static int set_prompt_theme_from_environment(sl_t *sl,
       theme = SL_PROMPT_THEME_PLAIN;
     else if (strcmp(name, "accent") == 0)
       theme = SL_PROMPT_THEME_ACCENT;
+    else if (strcmp(name, "dracula") == 0)
+      theme = SL_PROMPT_THEME_DRACULA;
+    else if (strcmp(name, "gruvbox") == 0)
+      theme = SL_PROMPT_THEME_GRUVBOX;
+    else if (strcmp(name, "monochrome") == 0)
+      theme = SL_PROMPT_THEME_MONOCHROME;
+    else if (strcmp(name, "monogreen") == 0)
+      theme = SL_PROMPT_THEME_MONOGREEN;
+    else if (strcmp(name, "outrun") == 0)
+      theme = SL_PROMPT_THEME_OUTRUN;
     else if (strcmp(name, "riced") == 0)
       theme = SL_PROMPT_THEME_RICED;
+    else if (strcmp(name, "synthwave") == 0)
+      theme = SL_PROMPT_THEME_SYNTHWAVE;
     else {
-      fprintf(
-          stderr,
-          "invalid SOFTLINE_PROMPT_THEME: %s (use plain, accent, or riced)\n",
-          name);
+      fprintf(stderr,
+              "invalid SOFTLINE_PROMPT_THEME: %s (use plain, accent, dracula, "
+              "gruvbox, monochrome, monogreen, outrun, riced, or synthwave)\n",
+              name);
       return -1;
     }
   }

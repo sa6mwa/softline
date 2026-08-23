@@ -18,13 +18,25 @@ static int set_prompt_theme_from_environment(sl_t *sl,
       theme = SL_PROMPT_THEME_PLAIN;
     else if (strcmp(name, "accent") == 0)
       theme = SL_PROMPT_THEME_ACCENT;
+    else if (strcmp(name, "dracula") == 0)
+      theme = SL_PROMPT_THEME_DRACULA;
+    else if (strcmp(name, "gruvbox") == 0)
+      theme = SL_PROMPT_THEME_GRUVBOX;
+    else if (strcmp(name, "monochrome") == 0)
+      theme = SL_PROMPT_THEME_MONOCHROME;
+    else if (strcmp(name, "monogreen") == 0)
+      theme = SL_PROMPT_THEME_MONOGREEN;
+    else if (strcmp(name, "outrun") == 0)
+      theme = SL_PROMPT_THEME_OUTRUN;
     else if (strcmp(name, "riced") == 0)
       theme = SL_PROMPT_THEME_RICED;
+    else if (strcmp(name, "synthwave") == 0)
+      theme = SL_PROMPT_THEME_SYNTHWAVE;
     else {
-      fprintf(
-          stderr,
-          "invalid SOFTLINE_PROMPT_THEME: %s (use plain, accent, or riced)\n",
-          name);
+      fprintf(stderr,
+              "invalid SOFTLINE_PROMPT_THEME: %s (use plain, accent, dracula, "
+              "gruvbox, monochrome, monogreen, outrun, riced, or synthwave)\n",
+              name);
       return -1;
     }
   }
@@ -122,6 +134,9 @@ static int print_last_error(sl_t *sl) {
 }
 
 int main(void) {
+  static const char *const status_elements[] = {
+      "gpt-5.6-terra high", "ctx 36%",           "~/g/softline",
+      "weekly 56%",         "feat/prompt-queue", "pursuing chat"};
   sl_t *sl;
   char *line;
   sl_prompt_source_t source;
@@ -155,6 +170,14 @@ int main(void) {
   }
   if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_ACCENT) != 0) {
     fprintf(stderr, "failed to set prompt theme\n");
+    sl->destroy(sl);
+    return 1;
+  }
+  if (sl->set_statusline(sl, 1, 0) != SL_OK ||
+      sl->set_status_elements(sl, status_elements,
+                              sizeof(status_elements) /
+                                  sizeof(status_elements[0])) != SL_OK) {
+    fprintf(stderr, "failed to configure chat status line\n");
     sl->destroy(sl);
     return 1;
   }

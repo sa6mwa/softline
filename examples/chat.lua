@@ -4,7 +4,13 @@ local theme_name = os.getenv("SOFTLINE_PROMPT_THEME") or "accent"
 local themes = {
   plain = softline.PROMPT_THEME_PLAIN,
   accent = softline.PROMPT_THEME_ACCENT,
+  dracula = softline.PROMPT_THEME_DRACULA,
+  gruvbox = softline.PROMPT_THEME_GRUVBOX,
+  monochrome = softline.PROMPT_THEME_MONOCHROME,
+  monogreen = softline.PROMPT_THEME_MONOGREEN,
+  outrun = softline.PROMPT_THEME_OUTRUN,
   riced = softline.PROMPT_THEME_RICED,
+  synthwave = softline.PROMPT_THEME_SYNTHWAVE,
 }
 
 local function is_interactive_terminal()
@@ -48,6 +54,15 @@ local function run()
   sl = softline.new()
   assert(sl:set_prompt_theme(themes[theme_name]))
   assert(sl:set_prompt_queue(true, 64, 3))
+  assert(sl:set_statusline(true, 0))
+  assert(sl:set_status_elements({
+    "gpt-5.6-terra high",
+    "ctx 36%",
+    "~/g/softline",
+    "weekly 56%",
+    "feat/prompt-queue",
+    "pursuing chat",
+  }))
   if interactive then
     assert(sl:bind_key(softline.KEY_CTRL_C, function()
       return softline.KEY_ACTION_CANCEL

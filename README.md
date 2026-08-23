@@ -62,7 +62,8 @@ Currently implemented:
   draft, Alt-E recalls the newest queued draft for editing, and
   `next_prompt()` returns queued work before opening a direct editor while
   identifying whether the result was queued or direct. The renderer ships
-  plain, accent, and riced prompt themes.
+  plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun, Riced, and
+  Synthwave prompt themes. Optional status lines use the selected palette.
 - UTF-8 input is preserved, common Unicode clusters are kept intact by
   cursor/delete operations, and rendering accounts for combining marks, East
   Asian wide characters, and common emoji widths.
@@ -85,13 +86,13 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` enters the alternate screen, keeps the prompt at the bottom of
-the terminal, and prints output through the region above the prompt. It replies
-to dispatched work as `[direct|queued] I read back: <prompt>` and emits a
-random simulated peer message every two seconds while the editor is active.
-Ctrl-C cancels the active editor and keeps the chat open. The alternate-screen,
-queue UI, and simulated peer activate only when both standard input and standard
-output are terminals, so piped use remains plain line-oriented input/output.
+`example_chat` stays in ordinary terminal scrollback. It replies to dispatched
+work as `[direct|queued] I read back: <prompt>`, shows a palette-driven status
+line, and emits a random simulated peer message every two seconds while the
+editor is active. Ctrl-C cancels the active editor and keeps the chat open.
+The queue UI, status line, and simulated peer activate only when both standard
+input and standard output are terminals, so piped use remains plain
+line-oriented input/output.
 
 ```sh
 make run-simple
@@ -101,8 +102,9 @@ make run-chat-riced
 
 `run-simple`, `run-chat`, and `run-chat-riced` build the C examples before
 launching them. Both C and Lua examples accept
-`SOFTLINE_PROMPT_THEME=plain`, `accent`, or `riced`; the generic Make targets
-also expose that as `THEME=...`. The simple examples default to `plain`; chat
+`SOFTLINE_PROMPT_THEME=plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
+`monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
+expose that as `THEME=...`. The simple examples default to `plain`; chat
 examples default to `accent`.
 
 ## Bounded prompts
@@ -153,9 +155,35 @@ current input; Tab on an empty editor is a no-op. The panel shows a total count
 and a bounded number of oldest-first previews. Alt-E removes the newest queued
 entry and restores it to the editor. Explicit key bindings continue to override
 these defaults. Prompt appearance is renderer-owned so it remains safe with
-layout: `plain` is uncoloured, `accent` uses cyan, and `riced` uses vivid
-magenta styling. The selected theme applies to every interactive prompt,
-including normal readline prompts and bounded queue panels.
+layout: `plain` is uncoloured; `accent`, Dracula, Gruvbox, monochrome,
+monogreen, Outrun, Riced, and Synthwave use their embedded palettes. The
+selected theme applies to every interactive prompt, including normal readline
+prompts, status lines, and queue panels.
+
+## Status lines
+
+Status lines are opt-in renderer-owned live rows between queue previews and the
+editor. Set their elements in bulk or update an individual element from an idle
+or key callback. Every colour theme has eight element colours. Element zero is
+the first application element (typically the model name), and the selected
+starting index wraps modulo eight: an offset of 15 therefore uses slot 7 for
+the first element and slot 0 for the second.
+
+```c
+static const char *const status[] = {
+    "gpt-5.6-terra high", "ctx 36%", "~/g/softline", "feat/prompt-queue"};
+
+sl->set_statusline(sl, 1, 0);
+sl->set_status_elements(sl, status, 4);
+sl->set_status_busy(sl, 1);    /* x by default, or /-\\| with spinner enabled */
+sl->set_status_spinner(sl, 1);
+```
+
+The static marker is `:` while idle and `x` while busy. Spinner animation is
+off by default and advances every 500ms only when both spinner and busy are
+enabled. Elements wrap between elements when possible; an oversized element
+wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
+the first 31 and renders `...` as the final element.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.
@@ -194,7 +222,7 @@ make prerelease
 ```
 
 The core library is compiled as C89 with POSIX terminal APIs. Shared builds use
-the separate CMake `SOFTLINE_ABI_VERSION`, currently `0`, for SONAME/SOVERSION.
+the separate CMake `SOFTLINE_ABI_VERSION`, currently `1`, for SONAME/SOVERSION.
 That ABI version is bumped only for shared-library ABI breaks, not for every
 project release-version bump.
 

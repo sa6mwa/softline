@@ -150,6 +150,11 @@ static void test_config_init(void) {
               "prompt queue preview default");
   ASSERT_TRUE(cfg.prompt_theme == SL_PROMPT_THEME_PLAIN,
               "prompt theme default");
+  ASSERT_TRUE(cfg.statusline == 0, "status line default");
+  ASSERT_TRUE(cfg.statusline_start_element == 0,
+              "status element start default");
+  ASSERT_TRUE(cfg.status_spinner == 0, "status spinner default");
+  ASSERT_TRUE(cfg.status_busy == 0, "status busy default");
   PASS();
 }
 
@@ -172,6 +177,14 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->set_screen_width != NULL, "set_screen_width method missing");
   ASSERT_TRUE(sl->set_prompt_queue != NULL, "set_prompt_queue method missing");
   ASSERT_TRUE(sl->set_prompt_theme != NULL, "set_prompt_theme method missing");
+  ASSERT_TRUE(sl->set_statusline != NULL, "set_statusline method missing");
+  ASSERT_TRUE(sl->set_status_elements != NULL,
+              "set_status_elements method missing");
+  ASSERT_TRUE(sl->set_status_element != NULL,
+              "set_status_element method missing");
+  ASSERT_TRUE(sl->set_status_busy != NULL, "set_status_busy method missing");
+  ASSERT_TRUE(sl->set_status_spinner != NULL,
+              "set_status_spinner method missing");
   ASSERT_TRUE(sl->set_idle_callback != NULL,
               "set_idle_callback method missing");
   ASSERT_TRUE(sl->bind_key != NULL, "bind_key method missing");
@@ -210,6 +223,13 @@ static void test_free_function_wrappers_use_receiver_methods(void) {
               "wrapper prompt queue failed");
   ASSERT_TRUE(sl_set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT) == SL_OK,
               "wrapper prompt theme failed");
+  ASSERT_TRUE(sl_set_statusline(sl, 1, 15) == SL_OK,
+              "wrapper status line failed");
+  ASSERT_TRUE(sl_set_status_element(sl, 0, "model") == SL_OK,
+              "wrapper status element failed");
+  ASSERT_TRUE(sl_set_status_busy(sl, 1) == SL_OK, "wrapper status busy failed");
+  ASSERT_TRUE(sl_set_status_spinner(sl, 1) == SL_OK,
+              "wrapper status spinner failed");
   ASSERT_TRUE(sl_set_buffer(sl, "draft") == SL_OK, "wrapper set_buffer failed");
   ASSERT_TRUE(strcmp(sl_buffer(sl), "draft") == 0, "wrapper buffer mismatch");
   ASSERT_TRUE(sl_set_cursor(sl, 2) == SL_OK, "wrapper set_cursor failed");
@@ -327,6 +347,16 @@ static void test_invalid_receiver_arguments(void) {
   ASSERT_TRUE(sl_set_prompt_theme(NULL, SL_PROMPT_THEME_PLAIN) ==
                   SL_ERROR_INVALID,
               "NULL prompt theme accepted");
+  ASSERT_TRUE(sl_set_statusline(NULL, 1, 0) == SL_ERROR_INVALID,
+              "NULL status line accepted");
+  ASSERT_TRUE(sl_set_status_elements(NULL, NULL, 0) == SL_ERROR_INVALID,
+              "NULL status elements accepted");
+  ASSERT_TRUE(sl_set_status_element(NULL, 0, "x") == SL_ERROR_INVALID,
+              "NULL status element accepted");
+  ASSERT_TRUE(sl_set_status_busy(NULL, 1) == SL_ERROR_INVALID,
+              "NULL status busy accepted");
+  ASSERT_TRUE(sl_set_status_spinner(NULL, 1) == SL_ERROR_INVALID,
+              "NULL status spinner accepted");
   ASSERT_TRUE(sl_buffer(NULL) == NULL, "NULL buffer returned text");
   ASSERT_TRUE(sl_cursor(NULL) == 0, "NULL cursor returned offset");
   ASSERT_TRUE(sl_set_cursor(NULL, 0) == SL_ERROR_INVALID,
@@ -354,6 +384,19 @@ static void test_invalid_receiver_arguments(void) {
   ASSERT_TRUE(sl->set_prompt_theme(sl, (sl_prompt_theme_t)99) ==
                   SL_ERROR_INVALID,
               "invalid prompt theme accepted");
+  ASSERT_TRUE(sl->set_statusline(sl, -1, 0) == SL_ERROR_INVALID,
+              "negative status line accepted");
+  ASSERT_TRUE(sl->set_status_elements(sl, NULL, 1) == SL_ERROR_INVALID,
+              "NULL status elements accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, SL_STATUS_MAX_ELEMENTS, "x") ==
+                  SL_ERROR_INVALID,
+              "out-of-range status element accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\ntext") == SL_ERROR_INVALID,
+              "status control text accepted");
+  ASSERT_TRUE(sl->set_status_busy(sl, -1) == SL_ERROR_INVALID,
+              "negative status busy accepted");
+  ASSERT_TRUE(sl->set_status_spinner(sl, -1) == SL_ERROR_INVALID,
+              "negative status spinner accepted");
   ASSERT_TRUE(sl->bind_key(sl, SL_KEY_NONE, NULL, NULL) == SL_ERROR_INVALID,
               "SL_KEY_NONE binding accepted");
   ASSERT_TRUE(sl->insert(sl, NULL) == SL_ERROR_INVALID,
@@ -1925,6 +1968,103 @@ static int run_pty_themed_readline_case(sl_prompt_theme_t theme, char *terminal,
   return 0;
 }
 
+static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
+                                   char *result, size_t result_cap,
+                                   int *exit_status) {
+  static const char *const elements[] = {
+      "e0",  "e1",  "e2",  "e3",  "e4",  "e5",  "e6",  "e7",  "e8",
+      "e9",  "e10", "e11", "e12", "e13", "e14", "e15", "e16", "e17",
+      "e18", "e19", "e20", "e21", "e22", "e23", "e24", "e25", "e26",
+      "e27", "e28", "e29", "e30", "e31", "e32"};
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
+      pipe(result_pipe) != 0)
+    return -1;
+  pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 24;
+    cfg.prompt_theme = SL_PROMPT_THEME_RICED;
+    cfg.statusline = 1;
+    cfg.statusline_start_element = 15;
+    cfg.status_spinner = 1;
+    cfg.status_busy = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_set_status_elements(sl, elements,
+                               sizeof(elements) / sizeof(elements[0])) != SL_OK)
+      _exit(2);
+    line = sl_readline(sl, "status> ");
+    if (!line)
+      _exit(3);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "status> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n <= 0)
+      return -1;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    if (terminal_len >= terminal_cap - 1)
+      return -1;
+  }
+  tries = 0;
+  while (!contains_bytes(terminal, "\033[38;2;54;249;246m- ") && tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, "\033[38;2;54;249;246m- "))
+    return -1;
+  if (write(master_fd, "ok\r", 3) != 3)
+    return -1;
+  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  if (n <= 0)
+    return -1;
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  *exit_status = status;
+  return 0;
+}
+
 static int termios_same_observable(const struct termios *a,
                                    const struct termios *b) {
   int i;
@@ -2572,7 +2712,7 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "riced prompt queue dispatch mismatch");
   ASSERT_TRUE(contains_bytes(terminal, "<< queue: 1 >>") &&
-                  contains_bytes(terminal, "\033[1;95mchat> "),
+                  contains_bytes(terminal, "\033[1;38;2;255;255;255mchat> "),
               "riced full prompt treatment missing");
   PASS();
 }
@@ -2636,31 +2776,66 @@ static void test_prompt_queue_alt_e_recalls_newest(void) {
 }
 
 static void test_prompt_themes_style_normal_readline(void) {
+  static const sl_prompt_theme_t themes[] = {
+      SL_PROMPT_THEME_ACCENT,    SL_PROMPT_THEME_DRACULA,
+      SL_PROMPT_THEME_GRUVBOX,   SL_PROMPT_THEME_MONOCHROME,
+      SL_PROMPT_THEME_MONOGREEN, SL_PROMPT_THEME_OUTRUN,
+      SL_PROMPT_THEME_RICED,     SL_PROMPT_THEME_SYNTHWAVE};
+  static const char *const styles[] = {"\033[1;36mnormal> ",
+                                       "\033[38;2;98;114;164mnormal> ",
+                                       "\033[1;38;2;184;187;38mnormal> ",
+                                       "\033[1;38;2;168;118;40mnormal> ",
+                                       "\033[1;38;2;22;122;31mnormal> ",
+                                       "\033[38;2;78;69;99mnormal> ",
+                                       "\033[1;38;2;255;255;255mnormal> ",
+                                       "\033[1;38;2;255;126;219mnormal> "};
   char terminal[4096];
   char result[64];
   int status;
+  size_t i;
 
   TEST("prompt themes style normal readline UI");
-  ASSERT_TRUE(run_pty_themed_readline_case(SL_PROMPT_THEME_ACCENT, terminal,
-                                           sizeof(terminal), result,
-                                           sizeof(result), &status) == 0,
-              "accent normal prompt pty case failed");
-  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "accent normal prompt child failed");
-  ASSERT_TRUE(strcmp(result, "ok") == 0,
-              "accent normal prompt result mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[1;36mnormal> "),
-              "accent normal prompt treatment missing");
+  for (i = 0; i < sizeof(themes) / sizeof(themes[0]); i++) {
+    ASSERT_TRUE(run_pty_themed_readline_case(themes[i], terminal,
+                                             sizeof(terminal), result,
+                                             sizeof(result), &status) == 0,
+                "themed normal prompt pty case failed");
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "themed normal prompt child failed");
+    ASSERT_TRUE(strcmp(result, "ok") == 0,
+                "themed normal prompt result mismatch");
+    ASSERT_TRUE(contains_bytes(terminal, styles[i]),
+                "themed normal prompt treatment missing");
+  }
+  PASS();
+}
 
-  ASSERT_TRUE(run_pty_themed_readline_case(SL_PROMPT_THEME_RICED, terminal,
-                                           sizeof(terminal), result,
-                                           sizeof(result), &status) == 0,
-              "riced normal prompt pty case failed");
+static void test_statusline_uses_palette_offset_and_truncation(void) {
+  char terminal[16384];
+  char result[64];
+  int status;
+
+  TEST("status line offsets colours and truncates after 32 elements");
+  ASSERT_TRUE(run_pty_statusline_case(terminal, sizeof(terminal), result,
+                                      sizeof(result), &status) == 0,
+              "status line pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "riced normal prompt child failed");
-  ASSERT_TRUE(strcmp(result, "ok") == 0, "riced normal prompt result mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[1;95mnormal> "),
-              "riced normal prompt treatment missing");
+              "status line child failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0, "status line result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246m/ "),
+              "status spinner marker missing");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246m- "),
+              "status spinner did not advance");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;172;164;184me0"),
+              "status starting palette colour missing");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246me1"),
+              "status palette did not wrap after index seven");
+  ASSERT_TRUE(contains_bytes(terminal, "e30") &&
+                  !contains_bytes(terminal, "e31") &&
+                  contains_bytes(terminal, "..."),
+              "status line did not retain 31 elements plus ellipsis");
+  ASSERT_TRUE(contains_after_bytes(terminal, "e7", "\n"),
+              "status elements did not wrap between elements");
   PASS();
 }
 
@@ -5219,6 +5394,11 @@ static void test_prompt_themes_style_normal_readline(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_statusline_uses_palette_offset_and_truncation(void) {
+  TEST("status line offsets colours and truncates after 32 elements");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_key_binding_alt_m_inserts_text(void) {
   TEST("key binding Alt-M inserts text");
   printf("SKIP\n");
@@ -5471,6 +5651,7 @@ int main(void) {
   test_prompt_queue_rejects_reduced_capacity();
   test_prompt_queue_alt_e_recalls_newest();
   test_prompt_themes_style_normal_readline();
+  test_statusline_uses_palette_offset_and_truncation();
   test_key_binding_alt_m_inserts_text();
   test_key_binding_f1_submits();
   test_key_binding_can_edit_buffer_and_submit();

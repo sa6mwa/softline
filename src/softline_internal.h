@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -41,6 +42,19 @@ typedef struct sl_prompt_queue {
   int enabled;
 } sl_prompt_queue_t;
 
+typedef struct sl_statusline {
+  char *elements[SL_STATUS_MAX_ELEMENTS];
+  size_t count;
+  size_t start_element;
+  int enabled;
+  int busy;
+  int spinner;
+  int truncated;
+  int spinner_frame;
+  int spinner_time_valid;
+  struct timeval spinner_time;
+} sl_statusline_t;
+
 typedef struct sl_impl {
   int input_fd;
   int output_fd;
@@ -61,6 +75,7 @@ typedef struct sl_impl {
   sl_history_t history;
   sl_prompt_queue_t prompt_queue;
   sl_prompt_theme_t prompt_theme;
+  sl_statusline_t statusline;
   int history_index;
   char *history_edit;
   int bracketed_paste;

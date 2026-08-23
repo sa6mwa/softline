@@ -25,6 +25,139 @@ typedef struct sl_render {
   int editor_first;
 } sl_render_t;
 
+typedef struct sl_rgb {
+  unsigned char red;
+  unsigned char green;
+  unsigned char blue;
+} sl_rgb_t;
+
+typedef struct sl_theme_palette {
+  sl_rgb_t elements[8];
+  sl_rgb_t separator;
+  sl_rgb_t prompt;
+  sl_rgb_t queue;
+  sl_rgb_t queue_text;
+  int prompt_bold;
+} sl_theme_palette_t;
+
+static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0}},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{56, 189, 248},
+                                                         {34, 211, 238},
+                                                         {167, 139, 250},
+                                                         {244, 114, 182},
+                                                         {251, 191, 36},
+                                                         {52, 211, 153},
+                                                         {251, 146, 60},
+                                                         {248, 113, 113}},
+                                                        {100, 116, 139},
+                                                        {6, 182, 212},
+                                                        {6, 182, 212},
+                                                        {148, 163, 184},
+                                                        1},
+                                                       {{{139, 233, 253},
+                                                         {241, 250, 140},
+                                                         {189, 147, 249},
+                                                         {255, 184, 108},
+                                                         {80, 250, 123},
+                                                         {255, 85, 85},
+                                                         {255, 121, 198},
+                                                         {195, 183, 201}},
+                                                        {98, 114, 164},
+                                                        {98, 114, 164},
+                                                        {98, 114, 164},
+                                                        {195, 183, 201},
+                                                        0},
+                                                       {{{250, 189, 47},
+                                                         {184, 187, 38},
+                                                         {131, 165, 152},
+                                                         {211, 134, 155},
+                                                         {254, 128, 25},
+                                                         {142, 192, 124},
+                                                         {251, 73, 52},
+                                                         {213, 196, 161}},
+                                                        {102, 92, 84},
+                                                        {184, 187, 38},
+                                                        {131, 165, 152},
+                                                        {213, 196, 161},
+                                                        1},
+                                                       {{{224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90}},
+                                                        {88, 83, 74},
+                                                        {168, 118, 40},
+                                                        {125, 110, 72},
+                                                        {169, 152, 101},
+                                                        1},
+                                                       {{{51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51}},
+                                                        {79, 91, 79},
+                                                        {22, 122, 31},
+                                                        {42, 107, 58},
+                                                        {95, 158, 111},
+                                                        1},
+                                                       {{{0, 229, 255},
+                                                         {248, 248, 242},
+                                                         {157, 78, 221},
+                                                         {255, 42, 109},
+                                                         {199, 125, 255},
+                                                         {0, 255, 204},
+                                                         {184, 169, 201},
+                                                         {122, 107, 143}},
+                                                        {78, 69, 99},
+                                                        {78, 69, 99},
+                                                        {122, 107, 143},
+                                                        {184, 169, 201},
+                                                        0},
+                                                       {{{54, 249, 246},
+                                                         {254, 222, 93},
+                                                         {185, 103, 255},
+                                                         {255, 139, 139},
+                                                         {0, 240, 255},
+                                                         {255, 0, 204},
+                                                         {255, 126, 219},
+                                                         {172, 164, 184}},
+                                                        {72, 76, 105},
+                                                        {255, 255, 255},
+                                                        {255, 126, 219},
+                                                        {172, 164, 184},
+                                                        1},
+                                                       {{{255, 126, 219},
+                                                         {248, 248, 242},
+                                                         {54, 249, 246},
+                                                         {185, 103, 255},
+                                                         {54, 249, 246},
+                                                         {255, 126, 219},
+                                                         {179, 169, 192},
+                                                         {130, 120, 156}},
+                                                        {95, 89, 117},
+                                                        {255, 126, 219},
+                                                        {130, 120, 156},
+                                                        {179, 169, 192},
+                                                        1}};
+
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
 static int sl_render_clear_active(sl_t *self);
@@ -139,6 +272,45 @@ static char *sl_prompt_queue_take(sl_prompt_queue_t *queue, int index) {
 
 static int sl_prompt_queue_enabled(const sl_impl_t *impl) {
   return impl && impl->prompt_queue.enabled;
+}
+
+static void sl_statusline_clear(sl_statusline_t *statusline) {
+  size_t i;
+  if (!statusline)
+    return;
+  for (i = 0; i < SL_STATUS_MAX_ELEMENTS; i++) {
+    free(statusline->elements[i]);
+    statusline->elements[i] = NULL;
+  }
+  statusline->count = 0;
+  statusline->truncated = 0;
+}
+
+static int sl_statusline_text_valid(const char *text) {
+  const unsigned char *p;
+  if (!text)
+    return 1;
+  p = (const unsigned char *)text;
+  while (*p) {
+    if (*p < 32 || *p == 127)
+      return 0;
+    p++;
+  }
+  return 1;
+}
+
+static const sl_theme_palette_t *sl_theme_palette(sl_prompt_theme_t theme) {
+  if (theme < SL_PROMPT_THEME_PLAIN || theme > SL_PROMPT_THEME_SYNTHWAVE)
+    return NULL;
+  return &sl_theme_palettes[(int)theme];
+}
+
+static int sl_rgb_style(char *buf, size_t cap, sl_rgb_t rgb, int bold) {
+  int n;
+  n = snprintf(buf, cap, bold ? "\033[1;38;2;%u;%u;%um" : "\033[38;2;%u;%u;%um",
+               (unsigned int)rgb.red, (unsigned int)rgb.green,
+               (unsigned int)rgb.blue);
+  return n > 0 && n < (int)cap ? 0 : -1;
 }
 
 static int sl_write_all(int fd, const char *buf, size_t len) {
@@ -1673,13 +1845,17 @@ static int sl_word_width(const char *buf, size_t len, size_t pos,
 }
 
 static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
-                                       int available) {
+                                       int available, const char *style) {
   size_t pos;
   size_t len;
   int cols;
   int clipped;
+  const char *reset;
   if (!row || !text || available < 1)
     return 0;
+  reset = style && style[0] != '\0' ? "\033[0m" : "";
+  if (sl_row_append(row, style ? style : "", style ? strlen(style) : 0) != 0)
+    return -1;
   pos = 0;
   len = strlen(text);
   cols = 0;
@@ -1704,15 +1880,196 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
   if (clipped && available - cols >= 3 &&
       sl_row_append_cells(row, "...", 3, 3) != 0)
     return -1;
-  return 0;
+  return sl_row_append(row, reset, strlen(reset));
 }
 
 static const char *sl_prompt_theme_style(sl_prompt_theme_t theme) {
   if (theme == SL_PROMPT_THEME_ACCENT)
     return "\033[1;36m";
+  if (theme == SL_PROMPT_THEME_DRACULA)
+    return "\033[38;2;98;114;164m";
+  if (theme == SL_PROMPT_THEME_GRUVBOX)
+    return "\033[1;38;2;184;187;38m";
+  if (theme == SL_PROMPT_THEME_MONOCHROME)
+    return "\033[1;38;2;168;118;40m";
+  if (theme == SL_PROMPT_THEME_MONOGREEN)
+    return "\033[1;38;2;22;122;31m";
+  if (theme == SL_PROMPT_THEME_OUTRUN)
+    return "\033[38;2;78;69;99m";
   if (theme == SL_PROMPT_THEME_RICED)
-    return "\033[1;95m";
+    return "\033[1;38;2;255;255;255m";
+  if (theme == SL_PROMPT_THEME_SYNTHWAVE)
+    return "\033[1;38;2;255;126;219m";
   return "";
+}
+
+static int sl_row_append_styled(sl_row_t *row, const char *text,
+                                const char *style) {
+  const char *reset;
+  if (!row || !text)
+    return -1;
+  reset = style && style[0] != '\0' ? "\033[0m" : "";
+  return sl_row_append(row, style ? style : "", style ? strlen(style) : 0) ||
+                 sl_row_append_cells(row, text, strlen(text),
+                                     sl_text_width(text, strlen(text))) ||
+                 sl_row_append(row, reset, strlen(reset))
+             ? -1
+             : 0;
+}
+
+static int sl_statusline_spinner_advance(sl_statusline_t *statusline) {
+  struct timeval now;
+  long elapsed_ms;
+  if (!statusline || !statusline->spinner || !statusline->busy)
+    return 0;
+  if (gettimeofday(&now, NULL) != 0)
+    return 0;
+  if (!statusline->spinner_time_valid) {
+    statusline->spinner_time = now;
+    statusline->spinner_time_valid = 1;
+    return 1;
+  }
+  elapsed_ms = (long)(now.tv_sec - statusline->spinner_time.tv_sec) * 1000L +
+               (long)(now.tv_usec - statusline->spinner_time.tv_usec) / 1000L;
+  if (elapsed_ms < 500L)
+    return 0;
+  statusline->spinner_frame = (statusline->spinner_frame + 1) % 4;
+  statusline->spinner_time = now;
+  return 1;
+}
+
+static int sl_statusline_append_wrapped(sl_render_t *render, int width,
+                                        int *col, const char *text,
+                                        const char *style, int indent) {
+  size_t pos;
+  size_t len;
+  const char *reset;
+  if (!render || !col || !text || width < 1)
+    return -1;
+  len = strlen(text);
+  if (len == 0)
+    return 0;
+  reset = style && style[0] != '\0' ? "\033[0m" : "";
+  if (sl_row_append(&render->rows[render->count - 1], style ? style : "",
+                    style ? strlen(style) : 0) != 0)
+    return -1;
+  pos = 0;
+  while (pos < len) {
+    int cells;
+    size_t n;
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0) {
+      n = 1;
+      cells = 1;
+    }
+    if (*col > indent && cells > width - *col) {
+      if (sl_row_append(&render->rows[render->count - 1], reset,
+                        strlen(reset)) != 0 ||
+          sl_render_new_row_at(render, 0, 0) != 0 ||
+          sl_row_append_cells(&render->rows[render->count - 1], "  ",
+                              (size_t)indent, indent) != 0 ||
+          sl_row_append(&render->rows[render->count - 1], style ? style : "",
+                        style ? strlen(style) : 0) != 0)
+        return -1;
+      *col = indent;
+    }
+    if (sl_row_append_cells(&render->rows[render->count - 1], text + pos, n,
+                            cells) != 0)
+      return -1;
+    *col += cells;
+    pos += n;
+  }
+  return sl_row_append(&render->rows[render->count - 1], reset, strlen(reset));
+}
+
+static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
+                                       int width) {
+  static const char spinner_frames[] = "/-\\|";
+  static const sl_rgb_t busy_colour = {255, 51, 51};
+  static const sl_rgb_t idle_colour = {57, 255, 20};
+  sl_impl_t *impl;
+  sl_statusline_t *statusline;
+  const sl_theme_palette_t *palette;
+  char marker[3];
+  char style[32];
+  int col;
+  int have_element;
+  size_t i;
+  impl = sl_impl(self);
+  if (!impl || !render || !impl->statusline.enabled)
+    return 0;
+  statusline = &impl->statusline;
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (sl_render_new_row_at(render, 0, 0) != 0)
+    return -1;
+  if (statusline->spinner && statusline->busy) {
+    (void)sl_statusline_spinner_advance(statusline);
+    marker[0] = spinner_frames[statusline->spinner_frame];
+  } else {
+    marker[0] = statusline->busy ? 'x' : ':';
+  }
+  marker[1] = ' ';
+  marker[2] = '\0';
+  if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+    sl_rgb_t colour;
+    colour = statusline->spinner && statusline->busy
+                 ? palette->elements[0]
+                 : (statusline->busy ? busy_colour : idle_colour);
+    if (sl_rgb_style(style, sizeof(style), colour, 0) != 0 ||
+        sl_row_append_styled(&render->rows[render->count - 1], marker, style) !=
+            0)
+      return -1;
+  } else if (sl_row_append_cells(&render->rows[render->count - 1], marker, 2,
+                                 2) != 0) {
+    return -1;
+  }
+  col = 2;
+  have_element = 0;
+  for (i = 0; i < statusline->count; i++) {
+    const char *element;
+    int element_width;
+    int indent;
+    element = statusline->elements[i];
+    if (!element || element[0] == '\0')
+      continue;
+    element_width = sl_text_width(element, strlen(element));
+    indent = width > 2 ? 2 : 0;
+    if ((have_element && element_width + 3 > width - col) ||
+        (!have_element && element_width > width - col)) {
+      if (sl_render_new_row_at(render, 0, 0) != 0 ||
+          (indent > 0 &&
+           sl_row_append_cells(&render->rows[render->count - 1], "  ",
+                               (size_t)indent, indent) != 0))
+        return -1;
+      col = indent;
+      have_element = 0;
+    }
+    if (have_element) {
+      if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+        if (sl_rgb_style(style, sizeof(style), palette->separator, 0) != 0 ||
+            sl_row_append_styled(&render->rows[render->count - 1], " : ",
+                                 style) != 0)
+          return -1;
+      } else if (sl_row_append_cells(&render->rows[render->count - 1], " : ", 3,
+                                     3) != 0) {
+        return -1;
+      }
+      col += 3;
+    }
+    if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+      if (sl_rgb_style(style, sizeof(style),
+                       palette->elements[(statusline->start_element + i) % 8],
+                       0) != 0 ||
+          sl_statusline_append_wrapped(render, width, &col, element, style,
+                                       indent) != 0)
+        return -1;
+    } else if (sl_statusline_append_wrapped(render, width, &col, element, "",
+                                            indent) != 0) {
+      return -1;
+    }
+    have_element = 1;
+  }
+  return 0;
 }
 
 static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
@@ -1722,7 +2079,11 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   const char *header_prefix;
   const char *entry_prefix;
   const char *style;
+  const char *text_style;
   const char *reset;
+  const sl_theme_palette_t *palette;
+  char queue_style[32];
+  char queue_text_style[32];
   char header[64];
   int i;
   int shown;
@@ -1735,17 +2096,26 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   header_prefix = "Queued (";
   entry_prefix = "  ";
   style = "";
+  text_style = "";
   reset = "";
-  if (impl->prompt_theme == SL_PROMPT_THEME_ACCENT) {
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+    if (sl_rgb_style(queue_style, sizeof(queue_style), palette->queue, 0) !=
+            0 ||
+        sl_rgb_style(queue_text_style, sizeof(queue_text_style),
+                     palette->queue_text, 0) != 0)
+      return -1;
+    style = queue_style;
+    text_style = queue_text_style;
+    reset = "\033[0m";
+  }
+  if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
     header_prefix = "[ queued: ";
     entry_prefix = " > ";
-    style = sl_prompt_theme_style(impl->prompt_theme);
-    reset = "\033[0m";
-  } else if (impl->prompt_theme == SL_PROMPT_THEME_RICED) {
+  }
+  if (impl->prompt_theme == SL_PROMPT_THEME_RICED) {
     header_prefix = "<< queue: ";
     entry_prefix = " :: ";
-    style = sl_prompt_theme_style(impl->prompt_theme);
-    reset = "\033[0m";
   }
   if (impl->prompt_theme == SL_PROMPT_THEME_PLAIN)
     (void)snprintf(header, sizeof(header), "%s%d)", header_prefix, queue->len);
@@ -1781,9 +2151,8 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
             sl_text_width(entry_prefix, strlen(entry_prefix))) != 0 ||
         sl_row_append_cells(row, number, strlen(number),
                             sl_text_width(number, strlen(number))) != 0 ||
-        sl_queue_row_append_preview(row, queue->items[i],
-                                    width - prefix_width) != 0 ||
-        sl_row_append(row, reset, strlen(reset)) != 0)
+        sl_queue_row_append_preview(row, queue->items[i], width - prefix_width,
+                                    text_style) != 0)
       return -1;
   }
   if (shown < queue->len) {
@@ -1821,6 +2190,8 @@ static int sl_render_build(sl_t *self, const char *prompt,
   if (width < 1)
     width = 1;
   if (sl_render_append_queue_panel(self, render, width) != 0)
+    return -1;
+  if (sl_render_append_statusline(self, render, width) != 0)
     return -1;
   render->editor_first = render->count;
   prompt_style = sl_prompt_theme_style(impl->prompt_theme);
@@ -3418,6 +3789,7 @@ static void sl_destroy_method(sl_t *self) {
     (void)sl_show_cursor(impl);
     sl_history_clear(&impl->history);
     sl_prompt_queue_clear(&impl->prompt_queue);
+    sl_statusline_clear(&impl->statusline);
     sl_render_store_clear(impl);
     free(impl->history_edit);
     free(impl->buf);
@@ -3466,11 +3838,132 @@ static int sl_set_prompt_queue_method(sl_t *self, int enabled, int max_entries,
 static int sl_set_prompt_theme_method(sl_t *self, sl_prompt_theme_t theme) {
   sl_impl_t *impl;
   impl = sl_impl(self);
-  if (!impl || theme < SL_PROMPT_THEME_PLAIN || theme > SL_PROMPT_THEME_RICED) {
+  if (!impl || theme < SL_PROMPT_THEME_PLAIN ||
+      theme > SL_PROMPT_THEME_SYNTHWAVE) {
     sl_set_error(self, "invalid prompt theme");
     return SL_ERROR_INVALID;
   }
   impl->prompt_theme = theme;
+  return SL_OK;
+}
+
+static int sl_set_statusline_method(sl_t *self, int enabled,
+                                    size_t starting_element) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0) {
+    sl_set_error(self, "invalid status line configuration");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.enabled = enabled;
+  impl->statusline.start_element = starting_element;
+  return SL_OK;
+}
+
+static int sl_set_status_elements_method(sl_t *self,
+                                         const char *const *elements,
+                                         size_t count) {
+  char *copies[SL_STATUS_MAX_ELEMENTS];
+  sl_impl_t *impl;
+  size_t i;
+  size_t limit;
+  int result;
+  int truncated;
+  memset(copies, 0, sizeof(copies));
+  impl = sl_impl(self);
+  if (!impl || (count > 0 && !elements)) {
+    sl_set_error(self, "invalid status line elements");
+    return SL_ERROR_INVALID;
+  }
+  truncated = count > SL_STATUS_MAX_ELEMENTS;
+  result = SL_ERROR_NOMEM;
+  limit = truncated ? SL_STATUS_MAX_ELEMENTS - 1 : count;
+  for (i = 0; i < limit; i++) {
+    if (!sl_statusline_text_valid(elements[i])) {
+      sl_set_error(self, "status line element contains control characters");
+      result = SL_ERROR_INVALID;
+      goto fail;
+    }
+    if (elements[i]) {
+      copies[i] = sl_strdup(elements[i]);
+      if (!copies[i]) {
+        sl_set_error(self, "failed to allocate status line element");
+        goto fail;
+      }
+    }
+  }
+  if (truncated) {
+    copies[SL_STATUS_MAX_ELEMENTS - 1] = sl_strdup("...");
+    if (!copies[SL_STATUS_MAX_ELEMENTS - 1]) {
+      sl_set_error(self, "failed to allocate status line truncation");
+      goto fail;
+    }
+    limit = SL_STATUS_MAX_ELEMENTS;
+  }
+  sl_statusline_clear(&impl->statusline);
+  for (i = 0; i < limit; i++) {
+    impl->statusline.elements[i] = copies[i];
+    copies[i] = NULL;
+  }
+  impl->statusline.count = limit;
+  impl->statusline.truncated = truncated;
+  return SL_OK;
+
+fail:
+  for (i = 0; i < SL_STATUS_MAX_ELEMENTS; i++)
+    free(copies[i]);
+  return result;
+}
+
+static int sl_set_status_element_method(sl_t *self, size_t index,
+                                        const char *element) {
+  char *copy;
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || index >= SL_STATUS_MAX_ELEMENTS ||
+      !sl_statusline_text_valid(element)) {
+    sl_set_error(self, "invalid status line element");
+    return SL_ERROR_INVALID;
+  }
+  copy = element ? sl_strdup(element) : NULL;
+  if (element && !copy) {
+    sl_set_error(self, "failed to allocate status line element");
+    return SL_ERROR_NOMEM;
+  }
+  free(impl->statusline.elements[index]);
+  impl->statusline.elements[index] = copy;
+  if (copy && index + 1 > impl->statusline.count)
+    impl->statusline.count = index + 1;
+  while (impl->statusline.count > 0 &&
+         !impl->statusline.elements[impl->statusline.count - 1])
+    impl->statusline.count--;
+  if (index == SL_STATUS_MAX_ELEMENTS - 1 && !copy)
+    impl->statusline.truncated = 0;
+  return SL_OK;
+}
+
+static int sl_set_status_busy_method(sl_t *self, int busy) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || busy < 0) {
+    sl_set_error(self, "invalid status busy state");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.busy = busy;
+  impl->statusline.spinner_time_valid = 0;
+  return SL_OK;
+}
+
+static int sl_set_status_spinner_method(sl_t *self, int enabled) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0) {
+    sl_set_error(self, "invalid status spinner configuration");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.spinner = enabled;
+  impl->statusline.spinner_frame = 0;
+  impl->statusline.spinner_time_valid = 0;
   return SL_OK;
 }
 
@@ -3536,6 +4029,10 @@ void sl_config_init(sl_config_t *config) {
   config->prompt_queue_max_entries = SL_PROMPT_QUEUE_DEFAULT_MAX;
   config->prompt_queue_preview_entries = SL_PROMPT_QUEUE_DEFAULT_PREVIEWS;
   config->prompt_theme = SL_PROMPT_THEME_PLAIN;
+  config->statusline = 0;
+  config->statusline_start_element = 0;
+  config->status_spinner = 0;
+  config->status_busy = 0;
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
@@ -3552,8 +4049,10 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
       config->prompt_queue < 0 || config->prompt_queue_max_entries < 1 ||
       config->prompt_queue_preview_entries < 1 ||
       config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
-      config->prompt_theme > SL_PROMPT_THEME_RICED ||
-      config->line_max_len == 0 || config->line_max_len > (size_t)INT_MAX - 2)
+      config->prompt_theme > SL_PROMPT_THEME_SYNTHWAVE ||
+      config->statusline < 0 || config->status_spinner < 0 ||
+      config->status_busy < 0 || config->line_max_len == 0 ||
+      config->line_max_len > (size_t)INT_MAX - 2)
     return NULL;
   self = (sl_t *)calloc(1, sizeof(*self));
   impl = (sl_impl_t *)calloc(1, sizeof(*impl));
@@ -3587,6 +4086,11 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->next_prompt = sl_next_prompt_method;
   self->set_prompt_queue = sl_set_prompt_queue_method;
   self->set_prompt_theme = sl_set_prompt_theme_method;
+  self->set_statusline = sl_set_statusline_method;
+  self->set_status_elements = sl_set_status_elements_method;
+  self->set_status_element = sl_set_status_element_method;
+  self->set_status_busy = sl_set_status_busy_method;
+  self->set_status_spinner = sl_set_status_spinner_method;
   impl->input_fd = config->input_fd >= 0 ? config->input_fd : STDIN_FILENO;
   impl->output_fd = config->output_fd >= 0 ? config->output_fd : STDOUT_FILENO;
   impl->screen_x = config->screen_x;
@@ -3601,6 +4105,10 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->prompt_queue.max_entries = config->prompt_queue_max_entries;
   impl->prompt_queue.preview_entries = config->prompt_queue_preview_entries;
   impl->prompt_theme = config->prompt_theme;
+  impl->statusline.enabled = config->statusline;
+  impl->statusline.start_element = config->statusline_start_element;
+  impl->statusline.spinner = config->status_spinner;
+  impl->statusline.busy = config->status_busy;
   impl->history.max_len = config->history_max_len;
   impl->history_index = -1;
   if (sl_buf_reserve(self, 1) != 0) {
@@ -3695,6 +4203,37 @@ int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme) {
   if (!self || !self->set_prompt_theme)
     return SL_ERROR_INVALID;
   return self->set_prompt_theme(self, theme);
+}
+
+int sl_set_statusline(sl_t *self, int enabled, size_t starting_element) {
+  if (!self || !self->set_statusline)
+    return SL_ERROR_INVALID;
+  return self->set_statusline(self, enabled, starting_element);
+}
+
+int sl_set_status_elements(sl_t *self, const char *const *elements,
+                           size_t count) {
+  if (!self || !self->set_status_elements)
+    return SL_ERROR_INVALID;
+  return self->set_status_elements(self, elements, count);
+}
+
+int sl_set_status_element(sl_t *self, size_t index, const char *element) {
+  if (!self || !self->set_status_element)
+    return SL_ERROR_INVALID;
+  return self->set_status_element(self, index, element);
+}
+
+int sl_set_status_busy(sl_t *self, int busy) {
+  if (!self || !self->set_status_busy)
+    return SL_ERROR_INVALID;
+  return self->set_status_busy(self, busy);
+}
+
+int sl_set_status_spinner(sl_t *self, int enabled) {
+  if (!self || !self->set_status_spinner)
+    return SL_ERROR_INVALID;
+  return self->set_status_spinner(self, enabled);
 }
 
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,
