@@ -86,11 +86,12 @@ Not currently implemented:
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
 `example_chat` enters the alternate screen, keeps the prompt at the bottom of
-the terminal, and prints output through the region above the prompt.
-It labels delivered work as `[direct]` or `[queued]`; Ctrl-C cancels the active
-editor and keeps the chat open. The alternate-screen and queue UI activate only
-when both standard input and standard output are terminals, so piped use remains
-plain line-oriented input/output.
+the terminal, and prints output through the region above the prompt. It replies
+to dispatched work as `[direct|queued] I read back: <prompt>` and emits a
+random simulated peer message every two seconds while the editor is active.
+Ctrl-C cancels the active editor and keeps the chat open. The alternate-screen,
+queue UI, and simulated peer activate only when both standard input and standard
+output are terminals, so piped use remains plain line-oriented input/output.
 
 ```sh
 make run-simple

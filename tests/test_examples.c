@@ -499,25 +499,50 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   ASSERT_TRUE(write(master_fd, "queued\tcurrent\r", 15) == 15,
               "write queue input failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[direct] current",
-                                  "[queued] queued") == 0,
+                                  sizeof(terminal),
+                                  "[direct] I read back: current",
+                                  "[queued] I read back: queued") == 0,
               "queue dispatch output missing or out of order");
-  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[queued] queued",
-                                  "\033[?2004h") == 0,
-              "chat prompt did not resume after queued dispatch");
-  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[queued] queued",
-                                  "\033[?25h") == 0,
-              "chat cursor did not resume after queued dispatch");
+  ASSERT_TRUE(
+      wait_for_text_after(master_fd, terminal, &terminal_len, sizeof(terminal),
+                          "[queued] I read back: queued", "\033[?2004h") == 0,
+      "chat prompt did not resume after queued dispatch");
+  ASSERT_TRUE(
+      wait_for_text_after(master_fd, terminal, &terminal_len, sizeof(terminal),
+                          "[queued] I read back: queued", "\033[?25h") == 0,
+      "chat cursor did not resume after queued dispatch");
   ASSERT_TRUE(!contains_bytes(terminal, "\r\r\n"),
               "chat emitted a doubled terminal carriage return");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[9;"),
               "chat addressed a row below the terminal viewport");
-  ASSERT_TRUE(contains_after_bytes(terminal, "\033[?25l", "[direct] current"),
+  ASSERT_TRUE(contains_after_bytes(terminal, "\033[?25l",
+                                   "[direct] I read back: current"),
               "chat did not hide the cursor before dispatch redraw");
-  ASSERT_TRUE(contains_after_bytes(terminal, "[queued] queued", "\033[?25h"),
+  ASSERT_TRUE(contains_after_bytes(terminal, "[queued] I read back: queued",
+                                   "\033[?25h"),
               "chat did not restore the cursor after prompt redraw");
+  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  PASS();
+}
+
+static void test_example_chat_receives_peer_messages(const char *path) {
+  int master_fd;
+  pid_t pid;
+  char terminal[8192];
+  size_t terminal_len;
+
+  TEST("example_chat receives timed peer messages");
+  pid = spawn_example(path, &master_fd, 40, 8);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "chat> ") == 0,
+              "initial prompt missing");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[peer] ") == 0,
+              "timed peer message missing");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
@@ -562,12 +587,13 @@ static void test_example_chat_patches_editor_rows(const char *path) {
               "editor update repainted or repositioned the prompt");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "[direct] hello") == 0,
+                            sizeof(terminal),
+                            "[direct] I read back: hello") == 0,
               "submitted message missing");
-  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[direct] hello",
-                                  "\033[?2004h") == 0,
-              "next prompt did not start");
+  ASSERT_TRUE(
+      wait_for_text_after(master_fd, terminal, &terminal_len, sizeof(terminal),
+                          "[direct] I read back: hello", "\033[?2004h") == 0,
+      "next prompt did not start");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
@@ -648,7 +674,7 @@ static void test_example_chat_is_plain_without_tty(const char *path) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "non-tty chat child failed");
-  ASSERT_TRUE(strcmp(output, "[direct] hello\n") == 0,
+  ASSERT_TRUE(strcmp(output, "[direct] I read back: hello\n") == 0,
               "non-tty chat output mismatch");
   ASSERT_TRUE(!contains_bytes(output, "\033["),
               "non-tty chat emitted terminal control sequences");
@@ -668,6 +694,7 @@ int main(int argc, char **argv) {
   test_example_simple_wraps_near_bottom(argv[1]);
   test_example_chat_reflows_after_resize(argv[2]);
   test_example_chat_dispatches_queued_prompts(argv[2]);
+  test_example_chat_receives_peer_messages(argv[2]);
   test_example_chat_patches_editor_rows(argv[2]);
   test_example_chat_ctrl_c_cancels_and_continues(argv[2]);
   test_example_chat_is_plain_without_tty(argv[2]);

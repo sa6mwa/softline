@@ -47,6 +47,7 @@ def main():
     os.close(slave)
     try:
         read_until(master, b"chat> ")
+        read_until(master, b"[peer] ", timeout=4.0)
         os.write(master, b"\x03")
         read_until(master, b"[cancelled]")
         time.sleep(0.1)

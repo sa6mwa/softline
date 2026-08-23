@@ -15,6 +15,13 @@ end
 local interactive = is_interactive_terminal()
 local alt_screen_active = false
 local sl
+local next_peer_message_at
+local peer_messages = {
+  "I found a calm corner of the conversation.",
+  "The kettle is on; take your time.",
+  "A small detail can change the whole picture.",
+  "I am following along from the other side of the room.",
+}
 
 local function leave_alt_screen()
   if alt_screen_active then
@@ -28,6 +35,20 @@ local function print_message(parts)
   if not ok then
     error(sl:last_error() or ("print_above failed: " .. tostring(status)))
   end
+end
+
+local function print_reply(source, line)
+  local label = source == softline.PROMPT_SOURCE_QUEUED and "[queued] " or "[direct] "
+  print_message({ label, "I read back: ", line, "\n" })
+end
+
+local function print_peer_message()
+  local now = os.time()
+  if now < next_peer_message_at then
+    return
+  end
+  next_peer_message_at = now + 2
+  print_message({ "[peer] ", peer_messages[math.random(#peer_messages)], "\n" })
 end
 
 local function run()
@@ -45,6 +66,9 @@ local function run()
     assert(sl:bind_key(softline.KEY_CTRL_C, function()
       return softline.KEY_ACTION_CANCEL
     end))
+    math.randomseed(os.time())
+    next_peer_message_at = os.time() + 2
+    assert(sl:set_idle_callback(print_peer_message))
     print_message({ "softline Lua chat example. Tab queues; Alt-E recalls the newest queued prompt.\n" })
   end
 
@@ -54,8 +78,7 @@ local function run()
       if line == "exit" then
         break
       end
-      local label = source_or_status == softline.PROMPT_SOURCE_QUEUED and "[queued] " or "[direct] "
-      print_message({ label, line, "\n" })
+      print_reply(source_or_status, line)
     elseif source_or_status == softline.READLINE_CANCELLED or source_or_status == softline.READLINE_INTERRUPTED then
       if interactive then
         print_message({ "[cancelled]\n" })

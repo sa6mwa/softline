@@ -17,6 +17,7 @@ typedef struct softline_lua_handle {
     sl_key_t key;
     int ref;
   } key_bindings[SOFTLINE_LUA_MAX_KEY_BINDINGS];
+  int idle_callback_ref;
 } softline_lua_handle_t;
 
 typedef struct softline_lua_stream {
@@ -110,6 +111,20 @@ static int softline_lua_key_callback(sl_t *sl, sl_key_t key, void *userdata,
   }
 }
 
+static void softline_lua_idle_callback(sl_t *sl, void *userdata) {
+  softline_lua_handle_t *handle;
+  lua_State *L;
+  handle = (softline_lua_handle_t *)userdata;
+  if (!handle || !handle->L || handle->idle_callback_ref == LUA_NOREF)
+    return;
+  L = handle->L;
+  lua_rawgeti(L, LUA_REGISTRYINDEX, handle->idle_callback_ref);
+  if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    lua_pop(L, 1);
+    (void)sl_cancel(sl);
+  }
+}
+
 static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   if (lua_isnoneornil(L, index))
     return;
@@ -189,6 +204,7 @@ static int softline_lua_new(lua_State *L) {
     handle->key_bindings[i].key = SL_KEY_NONE;
     handle->key_bindings[i].ref = LUA_NOREF;
   }
+  handle->idle_callback_ref = LUA_NOREF;
   handle->sl = sl_create_with_config(&config);
   if (!handle->sl)
     return luaL_error(L, "failed to create softline handle");
@@ -206,6 +222,10 @@ static int softline_lua_gc(lua_State *L) {
       luaL_unref(L, LUA_REGISTRYINDEX, handle->key_bindings[i].ref);
       handle->key_bindings[i].ref = LUA_NOREF;
     }
+  }
+  if (handle->idle_callback_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, handle->idle_callback_ref);
+    handle->idle_callback_ref = LUA_NOREF;
   }
   if (handle->sl) {
     sl_destroy(handle->sl);
@@ -397,6 +417,33 @@ static int softline_lua_bind_key(lua_State *L) {
   return softline_lua_status(L, status);
 }
 
+static int softline_lua_set_idle_callback(lua_State *L) {
+  softline_lua_handle_t *handle;
+  int ref;
+  int status;
+  handle = softline_lua_check(L, 1);
+  if (lua_isnoneornil(L, 2)) {
+    status = sl_set_idle_callback(handle->sl, NULL, NULL);
+    if (status == SL_OK && handle->idle_callback_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, handle->idle_callback_ref);
+      handle->idle_callback_ref = LUA_NOREF;
+    }
+    return softline_lua_status(L, status);
+  }
+  luaL_checktype(L, 2, LUA_TFUNCTION);
+  lua_pushvalue(L, 2);
+  ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  status = sl_set_idle_callback(handle->sl, softline_lua_idle_callback, handle);
+  if (status != SL_OK) {
+    luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    return softline_lua_status(L, status);
+  }
+  if (handle->idle_callback_ref != LUA_NOREF)
+    luaL_unref(L, LUA_REGISTRYINDEX, handle->idle_callback_ref);
+  handle->idle_callback_ref = ref;
+  return softline_lua_status(L, status);
+}
+
 static int softline_lua_last_readline_status(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -504,6 +551,7 @@ static const luaL_Reg softline_lua_methods[] = {
     {"submit", softline_lua_submit},
     {"cancel", softline_lua_cancel},
     {"bind_key", softline_lua_bind_key},
+    {"set_idle_callback", softline_lua_set_idle_callback},
     {"print_above", softline_lua_print_above},
     {"last_readline_status", softline_lua_last_readline_status},
     {"last_error", softline_lua_last_error},

@@ -57,6 +57,10 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
   width or height uses dynamic terminal bounds.
 - `sl:set_screen_width(width)` sets normal prompt wrapping width; `0` returns
   to terminal-width probing.
+- `sl:set_idle_callback(callback)` registers a no-argument Lua callback that
+  runs while an interactive editor is idle; pass `nil` to clear it. The
+  callback may use methods such as `print_above`, `insert`, `submit`, or
+  `cancel`.
 - `sl:set_prompt_queue(enabled, max_entries, preview_entries)` enables the
   bounded chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
   queued entry into the editor.

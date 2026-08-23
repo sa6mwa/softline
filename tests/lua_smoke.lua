@@ -20,6 +20,8 @@ assert(sl:set_cursor(1))
 assert_eq(sl:cursor(), 0, "UTF-8 cursor clamp")
 assert(sl:insert("x"))
 assert_eq(sl:buffer(), "xå", "UTF-8 cursor insert")
+assert(sl:set_idle_callback(function() end))
+assert(sl:set_idle_callback(nil))
 assert(sl:print_above({ "alpha", "-", "beta\n" }))
 assert(sl:print_above(function(i)
   if i == 1 then

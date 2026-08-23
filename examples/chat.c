@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t alt_screen_active = 0;
@@ -64,7 +65,7 @@ static int enter_alt_screen(void) {
 }
 
 struct message_stream {
-  const char *chunks[3];
+  const char *chunks[4];
   int index;
 };
 
@@ -74,7 +75,7 @@ static int next_message_chunk(sl_t *sl, void *userdata, const char **chunk,
   const char *text;
   (void)sl;
   stream = (struct message_stream *)userdata;
-  if (!stream || stream->index >= 3) {
+  if (!stream || stream->index >= 4) {
     *chunk = NULL;
     *len = 0;
     return SL_OK;
@@ -96,19 +97,44 @@ static int print_message(sl_t *sl, const char *text) {
   stream.chunks[0] = text;
   stream.chunks[1] = "\n";
   stream.chunks[2] = NULL;
+  stream.chunks[3] = NULL;
   stream.index = 0;
   return sl->print_above(sl, next_message_chunk, &stream);
 }
 
-static int print_dispatch(sl_t *sl, sl_prompt_source_t source,
-                          const char *text) {
+static int print_reply(sl_t *sl, sl_prompt_source_t source, const char *text) {
   struct message_stream stream;
   stream.chunks[0] =
       source == SL_PROMPT_SOURCE_QUEUED ? "[queued] " : "[direct] ";
-  stream.chunks[1] = text;
-  stream.chunks[2] = "\n";
+  stream.chunks[1] = "I read back: ";
+  stream.chunks[2] = text;
+  stream.chunks[3] = "\n";
   stream.index = 0;
   return sl->print_above(sl, next_message_chunk, &stream);
+}
+
+struct peer_state {
+  time_t next_message_at;
+};
+
+static void print_peer_message(sl_t *sl, void *userdata) {
+  static const char *const messages[] = {
+      "[peer] I found a calm corner of the conversation.",
+      "[peer] The kettle is on; take your time.",
+      "[peer] A small detail can change the whole picture.",
+      "[peer] I am following along from the other side of the room."};
+  struct peer_state *state;
+  time_t now;
+  size_t count;
+  state = (struct peer_state *)userdata;
+  if (!state)
+    return;
+  now = time(NULL);
+  if (now < state->next_message_at)
+    return;
+  state->next_message_at = now + 2;
+  count = sizeof(messages) / sizeof(messages[0]);
+  (void)print_message(sl, messages[(size_t)rand() % count]);
 }
 
 static int print_last_error(sl_t *sl) {
@@ -124,6 +150,7 @@ int main(void) {
   char *line;
   sl_prompt_source_t source;
   sl_readline_status_t status;
+  struct peer_state peer;
   int interactive;
   int exit_code;
 
@@ -146,6 +173,16 @@ int main(void) {
     sl->destroy(sl);
     leave_alt_screen();
     return 1;
+  }
+  if (interactive) {
+    peer.next_message_at = time(NULL) + 2;
+    srand((unsigned int)(time(NULL) ^ (time_t)getpid()));
+    if (sl->set_idle_callback(sl, print_peer_message, &peer) != SL_OK) {
+      fprintf(stderr, "failed to enable simulated peer messages\n");
+      sl->destroy(sl);
+      leave_alt_screen();
+      return 1;
+    }
   }
   if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_ACCENT) != 0) {
     fprintf(stderr, "failed to set prompt theme\n");
@@ -184,7 +221,7 @@ int main(void) {
       sl->free_string(sl, line);
       break;
     }
-    if (print_dispatch(sl, source, line) != SL_OK) {
+    if (print_reply(sl, source, line) != SL_OK) {
       sl->free_string(sl, line);
       (void)print_last_error(sl);
       exit_code = 1;
