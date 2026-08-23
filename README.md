@@ -189,9 +189,10 @@ sl->set_status_busy(sl, 1);    /* x by default, or /-\\| with spinner enabled */
 sl->set_status_spinner(sl, 1);
 ```
 
-The static marker is `@` while idle and `x` while busy. Spinner animation is
-off by default and advances every 500ms only when both spinner and busy are
-enabled. Elements wrap between elements when possible; an oversized element
+The static marker is green `@` while idle and red `x` while busy. The busy
+spinner uses that same red, is off by default, and advances every 500ms only
+when both spinner and busy are enabled. Elements wrap between elements when
+possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
 

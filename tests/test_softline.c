@@ -2058,7 +2058,7 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
       return -1;
   }
   tries = 0;
-  while (!contains_bytes(terminal, "\033[38;2;54;249;246m- ") && tries < 20) {
+  while (!contains_bytes(terminal, "\033[38;2;255;51;51m- ") && tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n < 0)
@@ -2071,7 +2071,7 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     }
     tries++;
   }
-  if (!contains_bytes(terminal, "\033[38;2;54;249;246m- "))
+  if (!contains_bytes(terminal, "\033[38;2;255;51;51m- "))
     return -1;
   if (write(master_fd, "\033m", 2) != 2)
     return -1;
@@ -2905,9 +2905,9 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "status line child failed");
   ASSERT_TRUE(strcmp(result, "ok") == 0, "status line result mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246m/ "),
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;255;51;51m/ "),
               "status spinner marker missing");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246m- "),
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;255;51;51m- "),
               "status spinner did not advance");
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;57;255;20m@ "),
               "status idle marker missing");

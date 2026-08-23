@@ -2066,9 +2066,7 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   marker[2] = '\0';
   if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
     sl_rgb_t colour;
-    colour = statusline->spinner && statusline->busy
-                 ? palette->elements[0]
-                 : (statusline->busy ? busy_colour : idle_colour);
+    colour = statusline->busy ? busy_colour : idle_colour;
     if (sl_rgb_style(style, sizeof(style), colour, 0) != 0 ||
         sl_row_append_styled(&render->rows[render->count - 1], marker, style) !=
             0)
