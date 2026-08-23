@@ -267,8 +267,8 @@ typedef struct sl_config {
   int status_spinner;
   /** Non-zero selects the busy status marker. */
   int status_busy;
-  /** Printable ASCII marker shown while idle; '\0' leaves the status line
-   * unmarked. */
+  /** Printable ASCII marker shown while idle; '\0' leaves its reserved status
+   * marker slot blank. */
   char status_idle_marker;
 } sl_config_t;
 
@@ -358,11 +358,11 @@ struct sl {
   /** Set, replace, or clear one retained status-line element. */
   int (*set_status_element)(sl_t *self, size_t index, const char *element);
   /** Set busy state; busy renders x (or a spinner), while idle uses the
-   * configured marker or no marker by default. */
+   * configured marker or a blank reserved marker slot by default. */
   int (*set_status_busy)(sl_t *self, int busy);
   /** Enable or disable the 500ms /-\\| busy spinner. */
   int (*set_status_spinner)(sl_t *self, int enabled);
-  /** Set the printable ASCII idle marker, or '\0' to omit it. */
+  /** Set the printable ASCII idle marker, or '\0' for a blank reserved slot. */
   int (*set_status_idle_marker)(sl_t *self, char marker);
 };
 
@@ -460,13 +460,13 @@ int sl_set_status_elements(sl_t *self, const char *const *elements,
 int sl_set_status_element(sl_t *self, size_t index, const char *element);
 
 /** Set the status-line busy state. With the spinner disabled, busy renders x;
- * idle renders the configured marker or nothing by default. */
+ * idle renders the configured marker or a blank reserved slot by default. */
 int sl_set_status_busy(sl_t *self, int busy);
 
 /** Enable or disable the 500ms /-\\| spinner used while status is busy. */
 int sl_set_status_spinner(sl_t *self, int enabled);
 
-/** Set a printable ASCII idle marker, or '\0' to render no idle marker. */
+/** Set a printable ASCII idle marker, or '\0' for a blank reserved slot. */
 int sl_set_status_idle_marker(sl_t *self, char marker);
 
 /** Register or clear an idle callback for this handle. */
