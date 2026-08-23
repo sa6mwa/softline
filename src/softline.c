@@ -279,6 +279,24 @@ static void sl_disable_bracketed_paste(sl_impl_t *impl) {
   (void)sl_wstr(impl->output_fd, "\033[?2004l");
 }
 
+static int sl_hide_cursor(sl_impl_t *impl) {
+  if (!impl || impl->cursor_hidden)
+    return impl ? 0 : -1;
+  if (sl_wstr(impl->output_fd, "\033[?25l") != 0)
+    return -1;
+  impl->cursor_hidden = 1;
+  return 0;
+}
+
+static int sl_show_cursor(sl_impl_t *impl) {
+  if (!impl || !impl->cursor_hidden)
+    return impl ? 0 : -1;
+  if (sl_wstr(impl->output_fd, "\033[?25h") != 0)
+    return -1;
+  impl->cursor_hidden = 0;
+  return 0;
+}
+
 static int sl_terminal_columns(sl_impl_t *impl) {
   struct winsize ws;
   if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
@@ -332,6 +350,24 @@ static int sl_clear_box_tail(sl_impl_t *impl, int from_col) {
   if (remaining <= 0)
     return 0;
   return sl_write_spaces(impl->output_fd, remaining);
+}
+
+/* A full-width box can use the terminal's erase primitive. This avoids
+ * visibly painting a run of spaces while dismissing a chat prompt. */
+static int sl_clear_bounded_tail(sl_impl_t *impl, int from_col) {
+  if (!impl)
+    return -1;
+  if (sl_bounded_scroll_spans_full_width(impl))
+    return sl_wstr(impl->output_fd, "\033[0K");
+  return sl_clear_box_tail(impl, from_col);
+}
+
+static int sl_clear_bounded_row(sl_impl_t *impl) {
+  if (!impl)
+    return -1;
+  if (sl_bounded_scroll_spans_full_width(impl))
+    return sl_wstr(impl->output_fd, "\033[2K");
+  return sl_clear_box_tail(impl, 0);
 }
 
 static int sl_box_bottom(sl_impl_t *impl) {
@@ -1994,7 +2030,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
       (impl->rendered_width != width || impl->rendered_height != height)) {
     for (i = impl->screen_y; i <= sl_box_bottom(impl); i++) {
       if (sl_write_cursor_pos(impl->output_fd, i, impl->screen_x) != 0 ||
-          sl_clear_box_tail(impl, 0) != 0)
+          sl_clear_bounded_row(impl) != 0)
         return -1;
     }
     sl_render_store_clear(impl);
@@ -2032,7 +2068,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     clear_bottom = sl_box_bottom(impl);
     for (i = clear_top; rc == 0 && i <= clear_bottom; i++) {
       if (sl_write_cursor_pos(impl->output_fd, i, impl->screen_x) != 0 ||
-          sl_clear_box_tail(impl, 0) != 0)
+          sl_clear_bounded_row(impl) != 0)
         rc = -1;
     }
     sl_render_store_clear(impl);
@@ -2087,10 +2123,11 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
       if (rc == 0 &&
           (i >= old_rows ||
            impl->rendered_cols[i] > render->rows[render_row].cols) &&
-          sl_clear_box_tail(impl, render->rows[render_row].cols) != 0)
+          sl_clear_bounded_tail(impl, render->rows[render_row].cols) != 0)
         rc = -1;
-      if (i >= old_rows ||
-          impl->rendered_cols[i] > render->rows[render_row].cols) {
+      if ((i >= old_rows ||
+           impl->rendered_cols[i] > render->rows[render_row].cols) &&
+          !sl_bounded_scroll_spans_full_width(impl)) {
         current_row = -1;
         current_col = -1;
       }
@@ -2098,7 +2135,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   }
   for (i = visible; rc == 0 && i < old_rows; i++) {
     if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0 ||
-        sl_clear_box_tail(impl, 0) != 0)
+        sl_clear_bounded_row(impl) != 0)
       rc = -1;
     current_row = -1;
     current_col = -1;
@@ -2107,6 +2144,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
       (current_row != cursor_row || current_col != render->cursor_col) &&
       sl_write_cursor_pos(impl->output_fd, top + cursor_row,
                           impl->screen_x + render->cursor_col) != 0)
+    rc = -1;
+  if (rc == 0 && sl_show_cursor(impl) != 0)
     rc = -1;
   if (rc == 0 &&
       sl_render_store_update(impl, render, first, visible, cursor_row,
@@ -2118,6 +2157,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     impl->rendered_width = width;
     impl->rendered_height = height;
   }
+  if (rc != 0)
+    (void)sl_show_cursor(impl);
   return rc;
 }
 
@@ -2201,8 +2242,12 @@ static int sl_render_finish(sl_t *self) {
       sl_wstr(impl->output_fd, "\033[0m") != 0)
     return -1;
   if (sl_bounded_mode(impl)) {
-    if (sl_prompt_queue_enabled(impl) && sl_render_clear_active(self) != 0)
-      return -1;
+    if (sl_prompt_queue_enabled(impl)) {
+      if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
+        (void)sl_show_cursor(impl);
+        return -1;
+      }
+    }
     sl_render_store_clear(impl);
     return 0;
   }
@@ -2222,10 +2267,12 @@ static int sl_render_clear_active(sl_t *self) {
   if (!impl || impl->rendered_rows <= 0)
     return 0;
   if (sl_bounded_mode(impl)) {
+    if (sl_hide_cursor(impl) != 0)
+      return -1;
     for (i = 0; i < impl->rendered_rows; i++) {
       if (sl_write_cursor_pos(impl->output_fd, impl->rendered_top_row + i,
                               impl->screen_x) != 0 ||
-          sl_clear_box_tail(impl, 0) != 0)
+          sl_clear_bounded_row(impl) != 0)
         return -1;
     }
     sl_render_store_clear(impl);
@@ -2326,27 +2373,41 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
     content_top = impl->screen_y;
     content_bottom = prompt_top - 1;
     if (content_bottom >= content_top) {
+      if ((impl->active_prompt || impl->cursor_hidden) &&
+          sl_hide_cursor(impl) != 0)
+        return SL_ERROR_IO;
       if (!sl_bounded_scroll_spans_full_width(impl)) {
         sl_set_error(self,
                      "bounded print_above requires full-width terminal bounds");
+        (void)sl_show_cursor(impl);
         return SL_ERROR_INVALID;
       }
       if (sl_set_scroll_region(impl->output_fd, content_top, content_bottom) !=
               0 ||
           sl_write_cursor_pos(impl->output_fd, content_bottom,
-                              impl->screen_x) != 0)
+                              impl->screen_x) != 0) {
+        (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
+      }
       rc = sl_write_stream(self, callback, userdata);
-      if (sl_reset_scroll_region(impl->output_fd) != 0)
+      if (sl_reset_scroll_region(impl->output_fd) != 0) {
+        (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
-      if (rc != SL_OK)
+      }
+      if (rc != SL_OK) {
+        (void)sl_show_cursor(impl);
         return rc;
+      }
       sl_render_store_clear(impl);
-      if (sl_render_apply(self, impl->active_prompt) != 0)
+      if (impl->active_prompt &&
+          sl_render_apply(self, impl->active_prompt) != 0) {
+        (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
+      }
       return SL_OK;
     }
     sl_set_error(self, "bounded prompt has no space above it");
+    (void)sl_show_cursor(impl);
     return SL_ERROR_INVALID;
   }
   if (impl->active_prompt) {
@@ -3347,6 +3408,7 @@ static void sl_destroy_method(sl_t *self) {
   if (impl) {
     sl_disable_resize_notifications(impl);
     sl_disable_raw(self);
+    (void)sl_show_cursor(impl);
     sl_history_clear(&impl->history);
     sl_prompt_queue_clear(&impl->prompt_queue);
     sl_render_store_clear(impl);

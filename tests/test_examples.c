@@ -506,10 +506,18 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
                                   sizeof(terminal), "[queued] queued",
                                   "\033[?2004h") == 0,
               "chat prompt did not resume after queued dispatch");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[queued] queued",
+                                  "\033[?25h") == 0,
+              "chat cursor did not resume after queued dispatch");
   ASSERT_TRUE(!contains_bytes(terminal, "\r\r\n"),
               "chat emitted a doubled terminal carriage return");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[9;"),
               "chat addressed a row below the terminal viewport");
+  ASSERT_TRUE(contains_after_bytes(terminal, "\033[?25l", "[direct] current"),
+              "chat did not hide the cursor before dispatch redraw");
+  ASSERT_TRUE(contains_after_bytes(terminal, "[queued] queued", "\033[?25h"),
+              "chat did not restore the cursor after prompt redraw");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();

@@ -2996,6 +2996,7 @@ static void test_bounded_print_above_rejects_narrow_scroll(void) {
 static void test_bounded_prompt_starts_at_bottom(void) {
   char terminal[4096];
   char result[256];
+  struct vt_screen screen;
   int status;
 
   TEST("bounded prompt starts on bottom row");
@@ -3008,7 +3009,11 @@ static void test_bounded_prompt_starts_at_bottom(void) {
   ASSERT_TRUE(strcmp(result, "ok") == 0, "bounded result mismatch");
   ASSERT_TRUE(contains_bytes(terminal, "\033[5;1Hp> "),
               "prompt was not rendered on bottom row");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[5;4H"),
+  vt_init(&screen, 5, 20);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> ok"),
+              "bounded prompt did not retain submitted text");
+  ASSERT_TRUE(screen.row == 4 && screen.col == 5,
               "cursor was not positioned on bottom row");
   PASS();
 }

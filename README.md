@@ -114,7 +114,9 @@ bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
 in softline. Bounded rendering keeps a retained view of the visible editor
 rows: ordinary edits patch only changed cells, structural changes redraw the
 affected rows, and `SIGWINCH` triggers a full reflow of the bounded box before
-input resumes.
+input resumes. During a bounded structural update or transcript dispatch,
+softline hides the hardware cursor and restores it only at the final prompt
+position, preventing visible cursor travel across the prompt area.
 
 For a persistent bottom prompt, use this bounded mode as a full-screen terminal
 UI on the alternate screen. That keeps the main scrollback intact and lets
