@@ -64,10 +64,14 @@ typedef struct sl_impl {
   int history_index;
   char *history_edit;
   int bracketed_paste;
+  struct sigaction previous_winch;
+  int winch_handler_active;
   int rendered_rows;
   int rendered_top_row;
   int rendered_cursor_row;
   int rendered_cursor_col;
+  int rendered_width;
+  int rendered_height;
   char **rendered_lines;
   size_t *rendered_lens;
   int *rendered_cols;

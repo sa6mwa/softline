@@ -339,6 +339,9 @@ static void test_example_simple_wraps_near_bottom(const char *path) {
   struct vt_screen screen;
   size_t terminal_len;
   const char *input;
+  char buf[512];
+  ssize_t n;
+  int tries;
 
   TEST("example_simple wraps near bottom");
   pid = spawn_example(path, &master_fd, 40, 6);
@@ -351,13 +354,25 @@ static void test_example_simple_wraps_near_bottom(const char *path) {
   input = "dj jpsidjfpisj sdpijfijfa pidspifjxjp nextword";
   ASSERT_TRUE(write(master_fd, input, strlen(input)) == (ssize_t)strlen(input),
               "write input failed");
-  if (wait_for_text(master_fd, terminal, &terminal_len, sizeof(terminal),
-                    "pidspifjxjp nextword") != 0) {
-    fprintf(stderr, "\n--- simple terminal ---\n%s\n--- end ---\n", terminal);
-    FAIL("wrapped prompt text missing");
+  tries = 0;
+  while (tries < 300) {
+    vt_init(&screen, 6, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "softline> dj jpsidjfpisj sdpijfijfa") &&
+        vt_contains(&screen, "          pidspifjxjp nextword"))
+      break;
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
   }
   vt_init(&screen, 6, 40);
   vt_apply(&screen, terminal);
+  if (!vt_contains(&screen, "softline> dj jpsidjfpisj sdpijfijfa") ||
+      !vt_contains(&screen, "          pidspifjxjp nextword")) {
+    fprintf(stderr, "\n--- simple terminal ---\n%s\n--- end ---\n", terminal);
+    FAIL("wrapped prompt text missing");
+  }
   ASSERT_TRUE(vt_contains(&screen, "softline> dj jpsidjfpisj sdpijfijfa"),
               "first visible prompt row missing");
   ASSERT_TRUE(vt_contains(&screen, "          pidspifjxjp nextword"),
@@ -386,6 +401,9 @@ static void test_example_chat_reflows_after_resize(const char *path) {
   size_t terminal_len;
   size_t resize_offset;
   const char *input;
+  char buf[512];
+  ssize_t n;
+  int tries;
 
   TEST("example_chat reflows after resize");
   pid = spawn_example(path, &master_fd, 40, 6);
@@ -410,23 +428,46 @@ static void test_example_chat_reflows_after_resize(const char *path) {
   input = "hello world sentence";
   ASSERT_TRUE(write(master_fd, input, strlen(input)) == (ssize_t)strlen(input),
               "write prompt text failed");
-  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal),
-                            "chat> hello world sentence") == 0,
+  tries = 0;
+  while (tries < 300) {
+    vt_init(&screen, 6, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "chat> hello world sentence"))
+      break;
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  vt_init(&screen, 6, 40);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "chat> hello world sentence"),
               "wide prompt render missing");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 16;
   ws.ws_row = 6;
   resize_offset = terminal_len;
   ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "resize failed");
-  if (wait_for_text(master_fd, terminal, &terminal_len, sizeof(terminal),
-                    "      sentence") != 0) {
+  tries = 0;
+  while (tries < 300) {
+    vt_init(&screen, 6, 16);
+    vt_apply(&screen, terminal + resize_offset);
+    if (vt_contains(&screen, "chat> hello") &&
+        vt_contains(&screen, "      sentence"))
+      break;
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  vt_init(&screen, 6, 16);
+  vt_apply(&screen, terminal + resize_offset);
+  if (!vt_contains(&screen, "chat> hello") ||
+      !vt_contains(&screen, "      sentence")) {
     fprintf(stderr, "\n--- chat terminal after resize ---\n%s\n--- end ---\n",
             terminal + resize_offset);
     FAIL("resized continuation row missing");
   }
-  vt_init(&screen, 6, 16);
-  vt_apply(&screen, terminal + resize_offset);
   ASSERT_TRUE(vt_contains(&screen, "chat> hello"),
               "resized first visible prompt row missing");
   ASSERT_TRUE(vt_contains(&screen, "      sentence"),
@@ -465,6 +506,60 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
                                   sizeof(terminal), "[queued] queued",
                                   "\033[?2004h") == 0,
               "chat prompt did not resume after queued dispatch");
+  ASSERT_TRUE(!contains_bytes(terminal, "\r\r\n"),
+              "chat emitted a doubled terminal carriage return");
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[9;"),
+              "chat addressed a row below the terminal viewport");
+  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  PASS();
+}
+
+static void test_example_chat_patches_editor_rows(const char *path) {
+  int master_fd;
+  pid_t pid;
+  char terminal[8192];
+  char buf[512];
+  size_t terminal_len;
+  size_t update_offset;
+  ssize_t n;
+  int tries;
+
+  TEST("example_chat patches editor rows without repainting");
+  pid = spawn_example(path, &master_fd, 40, 8);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "chat> ") == 0,
+              "initial prompt missing");
+  for (tries = 0; tries < 10; tries++) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n <= 0)
+      break;
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  }
+  update_offset = terminal_len;
+  ASSERT_TRUE(write(master_fd, "hello", 5) == 5, "write input failed");
+  tries = 0;
+  while (!contains_bytes(terminal + update_offset, "hello") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal + update_offset, "hello"),
+              "editor update missing");
+  ASSERT_TRUE(!contains_bytes(terminal + update_offset, "\033["),
+              "editor update repainted or repositioned the prompt");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[direct] hello") == 0,
+              "submitted message missing");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[direct] hello",
+                                  "\033[?2004h") == 0,
+              "next prompt did not start");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
@@ -565,6 +660,7 @@ int main(int argc, char **argv) {
   test_example_simple_wraps_near_bottom(argv[1]);
   test_example_chat_reflows_after_resize(argv[2]);
   test_example_chat_dispatches_queued_prompts(argv[2]);
+  test_example_chat_patches_editor_rows(argv[2]);
   test_example_chat_ctrl_c_cancels_and_continues(argv[2]);
   test_example_chat_is_plain_without_tty(argv[2]);
 

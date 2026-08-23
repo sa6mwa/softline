@@ -111,7 +111,10 @@ the prompt grows upward as input wraps while `sl_print_above()` pulls streamed
 chunks from a callback and writes them through the region above the prompt.
 Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
 bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
-in softline.
+in softline. Bounded rendering keeps a retained view of the visible editor
+rows: ordinary edits patch only changed cells, structural changes redraw the
+affected rows, and `SIGWINCH` triggers a full reflow of the bounded box before
+input resumes.
 
 For a persistent bottom prompt, use this bounded mode as a full-screen terminal
 UI on the alternate screen. That keeps the main scrollback intact and lets

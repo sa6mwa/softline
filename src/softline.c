@@ -28,6 +28,7 @@ typedef struct sl_render {
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
 static int sl_render_clear_active(sl_t *self);
+static volatile sig_atomic_t sl_winch_pending;
 
 static sl_impl_t *sl_impl(sl_t *self) {
   if (!self)
@@ -165,6 +166,22 @@ static int sl_wstr(int fd, const char *s) {
 
 static int sl_wchar(int fd, char c) { return sl_write_all(fd, &c, 1); }
 
+/* Let the output terminal's ONLCR setting perform carriage return expansion.
+ * Explicit CRLF on a normal terminal becomes CRCRLF and visibly jolts a TUI. */
+static int sl_write_line_break(sl_impl_t *impl) {
+  struct termios termios_state;
+  if (!impl)
+    return -1;
+  if (!isatty(impl->output_fd))
+    return sl_wchar(impl->output_fd, '\n');
+  if (isatty(impl->output_fd) &&
+      tcgetattr(impl->output_fd, &termios_state) == 0 &&
+      (termios_state.c_oflag & OPOST) != 0 &&
+      (termios_state.c_oflag & ONLCR) != 0)
+    return sl_wchar(impl->output_fd, '\n');
+  return sl_wstr(impl->output_fd, "\r\n");
+}
+
 static int sl_write_cursor_up(int fd, int rows) {
   char seq[32];
   int n;
@@ -226,15 +243,19 @@ static int sl_set_scroll_region(int fd, int top, int bottom) {
 
 static int sl_reset_scroll_region(int fd) { return sl_wstr(fd, "\033[r"); }
 
-static int sl_scroll_region_up(int fd, int top, int bottom, int rows) {
+static int sl_scroll_region_up(sl_impl_t *impl, int top, int bottom, int rows) {
   int i;
+  int fd;
+  if (!impl)
+    return -1;
+  fd = impl->output_fd;
   if (rows <= 0 || bottom < top)
     return 0;
   if (sl_set_scroll_region(fd, top, bottom) != 0 ||
       sl_write_cursor_pos(fd, bottom, 0) != 0)
     return -1;
   for (i = 0; i < rows; i++) {
-    if (sl_wstr(fd, "\r\n") != 0) {
+    if (sl_write_line_break(impl) != 0) {
       (void)sl_reset_scroll_region(fd);
       return -1;
     }
@@ -361,6 +382,33 @@ static int sl_enable_raw(sl_t *self) {
   }
   impl->raw_active = 1;
   return 0;
+}
+
+static void sl_handle_winch(int signo) {
+  (void)signo;
+  sl_winch_pending = 1;
+}
+
+static int sl_enable_resize_notifications(sl_impl_t *impl) {
+  struct sigaction action;
+  if (!impl || !impl->bounded ||
+      (!impl->dynamic_width && !impl->dynamic_height))
+    return 0;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = sl_handle_winch;
+  if (sigemptyset(&action.sa_mask) != 0 ||
+      sigaction(SIGWINCH, &action, &impl->previous_winch) != 0)
+    return -1;
+  impl->winch_handler_active = 1;
+  sl_winch_pending = 0;
+  return 0;
+}
+
+static void sl_disable_resize_notifications(sl_impl_t *impl) {
+  if (!impl || !impl->winch_handler_active)
+    return;
+  (void)sigaction(SIGWINCH, &impl->previous_winch, NULL);
+  impl->winch_handler_active = 0;
 }
 
 static void sl_disable_raw(sl_t *self) {
@@ -1377,6 +1425,8 @@ static void sl_render_store_clear(sl_impl_t *impl) {
   impl->rendered_rows = 0;
   impl->rendered_cursor_row = 0;
   impl->rendered_cursor_col = 0;
+  impl->rendered_width = 0;
+  impl->rendered_height = 0;
 }
 
 static int sl_render_store_reserve(sl_impl_t *impl, int rows) {
@@ -1454,6 +1504,66 @@ static int sl_row_equal(sl_impl_t *impl, sl_render_t *render, int row,
     return 1;
   return memcmp(impl->rendered_lines[row], render->rows[render_row].text,
                 impl->rendered_lens[row]) == 0;
+}
+
+static size_t sl_ansi_sequence_len(const char *text, size_t len, size_t pos) {
+  size_t i;
+  if (!text || pos + 2 > len || text[pos] != '\033' || text[pos + 1] != '[')
+    return 0;
+  i = pos + 2;
+  while (i < len && (text[i] < '@' || text[i] > '~'))
+    i++;
+  return i < len ? i - pos + 1 : 0;
+}
+
+static int sl_row_prefix_cols(const char *text, size_t len) {
+  int cols;
+  size_t pos;
+  cols = 0;
+  pos = 0;
+  while (pos < len) {
+    int cells;
+    size_t ansi_len;
+    size_t char_len;
+    ansi_len = sl_ansi_sequence_len(text, len, pos);
+    if (ansi_len > 0) {
+      pos += ansi_len;
+      continue;
+    }
+    char_len = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (char_len == 0)
+      break;
+    cols += cells;
+    pos += char_len;
+  }
+  return cols;
+}
+
+/* Return a cluster-safe byte prefix shared by two retained view rows. */
+static size_t sl_row_shared_prefix(const char *old_text, size_t old_len,
+                                   const char *new_text, size_t new_len) {
+  size_t pos;
+  size_t limit;
+  pos = 0;
+  limit = old_len < new_len ? old_len : new_len;
+  while (pos < limit && old_text[pos] == new_text[pos]) {
+    size_t ansi_len;
+    int cells;
+    size_t char_len;
+    ansi_len = sl_ansi_sequence_len(new_text, limit, pos);
+    if (ansi_len > 0) {
+      if (memcmp(old_text + pos, new_text + pos, ansi_len) != 0)
+        break;
+      pos += ansi_len;
+      continue;
+    }
+    char_len = sl_utf8_cluster_len_width(new_text, limit, pos, &cells);
+    if (char_len == 0 || pos + char_len > limit ||
+        memcmp(old_text + pos, new_text + pos, char_len) != 0)
+      break;
+    pos += char_len;
+  }
+  return pos;
 }
 
 static int sl_render_visible_equal(sl_impl_t *impl, sl_render_t *render,
@@ -1869,13 +1979,26 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   int old_top;
   int clear_top;
   int clear_bottom;
+  int current_row;
+  int current_col;
   int i;
   int rc;
   int height;
+  int width;
   impl = sl_impl(self);
   if (!impl)
     return -1;
   height = sl_terminal_height(impl);
+  width = sl_box_width(impl);
+  if (impl->rendered_rows > 0 &&
+      (impl->rendered_width != width || impl->rendered_height != height)) {
+    for (i = impl->screen_y; i <= sl_box_bottom(impl); i++) {
+      if (sl_write_cursor_pos(impl->output_fd, i, impl->screen_x) != 0 ||
+          sl_clear_box_tail(impl, 0) != 0)
+        return -1;
+    }
+    sl_render_store_clear(impl);
+  }
   visible = render->count;
   if (visible > height)
     visible = height;
@@ -1897,11 +2020,13 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     return 0;
   old_rows = impl->rendered_rows;
   old_top = impl->rendered_top_row;
+  current_row = old_rows > 0 && old_top == top ? impl->rendered_cursor_row : -1;
+  current_col = old_rows > 0 && old_top == top ? impl->rendered_cursor_col : -1;
   rc = 0;
 
   if (old_rows > 0 && old_top != top) {
-    if (top < old_top && sl_scroll_region_up(impl->output_fd, impl->screen_y,
-                                             old_top - 1, old_top - top) != 0)
+    if (top < old_top && sl_scroll_region_up(impl, impl->screen_y, old_top - 1,
+                                             old_top - top) != 0)
       rc = -1;
     clear_top = old_top < top ? old_top : top;
     clear_bottom = sl_box_bottom(impl);
@@ -1912,38 +2037,86 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     }
     sl_render_store_clear(impl);
     old_rows = 0;
+    current_row = -1;
+    current_col = -1;
   }
 
   for (i = 0; rc == 0 && i < visible; i++) {
     int render_row;
+    int patch_row;
+    int prefix_col;
+    size_t prefix_len;
     render_row = first + i;
     if (i >= old_rows || !sl_row_equal(impl, render, i, render_row)) {
-      if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0)
-        rc = -1;
-      if (rc == 0 && render->rows[render_row].len > 0 &&
-          sl_write_all(impl->output_fd, render->rows[render_row].text,
-                       render->rows[render_row].len) != 0)
-        rc = -1;
+      patch_row = 0;
+      prefix_len = 0;
+      prefix_col = 0;
+      if (i < old_rows && render_row >= render->editor_first) {
+        prefix_len = sl_row_shared_prefix(
+            impl->rendered_lines[i], impl->rendered_lens[i],
+            render->rows[render_row].text, render->rows[render_row].len);
+        if (prefix_len > 0) {
+          prefix_col =
+              sl_row_prefix_cols(render->rows[render_row].text, prefix_len);
+          patch_row = 1;
+        }
+      }
+      if (!patch_row) {
+        if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0)
+          rc = -1;
+        if (rc == 0 && render->rows[render_row].len > 0 &&
+            sl_write_all(impl->output_fd, render->rows[render_row].text,
+                         render->rows[render_row].len) != 0)
+          rc = -1;
+        current_row = i;
+        current_col = render->rows[render_row].cols;
+      } else {
+        if (current_row != i || current_col != prefix_col) {
+          if (sl_write_cursor_pos(impl->output_fd, top + i,
+                                  impl->screen_x + prefix_col) != 0)
+            rc = -1;
+        }
+        if (rc == 0 && prefix_len < render->rows[render_row].len &&
+            sl_write_all(impl->output_fd,
+                         render->rows[render_row].text + prefix_len,
+                         render->rows[render_row].len - prefix_len) != 0)
+          rc = -1;
+        current_row = i;
+        current_col = render->rows[render_row].cols;
+      }
       if (rc == 0 &&
           (i >= old_rows ||
            impl->rendered_cols[i] > render->rows[render_row].cols) &&
           sl_clear_box_tail(impl, render->rows[render_row].cols) != 0)
         rc = -1;
+      if (i >= old_rows ||
+          impl->rendered_cols[i] > render->rows[render_row].cols) {
+        current_row = -1;
+        current_col = -1;
+      }
     }
   }
   for (i = visible; rc == 0 && i < old_rows; i++) {
     if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0 ||
         sl_clear_box_tail(impl, 0) != 0)
       rc = -1;
+    current_row = -1;
+    current_col = -1;
   }
-  if (rc == 0 && sl_write_cursor_pos(impl->output_fd, top + cursor_row,
-                                     impl->screen_x + render->cursor_col) != 0)
+  if (rc == 0 &&
+      (current_row != cursor_row || current_col != render->cursor_col) &&
+      sl_write_cursor_pos(impl->output_fd, top + cursor_row,
+                          impl->screen_x + render->cursor_col) != 0)
     rc = -1;
   if (rc == 0 &&
       sl_render_store_update(impl, render, first, visible, cursor_row,
                              render->cursor_col, top) != 0) {
     sl_set_error(self, "out of memory while storing terminal render state");
     rc = -1;
+  }
+  if (rc == 0) {
+    impl->rendered_width = width;
+    impl->rendered_height = height;
   }
   return rc;
 }
@@ -1956,7 +2129,6 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   int i;
   int fd;
   int rc;
-  int initial;
   impl = sl_impl(self);
   if (!impl)
     return -1;
@@ -1980,9 +2152,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   fd = impl->output_fd;
   rc = 0;
   old_rows = impl->rendered_rows;
-  initial = old_rows == 0;
-  if (!initial && (sl_wchar(fd, '\r') != 0 ||
-                   sl_write_cursor_up(fd, impl->rendered_cursor_row) != 0))
+  if (old_rows > 0 && (sl_wchar(fd, '\r') != 0 ||
+                       sl_write_cursor_up(fd, impl->rendered_cursor_row) != 0))
     rc = -1;
   max_rows = old_rows > render.count ? old_rows : render.count;
   for (i = 0; rc == 0 && i < max_rows; i++) {
@@ -1999,12 +2170,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
         rc = -1;
     }
     if (rc == 0 && i + 1 < max_rows) {
-      if (initial) {
-        if (sl_wstr(fd, "\r\n") != 0)
-          rc = -1;
-      } else if (sl_wstr(fd, "\r\n") != 0) {
+      if (sl_write_line_break(impl) != 0)
         rc = -1;
-      }
     }
   }
   if (rc == 0) {
@@ -2036,12 +2203,10 @@ static int sl_render_finish(sl_t *self) {
   if (sl_bounded_mode(impl)) {
     if (sl_prompt_queue_enabled(impl) && sl_render_clear_active(self) != 0)
       return -1;
-    if (sl_write_cursor_pos(impl->output_fd, sl_box_bottom(impl) + 1, 0) != 0)
-      return -1;
     sl_render_store_clear(impl);
     return 0;
   }
-  if (sl_wstr(impl->output_fd, "\r\n") != 0) {
+  if (sl_write_line_break(impl) != 0) {
     sl_set_error(self, "failed to write final newline");
     return -1;
   }
@@ -2106,7 +2271,7 @@ static int sl_write_stream_chunk(sl_impl_t *impl, const char *chunk,
       n = (size_t)(p - start);
       if (n > 0 && sl_write_all(fd, start, n) != 0)
         return -1;
-      if (sl_wstr(fd, isatty(fd) ? "\r\n" : "\n") != 0)
+      if (sl_write_line_break(impl) != 0)
         return -1;
       p++;
       start = p;
@@ -2726,12 +2891,20 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
+  if (sl_enable_resize_notifications(impl) != 0) {
+    sl_disable_raw(self);
+    sl_set_error(self, "failed to subscribe to terminal resize events");
+    sl_set_readline_status(self, SL_READLINE_ERROR);
+    return NULL;
+  }
   if (sl_buf_set(self, "") != 0) {
+    sl_disable_resize_notifications(impl);
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
   if (sl_enable_bracketed_paste(impl) != 0) {
+    sl_disable_resize_notifications(impl);
     sl_disable_raw(self);
     sl_set_error(self, "failed to enable bracketed paste");
     sl_set_readline_status(self, SL_READLINE_ERROR);
@@ -2751,6 +2924,7 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   if (sl_render_apply(self, prompt) != 0) {
     impl->active_prompt = NULL;
     impl->active_readline = 0;
+    sl_disable_resize_notifications(impl);
     sl_disable_bracketed_paste(impl);
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_ERROR);
@@ -2796,6 +2970,13 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
     case SL_KEY_NONE:
       if (errno == EINTR) {
         errno = 0;
+        if (impl->winch_handler_active && sl_winch_pending) {
+          sl_winch_pending = 0;
+          if (sl_render_apply(self, render_prompt) != 0) {
+            failed = 1;
+            done = 1;
+          }
+        }
       } else if (errno != 0) {
         failed = 1;
         done = 1;
@@ -3054,6 +3235,7 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
     }
   }
   impl->active_readline = 0;
+  sl_disable_resize_notifications(impl);
   if (interrupted) {
     sl_history_search_cleanup(&search);
     sl_render_clear_active(self);
@@ -3163,6 +3345,7 @@ static void sl_destroy_method(sl_t *self) {
   if (!self)
     return;
   if (impl) {
+    sl_disable_resize_notifications(impl);
     sl_disable_raw(self);
     sl_history_clear(&impl->history);
     sl_prompt_queue_clear(&impl->prompt_queue);
