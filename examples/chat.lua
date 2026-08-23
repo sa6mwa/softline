@@ -96,7 +96,9 @@ local function run()
       if line == "exit" then
         break
       end
-      print_message({ line, "\n" })
+      local prefix = source_or_status == softline.PROMPT_SOURCE_QUEUED
+          and "[queued] " or "[direct] "
+      print_message({ prefix, line, "\n" })
     elseif source_or_status == softline.READLINE_CANCELLED or source_or_status == softline.READLINE_INTERRUPTED then
       if interactive then
         print_message({ "[cancelled]\n" })

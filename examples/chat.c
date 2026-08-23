@@ -90,6 +90,18 @@ static int print_message(sl_t *sl, const char *text) {
   return sl->print_above(sl, next_message_chunk, &stream);
 }
 
+static int print_dispatched_message(sl_t *sl, sl_prompt_source_t source,
+                                    const char *text) {
+  struct message_stream stream;
+  stream.chunks[0] =
+      source == SL_PROMPT_SOURCE_QUEUED ? "[queued] " : "[direct] ";
+  stream.chunks[1] = text;
+  stream.chunks[2] = "\n";
+  stream.chunks[3] = NULL;
+  stream.index = 0;
+  return sl->print_above(sl, next_message_chunk, &stream);
+}
+
 struct chat_idle_state {
   time_t next_message_at;
   time_t status_started_at;
@@ -158,6 +170,7 @@ int main(void) {
       "weekly 56%",         "feat/prompt-queue", "pursuing chat"};
   sl_t *sl;
   char *line;
+  sl_prompt_source_t source;
   sl_readline_status_t status;
   struct chat_idle_state idle_state;
   int interactive;
@@ -218,7 +231,8 @@ int main(void) {
     return 1;
   }
   for (;;) {
-    line = sl->next_prompt(sl, "chat> ", NULL);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl->next_prompt(sl, "chat> ", &source);
     if (!line) {
       status = sl->last_readline_status(sl);
       if (status == SL_READLINE_CANCELLED ||
@@ -239,7 +253,7 @@ int main(void) {
       sl->free_string(sl, line);
       break;
     }
-    if (print_message(sl, line) != SL_OK) {
+    if (print_dispatched_message(sl, source, line) != SL_OK) {
       sl->free_string(sl, line);
       (void)print_last_error(sl);
       exit_code = 1;

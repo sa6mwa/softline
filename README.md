@@ -87,8 +87,9 @@ Not currently implemented:
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
 `example_chat` stays in ordinary terminal scrollback. It posts dispatched text
-unchanged, shows a palette-driven status line, and emits a random simulated
-peer message every two seconds while the
+with a `[direct]` or `[queued]` source prefix while preserving the submitted
+text, shows a palette-driven status line, and emits a random simulated peer
+message every two seconds while the
 editor is active. Its status demo advances every five seconds through spinner
 and static busy phases. It alternates complete 40-second cycles between no
 idle marker and a green idle `-` marker.

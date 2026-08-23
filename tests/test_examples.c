@@ -432,10 +432,11 @@ static void test_example_chat_uses_normal_scrollback(const char *path) {
               "write first message failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
                                   sizeof(terminal), "\033[?2004l",
-                                  "hello\r\n") == 0,
+                                  "[direct] hello\r\n") == 0,
               "direct chat message missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "hello\r\n", "chat> ") == 0,
+                                  sizeof(terminal), "[direct] hello\r\n",
+                                  "chat> ") == 0,
               "next chat prompt did not follow output");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
@@ -460,10 +461,11 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
               "write queue input failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
                                   sizeof(terminal), "\033[?2004l",
-                                  "current\r\nqueued\r\n") == 0,
+                                  "[direct] current\r\n[queued] queued\r\n") ==
+                  0,
               "queue dispatch output missing or out of order");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "queued\r\n",
+                                  sizeof(terminal), "[queued] queued\r\n",
                                   "\033[?2004h") == 0,
               "chat prompt did not resume after queued dispatch");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[?1049h"),
@@ -493,10 +495,12 @@ test_example_chat_keeps_empty_direct_message_separate(const char *path) {
   ASSERT_TRUE(write(master_fd, "queued\t\r", 8) == 8,
               "write queue-and-empty-submit input failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "\033[?2004l\r\nqueued\r\n") == 0,
+                            sizeof(terminal),
+                            "\033[?2004l[direct] \r\n[queued] queued\r\n") == 0,
               "queued message missing");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[?2004l\r\nqueued\r\n"),
-              "empty direct message merged with queued message");
+  ASSERT_TRUE(
+      contains_bytes(terminal, "\033[?2004l[direct] \r\n[queued] queued\r\n"),
+      "empty direct message merged with queued message");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
@@ -562,10 +566,11 @@ test_example_chat_updates_editor_in_normal_scrollback(const char *path) {
               "editor update missing");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "\033[?2004lhello\r\n") == 0,
+                            sizeof(terminal),
+                            "\033[?2004l[direct] hello\r\n") == 0,
               "submitted message missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "hello\r\n",
+                                  sizeof(terminal), "[direct] hello\r\n",
                                   "\033[?2004h") == 0,
               "next prompt did not start");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
@@ -648,7 +653,8 @@ static void test_example_chat_is_plain_without_tty(const char *path) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "non-tty chat child failed");
-  ASSERT_TRUE(strcmp(output, "hello\n") == 0, "non-tty chat output mismatch");
+  ASSERT_TRUE(strcmp(output, "[direct] hello\n") == 0,
+              "non-tty chat output mismatch");
   ASSERT_TRUE(!contains_bytes(output, "\033["),
               "non-tty chat emitted terminal control sequences");
   PASS();
