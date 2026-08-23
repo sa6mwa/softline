@@ -18,6 +18,8 @@ struct vt_screen {
   int cols;
   int row;
   int col;
+  int scroll_top;
+  int scroll_bottom;
   char cells[12][80];
 };
 
@@ -78,21 +80,25 @@ static void vt_init(struct vt_screen *screen, int rows, int cols) {
   screen->rows = rows > 12 ? 12 : rows;
   screen->cols = cols > 79 ? 79 : cols;
   vt_clear(screen);
+  screen->scroll_top = 0;
+  screen->scroll_bottom = screen->rows - 1;
 }
 
 static void vt_scroll(struct vt_screen *screen) {
   int r;
-  for (r = 1; r < screen->rows; r++)
+  for (r = screen->scroll_top + 1; r <= screen->scroll_bottom; r++)
     memcpy(screen->cells[r - 1], screen->cells[r], (size_t)screen->cols + 1);
-  memset(screen->cells[screen->rows - 1], ' ', (size_t)screen->cols);
-  screen->cells[screen->rows - 1][screen->cols] = '\0';
-  screen->row = screen->rows - 1;
+  memset(screen->cells[screen->scroll_bottom], ' ', (size_t)screen->cols);
+  screen->cells[screen->scroll_bottom][screen->cols] = '\0';
+  screen->row = screen->scroll_bottom;
 }
 
 static void vt_lf(struct vt_screen *screen) {
-  screen->row++;
-  if (screen->row >= screen->rows)
+  if (screen->row == screen->scroll_bottom) {
     vt_scroll(screen);
+  } else if (screen->row < screen->rows - 1) {
+    screen->row++;
+  }
 }
 
 static void vt_put(struct vt_screen *screen, char ch) {
@@ -178,6 +184,20 @@ static const char *vt_csi(struct vt_screen *screen, const char *p) {
     memset(screen->cells[screen->row] + screen->col, ' ',
            (size_t)(screen->cols - screen->col));
     break;
+  case 'r':
+    screen->scroll_top = have_a && a > 0 ? a - 1 : 0;
+    screen->scroll_bottom = b > 0 ? b - 1 : screen->rows - 1;
+    if (screen->scroll_top < 0)
+      screen->scroll_top = 0;
+    if (screen->scroll_top >= screen->rows)
+      screen->scroll_top = screen->rows - 1;
+    if (screen->scroll_bottom < screen->scroll_top)
+      screen->scroll_bottom = screen->scroll_top;
+    if (screen->scroll_bottom >= screen->rows)
+      screen->scroll_bottom = screen->rows - 1;
+    screen->row = 0;
+    screen->col = 0;
+    break;
   default:
     break;
   }
@@ -210,6 +230,13 @@ static int vt_contains(struct vt_screen *screen, const char *needle) {
       return 1;
   }
   return 0;
+}
+
+static int vt_row_contains(struct vt_screen *screen, int row,
+                           const char *needle) {
+  if (!screen || row < 0 || row >= screen->rows)
+    return 0;
+  return strstr(screen->cells[row], needle) != NULL;
 }
 
 static ssize_t read_some_with_timeout(int fd, char *buf, size_t cap) {
@@ -486,6 +513,7 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   int master_fd;
   pid_t pid;
   char terminal[16384];
+  struct vt_screen screen;
   size_t terminal_len;
 
   TEST("example_chat labels direct and queued dispatches");
@@ -521,6 +549,20 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   ASSERT_TRUE(contains_after_bytes(terminal, "[queued] I read back: queued",
                                    "\033[?25h"),
               "chat did not restore the cursor after prompt redraw");
+  vt_init(&screen, 8, 40);
+  vt_apply(&screen, terminal);
+  if (!vt_row_contains(&screen, 2, "[direct] I read back: current") ||
+      !vt_row_contains(&screen, 3, "[queued] I read back: queued") ||
+      !vt_row_contains(&screen, 7, "chat> ")) {
+    int row;
+    fprintf(stderr, "\n--- chat queue layout ---\n");
+    for (row = 0; row < screen.rows; row++)
+      fprintf(stderr, "%d: %s\n", row + 1, screen.cells[row]);
+    fprintf(stderr, "--- end ---\n");
+    FAIL("queued dispatch did not append below chat content");
+  }
+  ASSERT_TRUE(!vt_contains(&screen, "[ queued:"),
+              "stale queue preview remained after dispatch");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();

@@ -3515,12 +3515,12 @@ static void test_print_above_pulls_stream_chunks(void) {
   PASS();
 }
 
-static void test_bounded_prompt_growth_scrolls_output_region(void) {
+static void test_bounded_prompt_growth_preserves_sparse_output(void) {
   char terminal[8192];
   char result[256];
   int status;
 
-  TEST("bounded prompt growth scrolls output region");
+  TEST("bounded prompt growth preserves sparse output");
   ASSERT_TRUE(run_pty_readline_case("hello world sentence\r", 16, 5, "hello\n",
                                     terminal, sizeof(terminal), result,
                                     sizeof(result), &status) == 0,
@@ -3529,8 +3529,8 @@ static void test_bounded_prompt_growth_scrolls_output_region(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "hello world sentence") == 0,
               "bounded growth result mismatch");
-  ASSERT_TRUE(count_bytes(terminal, "\033[1;4r") >= 2,
-              "prompt growth did not scroll output region");
+  ASSERT_TRUE(count_bytes(terminal, "\033[1;4r") == 1,
+              "prompt growth scrolled output with nothing to displace");
   PASS();
 }
 
@@ -5399,7 +5399,7 @@ int main(void) {
   test_bounded_wrapped_shrink_clears_continuation_tail();
   test_bounded_viewport_follows_cursor();
   test_print_above_pulls_stream_chunks();
-  test_bounded_prompt_growth_scrolls_output_region();
+  test_bounded_prompt_growth_preserves_sparse_output();
   test_bounded_print_above_does_not_overwrite_prompt();
   test_word_wrap_keeps_words_intact();
   test_word_wrap_cursor_at_skipped_space();

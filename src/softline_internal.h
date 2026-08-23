@@ -73,6 +73,9 @@ typedef struct sl_impl {
   int rendered_cursor_col;
   int rendered_width;
   int rendered_height;
+  int content_cursor_row;
+  int content_cursor_col;
+  int content_bottom_row;
   char **rendered_lines;
   size_t *rendered_lens;
   int *rendered_cols;
