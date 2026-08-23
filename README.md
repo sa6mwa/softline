@@ -156,14 +156,17 @@ for (;;) {
 ```
 
 Tab queues a nonempty active editor and leaves a FIFO preview panel above the
-current input; Tab on an empty editor is a no-op. The panel shows a total count
-and a bounded number of oldest-first previews. Alt-E removes the newest queued
+current input; Tab on an empty editor is a no-op. The panel uses the themed
+`Q 1. preview` layout, shows oldest-first previews, and adds `... N more` when
+entries exceed the configured preview count. Alt-E removes the newest queued
 entry and restores it to the editor. Explicit key bindings continue to override
 these defaults. Prompt appearance is renderer-owned so it remains safe with
 layout: `plain` is uncoloured; `accent`, Dracula, Gruvbox, monochrome,
 monogreen, Outrun, Riced, and Synthwave use their embedded palettes. The
 selected theme applies to every interactive prompt, including normal readline
-prompts, status lines, and queue panels.
+prompts, status lines, and queue panels. Prompt markers reset before typed
+text; monochrome and monogreen additionally colour typed text as defined by
+their palettes.
 
 ## Status lines
 

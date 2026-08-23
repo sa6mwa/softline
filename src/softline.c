@@ -38,6 +38,8 @@ typedef struct sl_theme_palette {
   sl_rgb_t queue;
   sl_rgb_t queue_text;
   int prompt_bold;
+  sl_rgb_t input;
+  int input_bold;
 } sl_theme_palette_t;
 
 static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
@@ -52,6 +54,8 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {0, 0, 0},
                                                         {0, 0, 0},
                                                         {0, 0, 0},
+                                                        0,
+                                                        {0, 0, 0},
                                                         0},
                                                        {{{56, 189, 248},
                                                          {34, 211, 238},
@@ -65,7 +69,9 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {6, 182, 212},
                                                         {6, 182, 212},
                                                         {148, 163, 184},
-                                                        1},
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0},
                                                        {{{139, 233, 253},
                                                          {241, 250, 140},
                                                          {189, 147, 249},
@@ -78,6 +84,8 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {98, 114, 164},
                                                         {98, 114, 164},
                                                         {195, 183, 201},
+                                                        0,
+                                                        {0, 0, 0},
                                                         0},
                                                        {{{250, 189, 47},
                                                          {184, 187, 38},
@@ -91,7 +99,9 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {184, 187, 38},
                                                         {131, 165, 152},
                                                         {213, 196, 161},
-                                                        1},
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0},
                                                        {{{224, 184, 90},
                                                          {224, 184, 90},
                                                          {224, 184, 90},
@@ -104,7 +114,9 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {168, 118, 40},
                                                         {125, 110, 72},
                                                         {169, 152, 101},
-                                                        1},
+                                                        1,
+                                                        {255, 224, 138},
+                                                        0},
                                                        {{{51, 255, 51},
                                                          {51, 255, 51},
                                                          {51, 255, 51},
@@ -117,6 +129,8 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {22, 122, 31},
                                                         {42, 107, 58},
                                                         {95, 158, 111},
+                                                        1,
+                                                        {51, 255, 51},
                                                         1},
                                                        {{{0, 229, 255},
                                                          {248, 248, 242},
@@ -130,6 +144,8 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {78, 69, 99},
                                                         {122, 107, 143},
                                                         {184, 169, 201},
+                                                        0,
+                                                        {0, 0, 0},
                                                         0},
                                                        {{{54, 249, 246},
                                                          {254, 222, 93},
@@ -143,7 +159,9 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {255, 255, 255},
                                                         {255, 126, 219},
                                                         {172, 164, 184},
-                                                        1},
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0},
                                                        {{{255, 126, 219},
                                                          {248, 248, 242},
                                                          {54, 249, 246},
@@ -156,7 +174,9 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {255, 126, 219},
                                                         {130, 120, 156},
                                                         {179, 169, 192},
-                                                        1}};
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0}};
 
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
@@ -1903,6 +1923,40 @@ static const char *sl_prompt_theme_style(sl_prompt_theme_t theme) {
   return "";
 }
 
+static int sl_prompt_input_style(const sl_impl_t *impl, char *style,
+                                 size_t style_cap) {
+  const sl_theme_palette_t *palette;
+  if (!impl || !style || style_cap == 0)
+    return -1;
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (!palette || (palette->input.red == 0 && palette->input.green == 0 &&
+                   palette->input.blue == 0)) {
+    style[0] = '\0';
+    return 0;
+  }
+  return sl_rgb_style(style, style_cap, palette->input, palette->input_bold);
+}
+
+static int sl_render_close_input_row(sl_render_t *render,
+                                     const char *input_style) {
+  if (!render || !input_style)
+    return -1;
+  if (input_style[0] == '\0')
+    return 0;
+  return sl_row_append(&render->rows[render->count - 1], "\033[0m", 4);
+}
+
+static int sl_render_new_input_row(sl_render_t *render, int indent,
+                                   size_t start, const char *input_style) {
+  if (sl_render_close_input_row(render, input_style) != 0 ||
+      sl_render_new_indented_row(render, indent, start) != 0)
+    return -1;
+  if (input_style[0] == '\0')
+    return 0;
+  return sl_row_append(&render->rows[render->count - 1], input_style,
+                       strlen(input_style));
+}
+
 static int sl_row_append_styled(sl_row_t *row, const char *text,
                                 const char *style) {
   const char *reset;
@@ -2076,15 +2130,11 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
                                         int width) {
   sl_impl_t *impl;
   sl_prompt_queue_t *queue;
-  const char *header_prefix;
-  const char *entry_prefix;
-  const char *style;
+  const char *control_style;
   const char *text_style;
-  const char *reset;
   const sl_theme_palette_t *palette;
   char queue_style[32];
   char queue_text_style[32];
-  char header[64];
   int i;
   int shown;
   impl = sl_impl(self);
@@ -2093,11 +2143,8 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   queue = &impl->prompt_queue;
   if (queue->len == 0)
     return 0;
-  header_prefix = "Queued (";
-  entry_prefix = "  ";
-  style = "";
+  control_style = "";
   text_style = "";
-  reset = "";
   palette = sl_theme_palette(impl->prompt_theme);
   if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
     if (sl_rgb_style(queue_style, sizeof(queue_style), palette->queue, 0) !=
@@ -2105,67 +2152,38 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
         sl_rgb_style(queue_text_style, sizeof(queue_text_style),
                      palette->queue_text, 0) != 0)
       return -1;
-    style = queue_style;
+    control_style = queue_style;
     text_style = queue_text_style;
-    reset = "\033[0m";
   }
-  if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
-    header_prefix = "[ queued: ";
-    entry_prefix = " > ";
-  }
-  if (impl->prompt_theme == SL_PROMPT_THEME_RICED) {
-    header_prefix = "<< queue: ";
-    entry_prefix = " :: ";
-  }
-  if (impl->prompt_theme == SL_PROMPT_THEME_PLAIN)
-    (void)snprintf(header, sizeof(header), "%s%d)", header_prefix, queue->len);
-  else
-    (void)snprintf(header, sizeof(header), "%s%d >>", header_prefix,
-                   queue->len);
-  if (sl_render_new_row_at(render, 0, 0) != 0)
-    return -1;
-  if (sl_row_append(&render->rows[render->count - 1], style, strlen(style)) !=
-          0 ||
-      sl_row_append_cells(&render->rows[render->count - 1], header,
-                          strlen(header),
-                          sl_text_width(header, strlen(header))) != 0 ||
-      sl_row_append(&render->rows[render->count - 1], reset, strlen(reset)) !=
-          0)
-    return -1;
   shown = queue->preview_entries;
   if (shown > queue->len)
     shown = queue->len;
   for (i = 0; i < shown; i++) {
     char number[24];
+    const char *entry_prefix;
     int prefix_width;
     sl_row_t *row;
     if (sl_render_new_row_at(render, 0, 0) != 0)
       return -1;
     row = &render->rows[render->count - 1];
     (void)snprintf(number, sizeof(number), "%d. ", i + 1);
+    entry_prefix = i == 0 ? "Q " : "  ";
     prefix_width = sl_text_width(entry_prefix, strlen(entry_prefix)) +
                    sl_text_width(number, strlen(number));
-    if (sl_row_append(row, style, strlen(style)) != 0 ||
-        sl_row_append_cells(
-            row, entry_prefix, strlen(entry_prefix),
-            sl_text_width(entry_prefix, strlen(entry_prefix))) != 0 ||
-        sl_row_append_cells(row, number, strlen(number),
-                            sl_text_width(number, strlen(number))) != 0 ||
+    if (sl_row_append_styled(row, entry_prefix, control_style) != 0 ||
+        sl_row_append_styled(row, number, control_style) != 0 ||
         sl_queue_row_append_preview(row, queue->items[i], width - prefix_width,
                                     text_style) != 0)
       return -1;
   }
   if (shown < queue->len) {
     char more[64];
-    (void)snprintf(more, sizeof(more), "  ... %d more", queue->len - shown);
+    (void)snprintf(more, sizeof(more), "... %d more", queue->len - shown);
     if (sl_render_new_row_at(render, 0, 0) != 0 ||
-        sl_row_append(&render->rows[render->count - 1], style, strlen(style)) !=
+        sl_row_append_cells(&render->rows[render->count - 1], "  ", 2, 2) !=
             0 ||
-        sl_row_append_cells(&render->rows[render->count - 1], more,
-                            strlen(more),
-                            sl_text_width(more, strlen(more))) != 0 ||
-        sl_row_append(&render->rows[render->count - 1], reset, strlen(reset)) !=
-            0)
+        sl_row_append_styled(&render->rows[render->count - 1], more,
+                             control_style) != 0)
       return -1;
   }
   return 0;
@@ -2179,6 +2197,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
   int prompt_width;
   int indent;
   const char *prompt_style;
+  char input_style[32];
   size_t i;
   memset(render, 0, sizeof(*render));
   impl = sl_impl(self);
@@ -2198,11 +2217,19 @@ static int sl_render_build(sl_t *self, const char *prompt,
   prompt_width = prompt ? sl_text_width(prompt, strlen(prompt)) : 0;
   if (sl_render_new_row_at(render, 0, prompt_width) != 0)
     return -1;
+  if (sl_prompt_input_style(impl, input_style, sizeof(input_style)) != 0)
+    return -1;
   if (prompt && prompt[0] != '\0' &&
       (sl_row_append(&render->rows[render->editor_first], prompt_style,
                      strlen(prompt_style)) != 0 ||
        sl_row_append(&render->rows[render->editor_first], prompt,
-                     strlen(prompt)) != 0))
+                     strlen(prompt)) != 0 ||
+       (prompt_style[0] != '\0' &&
+        sl_row_append(&render->rows[render->editor_first], "\033[0m", 4) != 0)))
+    return -1;
+  if (input_style[0] != '\0' &&
+      sl_row_append(&render->rows[render->editor_first], input_style,
+                    strlen(input_style)) != 0)
     return -1;
   indent = prompt_width;
   if (indent >= width)
@@ -2227,7 +2254,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
         render->cursor_col = col;
       }
       render->rows[render->count - 1].end = i;
-      if (sl_render_new_indented_row(render, indent, i + 1) != 0)
+      if (sl_render_new_input_row(render, indent, i + 1, input_style) != 0)
         return -1;
       col = indent;
       i++;
@@ -2249,7 +2276,8 @@ static int sl_render_build(sl_t *self, const char *prompt,
       if (word_len > 0 && word_width <= avail &&
           col + (int)spaces + word_width > width) {
         render->rows[render->count - 1].end = i;
-        if (sl_render_new_indented_row(render, indent, i + spaces) != 0)
+        if (sl_render_new_input_row(render, indent, i + spaces, input_style) !=
+            0)
           return -1;
         col = indent;
         if (impl->cursor >= i && impl->cursor <= i + spaces) {
@@ -2270,13 +2298,13 @@ static int sl_render_build(sl_t *self, const char *prompt,
       if (avail < 1)
         avail = 1;
       if (word_width <= avail && col + word_width > width) {
-        if (sl_render_new_indented_row(render, indent, i) != 0)
+        if (sl_render_new_input_row(render, indent, i, input_style) != 0)
           return -1;
         col = indent;
       }
     }
     if (col >= width || (char_width > 0 && col + char_width > width)) {
-      if (sl_render_new_indented_row(render, indent, i) != 0)
+      if (sl_render_new_input_row(render, indent, i, input_style) != 0)
         return -1;
       col = indent;
     }
@@ -2289,7 +2317,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
       spaces = 8 - (col % 8);
       while (spaces-- > 0) {
         if (col >= width) {
-          if (sl_render_new_indented_row(render, indent, i) != 0)
+          if (sl_render_new_input_row(render, indent, i, input_style) != 0)
             return -1;
           col = indent;
         }
@@ -2309,13 +2337,15 @@ static int sl_render_build(sl_t *self, const char *prompt,
   }
   if (impl->cursor == impl->len) {
     if (col >= width) {
-      if (sl_render_new_indented_row(render, indent, impl->len) != 0)
+      if (sl_render_new_input_row(render, indent, impl->len, input_style) != 0)
         return -1;
       col = indent;
     }
     render->cursor_row = render->count - 1;
     render->cursor_col = col;
   }
+  if (sl_render_close_input_row(render, input_style) != 0)
+    return -1;
   return 0;
 }
 
@@ -2392,9 +2422,14 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   int rc;
   int height;
   int width;
+  char input_style[32];
+  int input_styled;
   impl = sl_impl(self);
   if (!impl)
     return -1;
+  if (sl_prompt_input_style(impl, input_style, sizeof(input_style)) != 0)
+    return -1;
+  input_styled = input_style[0] != '\0';
   height = sl_terminal_height(impl);
   width = sl_box_width(impl);
   if (impl->rendered_rows > 0 &&
@@ -2458,7 +2493,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
       patch_row = 0;
       prefix_len = 0;
       prefix_col = 0;
-      if (i < old_rows && render_row >= render->editor_first) {
+      if (!input_styled && i < old_rows && render_row >= render->editor_first) {
         prefix_len = sl_row_shared_prefix(
             impl->rendered_lines[i], impl->rendered_lens[i],
             render->rows[render_row].text, render->rows[render_row].len);

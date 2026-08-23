@@ -1960,6 +1960,14 @@ static int run_pty_themed_readline_case(sl_prompt_theme_t theme, char *terminal,
   if (n <= 0)
     return -1;
   result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+  } while (n > 0 && terminal_len < terminal_cap - 1);
   close(master_fd);
   close(result_pipe[0]);
   if (waitpid(pid, &status, 0) != pid)
@@ -2670,9 +2678,22 @@ static void test_key_binding_tab_inserts_text(void) {
 }
 
 static void test_prompt_queue_dispatches_fifo_with_themes(void) {
+  static const sl_prompt_theme_t stash_themes[] = {
+      SL_PROMPT_THEME_DRACULA,    SL_PROMPT_THEME_GRUVBOX,
+      SL_PROMPT_THEME_MONOCHROME, SL_PROMPT_THEME_MONOGREEN,
+      SL_PROMPT_THEME_OUTRUN,     SL_PROMPT_THEME_SYNTHWAVE};
+  static const char *const control_styles[] = {
+      "\033[38;2;98;114;164mQ ",  "\033[38;2;131;165;152mQ ",
+      "\033[38;2;125;110;72mQ ",  "\033[38;2;42;107;58mQ ",
+      "\033[38;2;122;107;143mQ ", "\033[38;2;130;120;156mQ "};
+  static const char *const text_styles[] = {
+      "\033[38;2;195;183;201mfirst", "\033[38;2;213;196;161mfirst",
+      "\033[38;2;169;152;101mfirst", "\033[38;2;95;158;111mfirst",
+      "\033[38;2;184;169;201mfirst", "\033[38;2;179;169;192mfirst"};
   char terminal[16384];
   char result[512];
   int status;
+  size_t i;
 
   TEST("prompt queue previews and dispatches FIFO across themes");
   ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\tthird\r",
@@ -2684,9 +2705,7 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "plain prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:third|2:first|2:second") == 0,
               "plain prompt queue dispatch order mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "Queued (2)"),
-              "plain queue count missing");
-  ASSERT_TRUE(contains_bytes(terminal, "1. first"),
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. first"),
               "plain FIFO preview missing");
   ASSERT_TRUE(contains_bytes(terminal, "... 1 more"),
               "plain overflow count missing");
@@ -2699,8 +2718,9 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "accent prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "accent prompt queue dispatch mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "[ queued: 1 >>") &&
-                  contains_bytes(terminal, "\033[1;36mchat> "),
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;6;182;212mQ ") &&
+                  contains_bytes(terminal, "\033[38;2;148;163;184mfirst") &&
+                  contains_bytes(terminal, "\033[1;36mchat> \033[0m"),
               "accent full prompt treatment missing");
 
   ASSERT_TRUE(run_pty_prompt_queue_case(
@@ -2711,9 +2731,24 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "riced prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "riced prompt queue dispatch mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "<< queue: 1 >>") &&
-                  contains_bytes(terminal, "\033[1;38;2;255;255;255mchat> "),
-              "riced full prompt treatment missing");
+  ASSERT_TRUE(
+      contains_bytes(terminal, "\033[38;2;255;126;219mQ ") &&
+          contains_bytes(terminal, "\033[38;2;172;164;184mfirst") &&
+          contains_bytes(terminal, "\033[1;38;2;255;255;255mchat> \033[0m"),
+      "riced full prompt treatment missing");
+  for (i = 0; i < sizeof(stash_themes) / sizeof(stash_themes[0]); i++) {
+    ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\r", stash_themes[i], 1,
+                                          0, 2, terminal, sizeof(terminal),
+                                          result, sizeof(result), &status) == 0,
+                "stash theme prompt queue pty case failed");
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "stash theme prompt queue child failed");
+    ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+                "stash theme prompt queue dispatch mismatch");
+    ASSERT_TRUE(contains_bytes(terminal, control_styles[i]) &&
+                    contains_bytes(terminal, text_styles[i]),
+                "stash theme queue palette treatment missing");
+  }
   PASS();
 }
 
@@ -2731,8 +2766,8 @@ static void test_prompt_queue_dispatches_fifo_in_normal_scrollback(void) {
               "normal prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "normal prompt queue dispatch mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "[ queued: 1 >>") &&
-                  contains_bytes(terminal, "chat> second"),
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;6;182;212mQ ") &&
+                  contains_bytes(terminal, "\033[1;36mchat> \033[0m"),
               "normal prompt queue preview missing");
   PASS();
 }
@@ -2770,8 +2805,8 @@ static void test_prompt_queue_alt_e_recalls_newest(void) {
               "Alt-E prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "Alt-E did not restore queue tail");
-  ASSERT_TRUE(contains_bytes(terminal, "Queued (1)"),
-              "Alt-E did not redraw reduced queue count");
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. first"),
+              "Alt-E did not redraw the remaining queued preview");
   PASS();
 }
 
@@ -2789,8 +2824,17 @@ static void test_prompt_themes_style_normal_readline(void) {
                                        "\033[38;2;78;69;99mnormal> ",
                                        "\033[1;38;2;255;255;255mnormal> ",
                                        "\033[1;38;2;255;126;219mnormal> "};
+  static const char *const input_styles[] = {"",
+                                             "",
+                                             "",
+                                             "\033[38;2;255;224;138mok\033[0m",
+                                             "\033[1;38;2;51;255;51mok\033[0m",
+                                             "",
+                                             "",
+                                             ""};
   char terminal[4096];
   char result[64];
+  char styled_prompt[128];
   int status;
   size_t i;
 
@@ -2806,6 +2850,13 @@ static void test_prompt_themes_style_normal_readline(void) {
                 "themed normal prompt result mismatch");
     ASSERT_TRUE(contains_bytes(terminal, styles[i]),
                 "themed normal prompt treatment missing");
+    (void)snprintf(styled_prompt, sizeof(styled_prompt), "%s\033[0m",
+                   styles[i]);
+    ASSERT_TRUE(contains_bytes(terminal, styled_prompt),
+                "themed prompt did not reset before typed input");
+    if (input_styles[i][0] != '\0')
+      ASSERT_TRUE(contains_bytes(terminal, input_styles[i]),
+                  "themed input treatment missing");
   }
   PASS();
 }
