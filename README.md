@@ -90,7 +90,7 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 work as `[direct|queued] I read back: <prompt>`, shows a palette-driven status
 line, and emits a random simulated peer message every two seconds while the
 editor is active. Its status demo advances every five seconds through spinner
-off/on twice while busy, then static busy `x`/idle `:` twice, and repeats.
+idle `:`/spinner twice, then static busy `x`/idle `:` twice, and repeats.
 Ctrl-C cancels the active editor and keeps the chat open.
 The queue UI, status line, and simulated peer activate only when both standard
 input and standard output are terminals, so piped use remains plain

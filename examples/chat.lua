@@ -44,11 +44,12 @@ end
 
 local function update_status_presentation(now)
   local phase = math.floor((now - status_started_at) / 5) % 8
+  local spinner = phase == 1 or phase == 3
   if phase == status_phase then
     return
   end
-  assert(sl:set_status_spinner(phase == 1 or phase == 3))
-  assert(sl:set_status_busy(phase < 5 or phase == 6))
+  assert(sl:set_status_spinner(spinner))
+  assert(sl:set_status_busy(spinner or phase == 4 or phase == 6))
   status_phase = phase
 end
 

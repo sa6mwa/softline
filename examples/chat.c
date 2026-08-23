@@ -120,7 +120,7 @@ static int update_status_presentation(sl_t *sl, struct chat_idle_state *state,
   if (phase == state->status_phase)
     return SL_OK;
   spinner = phase == 1 || phase == 3;
-  busy = phase < 5 || phase == 6;
+  busy = spinner || phase == 4 || phase == 6;
   if (sl->set_status_spinner(sl, spinner) != SL_OK ||
       sl->set_status_busy(sl, busy) != SL_OK)
     return SL_ERROR;
