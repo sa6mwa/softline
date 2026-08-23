@@ -45,7 +45,11 @@ local function update_status_presentation(now)
   if phase == status_phase and marker_cycle == status_marker_cycle then
     return
   end
-  assert(sl:set_status_idle_marker(marker_cycle == 1 and "-" or nil))
+  if marker_cycle == 1 then
+    assert(sl:set_status_idle_marker(nil))
+  else
+    assert(sl:set_status_idle_marker("+"))
+  end
   assert(sl:set_status_spinner(spinner))
   assert(sl:set_status_busy(spinner or phase == 4 or phase == 6))
   status_phase = phase
@@ -87,7 +91,7 @@ local function run()
     status_marker_cycle = nil
     update_status_presentation(status_started_at)
     assert(sl:set_idle_callback(print_peer_message))
-    print_message({ "softline Lua chat example. Tab queues; Alt-E recalls the newest queued prompt. Status alternates 40-second idle-marker cycles.\n" })
+    print_message({ "softline Lua chat example. Tab queues; Alt-E recalls the newest queued prompt. Status alternates 40-second green + and blank-slot cycles.\n" })
   end
 
   while true do

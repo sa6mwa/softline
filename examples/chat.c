@@ -126,7 +126,7 @@ static int update_status_presentation(sl_t *sl, struct chat_idle_state *state,
     return SL_OK;
   spinner = phase == 1 || phase == 3;
   busy = spinner || phase == 4 || phase == 6;
-  if (sl->set_status_idle_marker(sl, marker_cycle ? '-' : '\0') != SL_OK ||
+  if (sl->set_status_idle_marker(sl, marker_cycle ? '\0' : '+') != SL_OK ||
       sl->set_status_spinner(sl, spinner) != SL_OK ||
       sl->set_status_busy(sl, busy) != SL_OK)
     return SL_ERROR;
@@ -225,7 +225,7 @@ int main(void) {
   if (interactive &&
       print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
                         "the newest queued prompt. Status alternates "
-                        "40-second idle-marker cycles.") != SL_OK) {
+                        "40-second green + and blank-slot cycles.") != SL_OK) {
     (void)print_last_error(sl);
     sl->destroy(sl);
     return 1;

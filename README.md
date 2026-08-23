@@ -91,8 +91,8 @@ with a `[direct]` or `[queued]` source prefix while preserving the submitted
 text, shows a palette-driven status line, and emits a random simulated peer
 message every two seconds while the
 editor is active. Its status demo advances every five seconds through spinner
-and static busy phases. It alternates complete 40-second cycles between no
-idle marker and a green idle `-` marker.
+and static busy phases. It alternates complete 40-second cycles between green
+idle `+` and blank reserved marker slots.
 Ctrl-C cancels the active editor and keeps the chat open.
 The queue UI, status line, and simulated peer activate only when both standard
 input and standard output are terminals, so piped use remains plain
