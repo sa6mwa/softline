@@ -28,6 +28,7 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 static volatile sig_atomic_t signal_seen = 0;
+static volatile sig_atomic_t winch_seen = 0;
 static int signal_ack_fd = -1;
 
 static void remember_signal(int signo) {
@@ -41,6 +42,11 @@ static void remember_signal(int signo) {
 }
 
 static void ignore_signal(int signo) { (void)signo; }
+
+static void remember_winch(int signo) {
+  (void)signo;
+  winch_seen = 1;
+}
 
 #define TEST(name)                                                             \
   do {                                                                         \
@@ -4727,7 +4733,7 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   int status;
   int tries;
 
-  TEST("dynamic bounded prompt reflows after resize");
+  TEST("dynamic bounded prompt reflows and preserves SIGWINCH handler");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 40;
   ws.ws_row = 6;
@@ -4737,11 +4743,20 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   pid = fork();
   ASSERT_TRUE(pid >= 0, "fork failed");
   if (pid == 0) {
+    struct sigaction action;
     sl_config_t cfg;
     sl_t *sl;
     char *line;
+    char message[256];
+    int written;
     close(master_fd);
     close(result_pipe[0]);
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = remember_winch;
+    if (sigemptyset(&action.sa_mask) != 0 ||
+        sigaction(SIGWINCH, &action, NULL) != 0)
+      _exit(2);
+    winch_seen = 0;
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
@@ -4753,7 +4768,10 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
     line = sl->readline(sl, "p> ");
     if (!line)
       _exit(4);
-    (void)write(result_pipe[1], line, strlen(line));
+    written =
+        snprintf(message, sizeof(message), "%d:%s", (int)winch_seen, line);
+    if (written > 0)
+      (void)write(result_pipe[1], message, (size_t)written);
     sl->free_string(sl, line);
     sl->destroy(sl);
     close(slave_fd);
@@ -4771,6 +4789,8 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   }
   ASSERT_TRUE(contains_bytes(terminal, "\033[6;1Hp> "),
               "dynamic prompt did not start at bottom");
+  ASSERT_TRUE(kill(pid, SIGWINCH) == 0, "SIGWINCH failed");
+  usleep(50000);
   ASSERT_TRUE(write(master_fd, "hello world sentence", 20) == 20,
               "write input failed");
   tries = 0;
@@ -4819,8 +4839,8 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
-  ASSERT_TRUE(strcmp(result, "hello world sentence") == 0,
-              "dynamic bounded resize result mismatch");
+  ASSERT_TRUE(strcmp(result, "1:hello world sentence") == 0,
+              "dynamic bounded resize or SIGWINCH handler mismatch");
   PASS();
 }
 

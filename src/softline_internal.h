@@ -81,8 +81,6 @@ typedef struct sl_impl {
   char *history_edit;
   int bracketed_paste;
   int cursor_hidden;
-  struct sigaction previous_winch;
-  int winch_handler_active;
   int rendered_rows;
   int rendered_top_row;
   int rendered_cursor_row;

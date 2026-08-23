@@ -181,7 +181,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
 static int sl_render_clear_active(sl_t *self);
-static volatile sig_atomic_t sl_winch_pending;
 
 static sl_impl_t *sl_impl(sl_t *self) {
   if (!self)
@@ -610,33 +609,6 @@ static int sl_enable_raw(sl_t *self) {
   }
   impl->raw_active = 1;
   return 0;
-}
-
-static void sl_handle_winch(int signo) {
-  (void)signo;
-  sl_winch_pending = 1;
-}
-
-static int sl_enable_resize_notifications(sl_impl_t *impl) {
-  struct sigaction action;
-  if (!impl || !impl->bounded ||
-      (!impl->dynamic_width && !impl->dynamic_height))
-    return 0;
-  memset(&action, 0, sizeof(action));
-  action.sa_handler = sl_handle_winch;
-  if (sigemptyset(&action.sa_mask) != 0 ||
-      sigaction(SIGWINCH, &action, &impl->previous_winch) != 0)
-    return -1;
-  impl->winch_handler_active = 1;
-  sl_winch_pending = 0;
-  return 0;
-}
-
-static void sl_disable_resize_notifications(sl_impl_t *impl) {
-  if (!impl || !impl->winch_handler_active)
-    return;
-  (void)sigaction(SIGWINCH, &impl->previous_winch, NULL);
-  impl->winch_handler_active = 0;
 }
 
 static void sl_disable_raw(sl_t *self) {
@@ -3375,20 +3347,12 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
-  if (sl_enable_resize_notifications(impl) != 0) {
-    sl_disable_raw(self);
-    sl_set_error(self, "failed to subscribe to terminal resize events");
-    sl_set_readline_status(self, SL_READLINE_ERROR);
-    return NULL;
-  }
   if (sl_buf_set(self, "") != 0) {
-    sl_disable_resize_notifications(impl);
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
   if (sl_enable_bracketed_paste(impl) != 0) {
-    sl_disable_resize_notifications(impl);
     sl_disable_raw(self);
     sl_set_error(self, "failed to enable bracketed paste");
     sl_set_readline_status(self, SL_READLINE_ERROR);
@@ -3408,7 +3372,6 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   if (sl_render_apply(self, prompt) != 0) {
     impl->active_prompt = NULL;
     impl->active_readline = 0;
-    sl_disable_resize_notifications(impl);
     sl_disable_bracketed_paste(impl);
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_ERROR);
@@ -3454,13 +3417,6 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
     case SL_KEY_NONE:
       if (errno == EINTR) {
         errno = 0;
-        if (impl->winch_handler_active && sl_winch_pending) {
-          sl_winch_pending = 0;
-          if (sl_render_apply(self, render_prompt) != 0) {
-            failed = 1;
-            done = 1;
-          }
-        }
       } else if (errno != 0) {
         failed = 1;
         done = 1;
@@ -3719,7 +3675,6 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
     }
   }
   impl->active_readline = 0;
-  sl_disable_resize_notifications(impl);
   if (interrupted) {
     sl_history_search_cleanup(&search);
     sl_render_clear_active(self);
@@ -3829,7 +3784,6 @@ static void sl_destroy_method(sl_t *self) {
   if (!self)
     return;
   if (impl) {
-    sl_disable_resize_notifications(impl);
     sl_disable_raw(self);
     (void)sl_show_cursor(impl);
     sl_history_clear(&impl->history);
