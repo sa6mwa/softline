@@ -3254,6 +3254,84 @@ static void test_default_statusline_uses_ansi_palette(void) {
   PASS();
 }
 
+static void test_bounded_statusline_clips_marker_to_box_width(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  struct winsize ws;
+  pid_t pid;
+  char terminal[4096];
+  char result[64];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+
+  TEST("bounded one-column status line clips its marker");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 8;
+  ws.ws_row = 4;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 1;
+    cfg.screen_height = 3;
+    cfg.bounded = 1;
+    cfg.prompt_theme = SL_PROMPT_THEME_DEFAULT;
+    cfg.statusline = 1;
+    cfg.status_busy = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    line = sl_readline(sl, "p");
+    if (!line)
+      _exit(3);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "\033[31mx\033[0m")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "one-column status marker was not rendered");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    ASSERT_TRUE(terminal_len < sizeof(terminal) - 1,
+                "terminal capture overflowed");
+  }
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[31mx \033[0m"),
+              "status marker exceeded one-column bounded box");
+  ASSERT_TRUE(write(master_fd, "z\r", 2) == 2, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n == 1, "read result failed");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "z") == 0, "result mismatch");
+  PASS();
+}
+
 static void test_key_binding_alt_m_inserts_text(void) {
   char terminal[4096];
   char result[256];
@@ -6408,6 +6486,7 @@ int main(void) {
   test_prompt_themes_style_normal_readline();
   test_statusline_uses_palette_offset_and_truncation();
   test_default_statusline_uses_ansi_palette();
+  test_bounded_statusline_clips_marker_to_box_width();
   test_key_binding_alt_m_inserts_text();
   test_key_binding_f1_submits();
   test_key_binding_can_edit_buffer_and_submit();

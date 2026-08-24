@@ -2096,6 +2096,9 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
     marker[2] = '\0';
     marker_width = 2;
   }
+  if (marker_width > width)
+    marker_width = width;
+  marker[marker_width] = '\0';
   default_style = NULL;
   if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT &&
       (statusline->busy || statusline->idle_marker != '\0')) {
