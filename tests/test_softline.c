@@ -5616,6 +5616,7 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   int result_pipe[2];
   pid_t pid;
   struct winsize ws;
+  struct vt_screen screen;
   char terminal[8192];
   char result[64];
   char buf[512];
@@ -5625,6 +5626,11 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   int replied;
   int tries;
   int prompts_after_second;
+  int first_row;
+  int second_row;
+  int queue_row;
+  int prompt_row;
+  int i;
 
   TEST("normal prompt pins at bottom for live output");
   memset(&ws, 0, sizeof(ws));
@@ -5725,6 +5731,27 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   ASSERT_TRUE(strcmp(result, "ok") == 0, "pinned prompt result mismatch");
   ASSERT_TRUE(contains_bytes(terminal, "\033[r"),
               "scroll region was not restored");
+  vt_init(&screen, 5, 20);
+  screen.row = 4;
+  screen.col = 0;
+  vt_apply(&screen, terminal);
+  first_row = -1;
+  second_row = -1;
+  queue_row = -1;
+  prompt_row = -1;
+  for (i = 0; i < screen.rows; i++) {
+    if (strstr(screen.cells[i], "first-live"))
+      first_row = i;
+    if (strstr(screen.cells[i], "second-live"))
+      second_row = i;
+    if (strstr(screen.cells[i], "Q 1. queued"))
+      queue_row = i;
+    if (strstr(screen.cells[i], "p> ok"))
+      prompt_row = i;
+  }
+  ASSERT_TRUE(first_row >= 0 && second_row == first_row + 1 &&
+                  queue_row == second_row + 1 && prompt_row == queue_row + 1,
+              "live transcript content was overwritten or on the wrong row");
   PASS();
 }
 

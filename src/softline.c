@@ -2850,6 +2850,82 @@ static int sl_write_stream(sl_t *self, sl_stream_callback_t callback,
   }
 }
 
+/* A live transcript owns the row immediately above the fixed prompt. Scroll
+ * before its first byte and defer a trailing newline, so a complete message
+ * remains on that bottom transcript row instead of being scrolled one row too
+ * far upward. */
+static int sl_write_scroll_stream_chunk(sl_impl_t *impl, const char *chunk,
+                                        size_t len, int *pending_newline) {
+  const char *p;
+  const char *start;
+  size_t n;
+  if (!impl || !chunk || !pending_newline)
+    return -1;
+  p = chunk;
+  start = chunk;
+  while ((size_t)(p - chunk) < len) {
+    if (*p == '\n') {
+      n = (size_t)(p - start);
+      if (*pending_newline && sl_write_line_break(impl) != 0)
+        return -1;
+      *pending_newline = 1;
+      if (n > 0 && sl_write_all(impl->output_fd, start, n) != 0)
+        return -1;
+      p++;
+      start = p;
+    } else {
+      if (*pending_newline) {
+        if (sl_write_line_break(impl) != 0)
+          return -1;
+        *pending_newline = 0;
+      }
+      p++;
+    }
+  }
+  n = (size_t)(p - start);
+  if (*pending_newline && n > 0) {
+    if (sl_write_line_break(impl) != 0)
+      return -1;
+    *pending_newline = 0;
+  }
+  if (n > 0 && sl_write_all(impl->output_fd, start, n) != 0)
+    return -1;
+  return 0;
+}
+
+static int sl_write_scroll_stream(sl_t *self, sl_stream_callback_t callback,
+                                  void *userdata) {
+  sl_impl_t *impl;
+  int started;
+  int pending_newline;
+  impl = sl_impl(self);
+  if (!impl || !callback)
+    return SL_ERROR_INVALID;
+  started = 0;
+  pending_newline = 0;
+  for (;;) {
+    const char *chunk;
+    size_t len;
+    int rc;
+    chunk = NULL;
+    len = 0;
+    rc = callback(self, userdata, &chunk, &len);
+    if (rc != SL_OK)
+      return rc;
+    if (len == 0)
+      return SL_OK;
+    if (!chunk)
+      return SL_ERROR_INVALID;
+    if (!started) {
+      if (sl_write_line_break(impl) != 0)
+        return SL_ERROR_IO;
+      started = 1;
+    }
+    if (sl_write_scroll_stream_chunk(impl, chunk, len, &pending_newline) != 0)
+      return SL_ERROR_IO;
+  }
+}
+
 static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
                                  void *userdata) {
   sl_impl_t *impl;
@@ -2885,7 +2961,9 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
         (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
       }
-      rc = sl_write_stream(self, callback, userdata);
+      rc = impl->auto_scroll_pinned
+               ? sl_write_scroll_stream(self, callback, userdata)
+               : sl_write_stream(self, callback, userdata);
       if (sl_reset_scroll_region(impl->output_fd) != 0) {
         (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
