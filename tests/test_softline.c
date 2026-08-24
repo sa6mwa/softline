@@ -1597,6 +1597,95 @@ static int run_pty_readline_case(const char *input, int width, int height,
                                           result_cap, exit_status);
 }
 
+static int run_pty_readline_completion_case(int bounded, int prompt_queue,
+                                            char *terminal, size_t terminal_cap,
+                                            char *result, size_t result_cap,
+                                            int *exit_status) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0 ||
+      pipe(result_pipe) != 0)
+    return -1;
+  pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = prompt_queue;
+    if (bounded) {
+      cfg.bounded = 1;
+      cfg.screen_width = 20;
+      cfg.screen_height = 3;
+    }
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(3);
+    if (write(slave_fd, "after\n", 6) != 6)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "p> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n <= 0)
+      return -1;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    if (terminal_len >= terminal_cap - 1)
+      return -1;
+  }
+  if (write(master_fd, "hello\r", 6) != 6)
+    return -1;
+  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  if (n <= 0)
+    return -1;
+  result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+  } while (n > 0 && terminal_len < terminal_cap - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  *exit_status = status;
+  return 0;
+}
+
 static int run_pty_history_case_with_options(
     const char *input, const char **history, int history_len,
     const char *history_file, int width, int height, char *terminal,
@@ -3448,8 +3537,57 @@ static void test_bounded_prompt_starts_at_bottom(void) {
   vt_apply(&screen, terminal);
   ASSERT_TRUE(vt_contains(&screen, "p> ok"),
               "bounded prompt did not retain submitted text");
-  ASSERT_TRUE(screen.row == 4 && screen.col == 5,
-              "cursor was not positioned on bottom row");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[6;1H"),
+              "cursor was not positioned below the bounded prompt");
+  PASS();
+}
+
+static void test_bounded_readline_leaves_output_below_prompt(void) {
+  char terminal[4096];
+  char result[256];
+  struct vt_screen screen;
+  int status;
+
+  TEST("bounded readline leaves following output below prompt");
+  ASSERT_TRUE(run_pty_readline_completion_case(1, 0, terminal, sizeof(terminal),
+                                               result, sizeof(result),
+                                               &status) == 0,
+              "bounded completion pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "bounded completion child failed");
+  ASSERT_TRUE(strcmp(result, "hello") == 0,
+              "bounded completion result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[4;1H"),
+              "following output was not positioned below bounded prompt");
+  vt_init(&screen, 5, 20);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello"),
+              "bounded prompt was overwritten by following output");
+  ASSERT_TRUE(vt_contains(&screen, "after"), "following output missing");
+  PASS();
+}
+
+static void test_readline_keeps_normal_completion_with_queueing(void) {
+  char terminal[4096];
+  char result[256];
+  struct vt_screen screen;
+  int status;
+
+  TEST("readline retains completion output when queueing is enabled");
+  ASSERT_TRUE(run_pty_readline_completion_case(0, 1, terminal, sizeof(terminal),
+                                               result, sizeof(result),
+                                               &status) == 0,
+              "queued readline completion pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued readline completion child failed");
+  ASSERT_TRUE(strcmp(result, "hello") == 0,
+              "queued readline completion result mismatch");
+  vt_init(&screen, 5, 20);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello"),
+              "queued direct readline prompt was cleared");
+  ASSERT_TRUE(vt_contains(&screen, "after"),
+              "following output missing after queued direct readline");
   PASS();
 }
 
@@ -5647,6 +5785,16 @@ static void test_bounded_prompt_starts_at_bottom(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_bounded_readline_leaves_output_below_prompt(void) {
+  TEST("bounded readline leaves following output below prompt");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_readline_keeps_normal_completion_with_queueing(void) {
+  TEST("readline retains completion output when queueing is enabled");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_config_zero_bounds_start_at_terminal_bottom(void) {
   TEST("zero config bounds start on terminal bottom row");
   printf("SKIP\n");
@@ -5850,6 +5998,8 @@ int main(void) {
   test_bounded_print_above_uses_scroll_region();
   test_bounded_print_above_rejects_narrow_scroll();
   test_bounded_prompt_starts_at_bottom();
+  test_bounded_readline_leaves_output_below_prompt();
+  test_readline_keeps_normal_completion_with_queueing();
   test_config_zero_bounds_start_at_terminal_bottom();
   test_dynamic_bounds_origin_uses_remaining_terminal_area();
   test_bounded_redraw_clears_only_box_width();

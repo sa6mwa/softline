@@ -2621,7 +2621,7 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   return rc;
 }
 
-static int sl_render_finish(sl_t *self) {
+static int sl_render_finish(sl_t *self, int queue_dispatch) {
   sl_impl_t *impl;
   impl = sl_impl(self);
   if (!impl)
@@ -2630,16 +2630,18 @@ static int sl_render_finish(sl_t *self) {
       sl_wstr(impl->output_fd, "\033[0m") != 0)
     return -1;
   if (sl_bounded_mode(impl)) {
-    if (sl_prompt_queue_enabled(impl)) {
+    if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
       if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
         (void)sl_show_cursor(impl);
         return -1;
       }
     }
+    if (sl_write_cursor_pos(impl->output_fd, sl_box_bottom(impl) + 1, 0) != 0)
+      return -1;
     sl_render_store_clear(impl);
     return 0;
   }
-  if (sl_prompt_queue_enabled(impl)) {
+  if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
     if (sl_render_clear_active(self) != 0) {
       sl_set_error(self, "failed to clear queued prompt before dispatch");
       return -1;
@@ -3326,7 +3328,8 @@ static int sl_dispatch_key_binding(sl_t *self, int key,
   return binding->callback(self, (sl_key_t)key, binding->userdata, action);
 }
 
-static char *sl_readline_method(sl_t *self, const char *prompt) {
+static char *sl_readline_impl(sl_t *self, const char *prompt,
+                              int queue_dispatch) {
   sl_impl_t *impl;
   sl_history_search_t search;
   char *result;
@@ -3706,8 +3709,8 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   } else {
     sl_history_search_accept(&search);
   }
-  if (!failed &&
-      (sl_render_apply(self, prompt) != 0 || sl_render_finish(self) != 0))
+  if (!failed && (sl_render_apply(self, prompt) != 0 ||
+                  sl_render_finish(self, queue_dispatch) != 0))
     failed = 1;
   impl->bracketed_paste = 0;
   sl_disable_bracketed_paste(impl);
@@ -3751,6 +3754,10 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   return result;
 }
 
+static char *sl_readline_method(sl_t *self, const char *prompt) {
+  return sl_readline_impl(self, prompt, 0);
+}
+
 static char *sl_next_prompt_method(sl_t *self, const char *prompt,
                                    sl_prompt_source_t *source) {
   sl_impl_t *impl;
@@ -3772,7 +3779,7 @@ static char *sl_next_prompt_method(sl_t *self, const char *prompt,
       *source = SL_PROMPT_SOURCE_QUEUED;
     return result;
   }
-  result = sl_readline_method(self, prompt);
+  result = sl_readline_impl(self, prompt, 1);
   if (result && source)
     *source = SL_PROMPT_SOURCE_DIRECT;
   return result;
