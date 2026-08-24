@@ -2606,6 +2606,23 @@ static void test_pty_history_navigation_restores_draft(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "draft") == 0, "draft restore mismatch");
   PASS();
+
+  TEST("Ctrl-P and Ctrl-N navigate history entries");
+  ASSERT_TRUE(run_pty_history_case("\020\r", history, 2, terminal,
+                                   sizeof(terminal), result, sizeof(result),
+                                   &status) == 0,
+              "Ctrl-P history case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "second") == 0, "Ctrl-P history mismatch");
+  ASSERT_TRUE(run_pty_history_case("draft\020\016\r", history, 2, terminal,
+                                   sizeof(terminal), result, sizeof(result),
+                                   &status) == 0,
+              "Ctrl-N history case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "draft") == 0, "Ctrl-N draft restore mismatch");
+  PASS();
 }
 
 static void test_pty_readline_does_not_auto_add_history(void) {
@@ -4939,6 +4956,12 @@ static void test_resize_reflows_without_keypress(void) {
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     tries++;
   }
+  vt_init(&screen, 20, 16);
+  vt_apply(&screen, terminal + resize_offset);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello world"),
+              "idle resize did not reflow before input");
+  ASSERT_TRUE(vt_contains(&screen, "   sentence"),
+              "idle resize continuation was not rendered before input");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -5840,7 +5863,9 @@ static void test_cursor_probe_preserves_concurrent_queue_input(void) {
   }
   ASSERT_TRUE(contains_bytes(terminal, "\033[6n"),
               "cursor-position probe was not requested");
-  ASSERT_TRUE(write(master_fd, "queued\tok\r", 10) == 10,
+  ASSERT_TRUE(write(master_fd,
+                    "queued-012345678901234567890123456789012345\tok\r",
+                    47) == 47,
               "concurrent queue input write failed");
   tries = 0;
   n = 0;

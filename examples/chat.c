@@ -281,6 +281,12 @@ int main(void) {
       sl->free_string(sl, line);
       break;
     }
+    if (line[0] != '\0' && sl->history_add(sl, line) != SL_OK) {
+      sl->free_string(sl, line);
+      (void)print_last_error(sl);
+      exit_code = 1;
+      break;
+    }
     if (print_dispatched_message(sl, source, line) != SL_OK) {
       sl->free_string(sl, line);
       (void)print_last_error(sl);

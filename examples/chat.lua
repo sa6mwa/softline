@@ -108,6 +108,9 @@ local function run()
       if line == "exit" then
         break
       end
+      if line ~= "" then
+        assert(sl:history_add(line))
+      end
       local prefix = source_or_status == softline.PROMPT_SOURCE_QUEUED
           and "[queued] " or "[direct] "
       print_message({ prefix, line, "\n" })

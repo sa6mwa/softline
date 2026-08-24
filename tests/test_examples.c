@@ -477,6 +477,42 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   PASS();
 }
 
+static void test_example_chat_recalls_sent_history(const char *path) {
+  int master_fd;
+  pid_t pid;
+  char terminal[16384];
+  size_t terminal_len;
+
+  TEST("example_chat recalls sent prompts from history");
+  pid = spawn_example(path, &master_fd, 40, 8);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "> ") == 0,
+              "initial prompt missing");
+  ASSERT_TRUE(write(master_fd, "remember\r", 9) == 9,
+              "write history source failed");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "\033[?2004l",
+                                  "[direct] remember\r\n") == 0,
+              "history source message missing");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[direct] remember\r\n",
+                                  "\033[?2004h") == 0,
+              "prompt did not resume after history source message");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(write(master_fd, "\033[A\r", 4) == 4,
+              "write history recall failed");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[direct] remember\r\n") == 0,
+              "Up did not recall sent history");
+  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  PASS();
+}
+
 static void
 test_example_chat_keeps_empty_direct_message_separate(const char *path) {
   int master_fd;
@@ -673,6 +709,7 @@ int main(int argc, char **argv) {
   test_example_simple_wraps_near_bottom(argv[1]);
   test_example_chat_uses_normal_scrollback(argv[2]);
   test_example_chat_dispatches_queued_prompts(argv[2]);
+  test_example_chat_recalls_sent_history(argv[2]);
   test_example_chat_keeps_empty_direct_message_separate(argv[2]);
   test_example_chat_receives_peer_messages(argv[2]);
   test_example_chat_updates_editor_in_normal_scrollback(argv[2]);

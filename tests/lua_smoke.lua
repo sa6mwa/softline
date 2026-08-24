@@ -57,6 +57,8 @@ assert(status:set_status_idle_marker(nil))
 assert(softline.PROMPT_THEME_DRACULA)
 assert(softline.PROMPT_THEME_SYNTHWAVE)
 assert(softline.PROMPT_THEME_DEFAULT)
+assert_eq(softline.KEY_CTRL_N, 14, "Ctrl-N key constant")
+assert_eq(softline.KEY_CTRL_P, 16, "Ctrl-P key constant")
 status:close()
 
 print("lua softline smoke passed")

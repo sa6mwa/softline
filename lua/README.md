@@ -119,6 +119,8 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.READLINE_ERROR`
 - `softline.OK`
 - `softline.KEY_CTRL_C`
+- `softline.KEY_CTRL_N`
+- `softline.KEY_CTRL_P`
 - `softline.KEY_ACTION_PASS`
 - `softline.KEY_ACTION_HANDLED`
 - `softline.KEY_ACTION_SUBMIT`

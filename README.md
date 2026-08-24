@@ -44,8 +44,8 @@ Currently implemented:
 - `Ctrl-C` remains a terminal interrupt instead of being swallowed.
 - `last_readline_status()` distinguishes submitted text, EOF, cancellation,
   interrupt, and failures after `readline()` returns.
-- `Ctrl-U`, `Ctrl-K`, word deletion, movement, history recall, and delete keys
-  operate across the whole multiline buffer.
+- `Ctrl-U`, `Ctrl-K`, word deletion, movement, history recall (`Up`/`Down` or
+  `Ctrl-P`/`Ctrl-N`), and delete keys operate across the whole multiline buffer.
 - `Ctrl-R` starts reverse incremental history search over the handle's current
   in-memory history, including entries loaded before `readline()`.
 - Long input wraps by words where possible and reflows after terminal resize.
@@ -64,7 +64,9 @@ Currently implemented:
   identifying whether the result was queued or direct. The renderer ships
   default, plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun,
   Riced, and Synthwave prompt themes. Optional status lines use the selected
-  palette.
+  palette. The chat examples add sent nonempty prompts to their history, so
+  `Up`/`Down` and `Ctrl-P`/`Ctrl-N` recall sent prompts while Alt-E remains
+  reserved for unsent queued drafts.
 - UTF-8 input is preserved, common Unicode clusters are kept intact by
   cursor/delete operations, and rendering accounts for combining marks, East
   Asian wide characters, and common emoji widths.

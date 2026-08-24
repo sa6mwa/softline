@@ -60,6 +60,10 @@ typedef enum sl_key {
   SL_KEY_CTRL_K = 11,
   /** Enter or carriage return. */
   SL_KEY_ENTER = 13,
+  /** Ctrl-N, recall the next history entry. */
+  SL_KEY_CTRL_N = 14,
+  /** Ctrl-P, recall the previous history entry. */
+  SL_KEY_CTRL_P = 16,
   /** Ctrl-R, reverse incremental history search unless rebound. */
   SL_KEY_CTRL_R = 18,
   /** Ctrl-U, delete from beginning of buffer to cursor. */

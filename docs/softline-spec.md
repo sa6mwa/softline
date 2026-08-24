@@ -59,6 +59,7 @@ The editor supports these built-in behaviors:
 - `Ctrl-E` / End moves to the end of the buffer.
 - `Ctrl-B` / Left and `Ctrl-F` / Right move by common UTF-8 cluster boundaries.
 - Up and Down navigate visual rows first, then history where applicable.
+  `Ctrl-P` and `Ctrl-N` navigate previous and next history entries directly.
 - `Ctrl-R` starts reverse incremental search over the handle's current history.
   Typing updates the query, repeated `Ctrl-R` cycles older matches and wraps,
   Enter accepts the displayed match, and Escape or `Ctrl-G` restores the draft.

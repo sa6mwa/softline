@@ -3043,17 +3043,37 @@ static ssize_t sl_read_available_byte(sl_impl_t *impl, char *ch) {
   return sl_read_input_byte(impl, ch, 0);
 }
 
-static void sl_pending_input_append(sl_impl_t *impl, const char *text,
-                                    size_t len) {
-  size_t room;
-  if (!impl || !text || len == 0 ||
-      impl->pending_input_len >= SL_PENDING_INPUT_MAX)
-    return;
-  room = SL_PENDING_INPUT_MAX - impl->pending_input_len;
-  if (len > room)
-    len = room;
+static int sl_pending_input_append(sl_impl_t *impl, const char *text,
+                                   size_t len) {
+  size_t needed;
+  size_t cap;
+  char *next;
+  if (!impl || !text)
+    return -1;
+  if (len == 0)
+    return 0;
+  if (len > (size_t)-1 - impl->pending_input_len)
+    return -1;
+  needed = impl->pending_input_len + len;
+  if (needed > impl->pending_input_cap) {
+    cap = impl->pending_input_cap ? impl->pending_input_cap
+                                  : SL_PENDING_INPUT_MAX;
+    while (cap < needed) {
+      if (cap > (size_t)-1 / 2) {
+        cap = needed;
+        break;
+      }
+      cap *= 2;
+    }
+    next = (char *)realloc(impl->pending_input, cap);
+    if (!next)
+      return -1;
+    impl->pending_input = next;
+    impl->pending_input_cap = cap;
+  }
   memcpy(impl->pending_input + impl->pending_input_len, text, len);
   impl->pending_input_len += len;
+  return 0;
 }
 
 /* Read a Device Status Report cursor-position reply while preserving any user
@@ -3100,13 +3120,15 @@ static int sl_query_cursor_row(sl_t *self) {
     if (n != 1)
       break;
     if (candidate_len == 0 && ch != '\033') {
-      sl_pending_input_append(impl, &ch, 1);
+      if (sl_pending_input_append(impl, &ch, 1) != 0)
+        goto preserve_failed;
       continue;
     }
     if (candidate_len >= sizeof(candidate)) {
-      sl_pending_input_append(impl, candidate, candidate_len);
+      if (sl_pending_input_append(impl, candidate, candidate_len) != 0 ||
+          sl_pending_input_append(impl, &ch, 1) != 0)
+        goto preserve_failed;
       candidate_len = 0;
-      sl_pending_input_append(impl, &ch, 1);
       continue;
     }
     candidate[candidate_len++] = ch;
@@ -3141,7 +3163,8 @@ static int sl_query_cursor_row(sl_t *self) {
         i++;
     }
     if (!valid || i < candidate_len) {
-      sl_pending_input_append(impl, candidate, candidate_len);
+      if (sl_pending_input_append(impl, candidate, candidate_len) != 0)
+        goto preserve_failed;
       candidate_len = 0;
       continue;
     }
@@ -3154,7 +3177,13 @@ static int sl_query_cursor_row(sl_t *self) {
       break;
     }
   }
-  sl_pending_input_append(impl, candidate, candidate_len);
+  if (sl_pending_input_append(impl, candidate, candidate_len) != 0)
+    goto preserve_failed;
+  impl->cursor_position_probe = -1;
+  return -1;
+
+preserve_failed:
+  sl_set_error(self, "failed to preserve input during cursor probe");
   impl->cursor_position_probe = -1;
   return -1;
 }
@@ -3751,6 +3780,10 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     case SL_KEY_NONE:
       if (errno == EINTR) {
         errno = 0;
+        if (sl_render_apply(self, render_prompt) != 0) {
+          failed = 1;
+          done = 1;
+        }
       } else if (errno != 0) {
         failed = 1;
         done = 1;
@@ -3934,8 +3967,15 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         if (!sl_move_visual(self, prompt, -1) && impl->cursor == impl->len)
           sl_history_nav(self, -1);
         break;
+      case SL_KEY_CTRL_P:
+        sl_history_nav(self, -1);
+        break;
       case SL_KEY_DOWN:
         if (!sl_move_visual(self, prompt, 1) && impl->history_index != -1)
+          sl_history_nav(self, 1);
+        break;
+      case SL_KEY_CTRL_N:
+        if (impl->history_index != -1)
           sl_history_nav(self, 1);
         break;
       case SL_KEY_HOME:
@@ -4136,6 +4176,7 @@ static void sl_destroy_method(sl_t *self) {
     sl_statusline_clear(&impl->statusline);
     sl_render_store_clear(impl);
     free(impl->history_edit);
+    free(impl->pending_input);
     free(impl->buf);
     free(impl);
   }

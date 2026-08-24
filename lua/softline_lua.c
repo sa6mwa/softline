@@ -725,6 +725,10 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "PROMPT_THEME_DEFAULT");
   lua_pushinteger(L, SL_KEY_CTRL_C);
   lua_setfield(L, -2, "KEY_CTRL_C");
+  lua_pushinteger(L, SL_KEY_CTRL_N);
+  lua_setfield(L, -2, "KEY_CTRL_N");
+  lua_pushinteger(L, SL_KEY_CTRL_P);
+  lua_setfield(L, -2, "KEY_CTRL_P");
   lua_pushinteger(L, SL_KEY_ACTION_PASS);
   lua_setfield(L, -2, "KEY_ACTION_PASS");
   lua_pushinteger(L, SL_KEY_ACTION_HANDLED);

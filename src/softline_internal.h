@@ -101,8 +101,9 @@ typedef struct sl_impl {
   int request_cancel;
   int plain_pending;
   char plain_pending_ch;
-  char pending_input[SL_PENDING_INPUT_MAX];
+  char *pending_input;
   size_t pending_input_len;
+  size_t pending_input_cap;
   sl_readline_status_t last_readline_status;
   sl_idle_callback_t idle_callback;
   void *idle_userdata;
