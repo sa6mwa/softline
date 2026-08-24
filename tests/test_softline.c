@@ -5540,7 +5540,8 @@ static void test_idle_callback_can_cancel_without_input(void) {
 static void test_final_render_failure_reports_error(void) {
   int master_fd;
   int slave_fd;
-  int output_pipe[2];
+  int output_master_fd;
+  int output_slave_fd;
   int result_pipe[2];
   pid_t pid;
   char terminal[256];
@@ -5553,7 +5554,9 @@ static void test_final_render_failure_reports_error(void) {
   TEST("final render failure reports readline error");
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
               "openpty failed");
-  ASSERT_TRUE(pipe(output_pipe) == 0, "output pipe failed");
+  ASSERT_TRUE(openpty(&output_master_fd, &output_slave_fd, NULL, NULL, NULL) ==
+                  0,
+              "output pty failed");
   ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
   pid = fork();
   ASSERT_TRUE(pid >= 0, "fork failed");
@@ -5566,12 +5569,11 @@ static void test_final_render_failure_reports_error(void) {
     int written;
 
     close(master_fd);
-    close(output_pipe[0]);
+    close(output_master_fd);
     close(result_pipe[0]);
-    signal(SIGPIPE, SIG_IGN);
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
-    cfg.output_fd = output_pipe[1];
+    cfg.output_fd = output_slave_fd;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
@@ -5587,25 +5589,25 @@ static void test_final_render_failure_reports_error(void) {
       (void)write(result_pipe[1], msg, (size_t)written);
     sl->destroy(sl);
     close(slave_fd);
-    close(output_pipe[1]);
+    close(output_slave_fd);
     close(result_pipe[1]);
     _exit(0);
   }
   close(slave_fd);
-  close(output_pipe[1]);
+  close(output_slave_fd);
   close(result_pipe[1]);
   terminal_len = 0;
   terminal[0] = '\0';
   tries = 0;
   while (!contains_bytes(terminal, "p> ") && tries < 100) {
-    n = read_some_with_timeout(output_pipe[0], result, sizeof(result));
+    n = read_some_with_timeout(output_master_fd, result, sizeof(result));
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), result,
                             n);
     tries++;
   }
   ASSERT_TRUE(contains_bytes(terminal, "p> "), "initial prompt not rendered");
-  close(output_pipe[0]);
+  close(output_master_fd);
   ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -5647,17 +5649,13 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
     sl_t *sl;
     char *line;
     struct idle_ready_state ready;
-    int null_fd;
 
     close(master_fd);
     close(result_pipe[0]);
     close(ready_pipe[0]);
-    null_fd = open("/dev/null", O_WRONLY);
-    if (null_fd < 0)
-      _exit(2);
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
-    cfg.output_fd = null_fd;
+    cfg.output_fd = slave_fd;
     cfg.screen_width = 1;
     cfg.line_max_len = 120;
     sl = sl_create_with_config(&cfg);
@@ -5675,7 +5673,6 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
       sl->free_string(sl, line);
     }
     sl->destroy(sl);
-    close(null_fd);
     close(slave_fd);
     close(ready_pipe[1]);
     close(result_pipe[1]);

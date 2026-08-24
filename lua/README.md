@@ -46,8 +46,9 @@ config table mirrors `sl_config_t`:
 
 Each handle owns its buffer, cursor, history, prompt state, and diagnostics.
 Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
-Queueing and live scroll regions affect only interactive TTY editing; piped
-input remains a plain line reader. Defaults match `sl_config_init()`: queueing,
+Queueing and live scroll regions affect only editing with both input and output
+attached to TTYs; mixed or piped streams remain plain line readers. Defaults
+match `sl_config_init()`: queueing,
 live scroll regions, status lines, and spinners are off; the theme is
 `PROMPT_THEME_DEFAULT`; and the idle status marker is `+`.
 

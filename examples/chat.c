@@ -207,17 +207,17 @@ int main(void) {
     fprintf(stderr, "failed to create softline\n");
     return 1;
   }
-  if (sl->set_prompt_queue(sl, 1, 64, 3) != SL_OK) {
-    fprintf(stderr, "failed to enable prompt queue\n");
-    sl->destroy(sl);
-    return 1;
-  }
-  if (set_live_scroll_region_from_environment(sl) != SL_OK) {
-    fprintf(stderr, "failed to configure live scroll region\n");
-    sl->destroy(sl);
-    return 1;
-  }
   if (interactive) {
+    if (sl->set_prompt_queue(sl, 1, 64, 3) != SL_OK) {
+      fprintf(stderr, "failed to enable prompt queue\n");
+      sl->destroy(sl);
+      return 1;
+    }
+    if (set_live_scroll_region_from_environment(sl) != SL_OK) {
+      fprintf(stderr, "failed to configure live scroll region\n");
+      sl->destroy(sl);
+      return 1;
+    }
     (void)signal(SIGINT, keep_chat_on_interrupt);
     idle_state.next_message_at = time(NULL) + 2;
     idle_state.status_started_at = time(NULL);
@@ -229,34 +229,32 @@ int main(void) {
       sl->destroy(sl);
       return 1;
     }
-  }
-  if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_DEFAULT) != 0) {
-    fprintf(stderr, "failed to set prompt theme\n");
-    sl->destroy(sl);
-    return 1;
-  }
-  if (sl->set_statusline(sl, 1, 0) != SL_OK ||
-      sl->set_status_elements(sl, status_elements,
-                              sizeof(status_elements) /
-                                  sizeof(status_elements[0])) != SL_OK) {
-    fprintf(stderr, "failed to configure chat status line\n");
-    sl->destroy(sl);
-    return 1;
-  }
-  if (interactive &&
-      update_status_presentation(sl, &idle_state, time(NULL)) != SL_OK) {
-    fprintf(stderr, "failed to start chat status demonstration\n");
-    sl->destroy(sl);
-    return 1;
-  }
-
-  if (interactive &&
-      print_message(sl, "softline chat example. Tab queues; Alt-E recalls "
-                        "the newest queued prompt. Status alternates "
-                        "40-second green + and blank-slot cycles.") != SL_OK) {
-    (void)print_last_error(sl);
-    sl->destroy(sl);
-    return 1;
+    if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_DEFAULT) != 0) {
+      fprintf(stderr, "failed to set prompt theme\n");
+      sl->destroy(sl);
+      return 1;
+    }
+    if (sl->set_statusline(sl, 1, 0) != SL_OK ||
+        sl->set_status_elements(sl, status_elements,
+                                sizeof(status_elements) /
+                                    sizeof(status_elements[0])) != SL_OK) {
+      fprintf(stderr, "failed to configure chat status line\n");
+      sl->destroy(sl);
+      return 1;
+    }
+    if (update_status_presentation(sl, &idle_state, time(NULL)) != SL_OK) {
+      fprintf(stderr, "failed to start chat status demonstration\n");
+      sl->destroy(sl);
+      return 1;
+    }
+    if (print_message(sl,
+                      "softline chat example. Tab queues; Alt-E recalls "
+                      "the newest queued prompt. Status alternates "
+                      "40-second green + and blank-slot cycles.") != SL_OK) {
+      (void)print_last_error(sl);
+      sl->destroy(sl);
+      return 1;
+    }
   }
   for (;;) {
     source = SL_PROMPT_SOURCE_NONE;

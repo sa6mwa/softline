@@ -269,7 +269,7 @@ typedef struct sl_config {
   /** Maximum editable line length in bytes; default is 4096. */
   size_t line_max_len;
   /** Non-zero enables Tab queueing while the interactive terminal editor is
-   * active. Non-TTY input remains a plain line reader. */
+   * active. Editing is plain when either input or output is not a TTY. */
   int prompt_queue;
   /** Maximum queued prompts; default is 64 when queueing is enabled. */
   int prompt_queue_max_entries;
@@ -477,8 +477,9 @@ int sl_set_screen_width(sl_t *self, int width);
 int sl_set_live_scroll_region(sl_t *self, int enabled);
 
 /** Enable/configure Tab queueing for the interactive terminal editor;
- * disabling clears the queue. Reducing the capacity below the current queue
- * length returns SL_ERROR_INVALID. */
+ * disabling clears the queue. Editing is plain when either input or output is
+ * not a TTY. Reducing the capacity below the current queue length returns
+ * SL_ERROR_INVALID. */
 int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
                         int preview_entries);
 

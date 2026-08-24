@@ -76,7 +76,8 @@ The editor supports these built-in behaviors:
 - Bracketed paste mode is enabled while editing; pasted carriage returns become
   buffer content instead of submitting the prompt.
 - Input is limited by `line_max_len`.
-- Non-tty input falls back to a plain line reader that does not emit prompts.
+- Editing falls back to a plain line reader when either input or output is not
+  a TTY; it does not emit prompts.
 
 UTF-8 is preserved as bytes while rendering uses terminal-cell width for
 combining marks, East Asian wide characters, and common emoji sequences.

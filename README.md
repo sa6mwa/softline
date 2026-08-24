@@ -51,8 +51,9 @@ Currently implemented:
 - Long input wraps by words where possible and reflows after terminal resize.
 - Bracketed paste is enabled while editing so pasted carriage returns become
   buffer content instead of submitting the prompt.
-- Non-tty input uses a plain silent line reader and does not emit prompts;
-  streamed output uses LF line endings instead of terminal CRLF.
+- Editing uses a plain silent line reader when either standard input or output
+  is not a TTY and does not emit prompts; streamed output uses LF line endings
+  instead of terminal CRLF.
 - Keys such as TAB, Enter, function keys, and Alt-letter combinations can be
   bound per handle. A binding may handle the key, pass through to the built-in
   behavior, submit, cancel, interrupt, or mutate the active buffer.

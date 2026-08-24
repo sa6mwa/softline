@@ -60,6 +60,7 @@ case "${SOFTLINE_LUA_CHAT_OUTPUT}" in
     ;;
 esac
 python3 "${ROOT_DIR}/tests/lua_chat_ctrl_c.py" "${ROOT_DIR}"
+python3 "${ROOT_DIR}/tests/lua_chat_mixed_tty.py" "${ROOT_DIR}"
 python3 "${ROOT_DIR}/tests/lua_idle_callback.py" "${ROOT_DIR}"
 
 echo "Lua facade tests passed."

@@ -3766,7 +3766,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   sl_set_readline_status(self, SL_READLINE_NONE);
   if (!prompt)
     prompt = SL_DEFAULT_PROMPT;
-  if (!isatty(impl->input_fd))
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
     return sl_readline_plain(self, prompt);
   if (sl_enable_raw(self) != 0) {
     sl_set_readline_status(self, SL_READLINE_ERROR);

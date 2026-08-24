@@ -696,6 +696,71 @@ static void test_example_chat_is_plain_without_tty(const char *path) {
   PASS();
 }
 
+static void
+test_example_chat_is_plain_with_redirected_stdout(const char *path) {
+  int master_fd;
+  int slave_fd;
+  int output_pipe[2];
+  struct winsize ws;
+  pid_t pid;
+  char output[1024];
+  char *argv[2];
+  size_t output_len;
+  ssize_t n;
+  int status;
+
+  TEST("example_chat stays plain with redirected stdout");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(output_pipe) == 0, "output pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    argv[0] = (char *)path;
+    argv[1] = NULL;
+    close(master_fd);
+    close(output_pipe[0]);
+    (void)setsid();
+    (void)ioctl(slave_fd, TIOCSCTTY, 0);
+    (void)dup2(slave_fd, STDIN_FILENO);
+    (void)dup2(output_pipe[1], STDOUT_FILENO);
+    (void)dup2(slave_fd, STDERR_FILENO);
+    if (slave_fd > STDERR_FILENO)
+      close(slave_fd);
+    close(output_pipe[1]);
+    execv(path, argv);
+    _exit(127);
+  }
+  close(slave_fd);
+  close(output_pipe[1]);
+  ASSERT_TRUE(write(master_fd, "hello\rexit\r", 11) == 11,
+              "write mixed-tty input failed");
+  output_len = 0;
+  while (output_len < sizeof(output) - 1) {
+    n = read(output_pipe[0], output + output_len,
+             sizeof(output) - 1 - output_len);
+    if (n < 0)
+      FAIL("read mixed-tty output failed");
+    if (n == 0)
+      break;
+    output_len += (size_t)n;
+  }
+  output[output_len] = '\0';
+  close(output_pipe[0]);
+  close(master_fd);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "mixed-tty chat child failed");
+  ASSERT_TRUE(strcmp(output, "[direct] hello\n") == 0,
+              "mixed-tty chat output mismatch");
+  ASSERT_TRUE(!contains_bytes(output, "\033["),
+              "mixed-tty chat emitted terminal control sequences");
+  PASS();
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   if (argc != 3) {
@@ -715,6 +780,7 @@ int main(int argc, char **argv) {
   test_example_chat_updates_editor_in_normal_scrollback(argv[2]);
   test_example_chat_ctrl_c_cancels_and_continues(argv[2]);
   test_example_chat_is_plain_without_tty(argv[2]);
+  test_example_chat_is_plain_with_redirected_stdout(argv[2]);
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;
