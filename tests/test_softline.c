@@ -5800,6 +5800,9 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
 }
 
 static void test_cursor_probe_preserves_concurrent_queue_input(void) {
+  static const char input[] =
+      "\033[9999999999;9999999999R"
+      "queued-012345678901234567890123456789012345\tok\r";
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -5863,10 +5866,10 @@ static void test_cursor_probe_preserves_concurrent_queue_input(void) {
   }
   ASSERT_TRUE(contains_bytes(terminal, "\033[6n"),
               "cursor-position probe was not requested");
-  ASSERT_TRUE(write(master_fd,
-                    "queued-012345678901234567890123456789012345\tok\r",
-                    47) == 47,
-              "concurrent queue input write failed");
+  ASSERT_TRUE(
+      write(master_fd, input, sizeof(input) - 1) ==
+          (ssize_t)(sizeof(input) - 1),
+      "concurrent malformed cursor report and queue input write failed");
   tries = 0;
   n = 0;
   while (n == 0 && tries < 50) {

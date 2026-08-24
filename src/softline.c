@@ -3076,6 +3076,17 @@ static int sl_pending_input_append(sl_impl_t *impl, const char *text,
   return 0;
 }
 
+static int sl_decimal_append_int(int *value, char ch) {
+  int digit;
+  if (!value || ch < '0' || ch > '9')
+    return -1;
+  digit = ch - '0';
+  if (*value > (INT_MAX - digit) / 10)
+    return -1;
+  *value = *value * 10 + digit;
+  return 0;
+}
+
 /* Read a Device Status Report cursor-position reply while preserving any user
  * input that happens to arrive first. A terminal that does not support DSR is
  * simply left on the normal unbounded rendering path. */
@@ -3144,7 +3155,10 @@ static int sl_query_cursor_row(sl_t *self) {
     i = 2;
     while (valid && i < candidate_len && candidate[i] >= '0' &&
            candidate[i] <= '9') {
-      row = row * 10 + (candidate[i] - '0');
+      if (sl_decimal_append_int(&row, candidate[i]) != 0) {
+        valid = 0;
+        break;
+      }
       have_row = 1;
       i++;
     }
@@ -3153,7 +3167,10 @@ static int sl_query_cursor_row(sl_t *self) {
     if (valid && i < candidate_len) {
       i++;
       while (i < candidate_len && candidate[i] >= '0' && candidate[i] <= '9') {
-        col = col * 10 + (candidate[i] - '0');
+        if (sl_decimal_append_int(&col, candidate[i]) != 0) {
+          valid = 0;
+          break;
+        }
         have_col = 1;
         i++;
       }
@@ -3294,8 +3311,10 @@ static int sl_read_key(sl_impl_t *impl) {
   if (ch >= '0' && ch <= '9') {
     int code;
     int modifier;
+    int overflow;
     code = ch - '0';
     modifier = 0;
+    overflow = 0;
     while (sl_read_escape_byte(impl, &ch) == 1) {
       if (ch == '~')
         break;
@@ -3303,14 +3322,18 @@ static int sl_read_key(sl_impl_t *impl) {
         while (sl_read_escape_byte(impl, &ch) == 1) {
           if (ch < '0' || ch > '9')
             break;
-          modifier = modifier * 10 + (ch - '0');
+          if (!overflow && sl_decimal_append_int(&modifier, ch) != 0)
+            overflow = 1;
         }
         break;
       }
       if (ch < '0' || ch > '9')
         break;
-      code = code * 10 + (ch - '0');
+      if (!overflow && sl_decimal_append_int(&code, ch) != 0)
+        overflow = 1;
     }
+    if (overflow)
+      return SL_KEY_UNKNOWN;
     if (ch == 'u') {
       if (code == 13 && modifier == 5)
         return SL_KEY_CTRL_ENTER;
