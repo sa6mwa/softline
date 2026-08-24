@@ -627,7 +627,7 @@ static void test_example_chat_is_plain_without_tty(const char *path) {
     close(output_pipe[0]);
     (void)dup2(input_pipe[0], STDIN_FILENO);
     (void)dup2(output_pipe[1], STDOUT_FILENO);
-    (void)dup2(output_pipe[1], STDERR_FILENO);
+    /* Keep diagnostics separate: Valgrind traces exec'd children on stderr. */
     close(input_pipe[0]);
     close(output_pipe[1]);
     execv(path, argv);
