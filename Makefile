@@ -9,6 +9,10 @@ CACHE_DIR := $(ROOT_DIR)/.cache
 
 NINJA := $(shell command -v ninja 2>/dev/null || command -v ninja-build 2>/dev/null)
 
+ifneq ($(strip $(THEME)),)
+EXAMPLE_THEME_ENV := SOFTLINE_PROMPT_THEME="$(THEME)"
+endif
+
 .PHONY: help
 help: ## Show this help
 	@echo "softline -- C89 multiline readline replacement derived from linenoise"
@@ -42,6 +46,54 @@ build: ## Build debug target
 
 .PHONY: build-debug
 build-debug: build ## Build debug target
+
+.PHONY: run-simple
+run-simple: build-debug ## Run C simple example (THEME=default|plain|...)
+	@$(EXAMPLE_THEME_ENV) ./build/debug/examples/example_simple
+
+.PHONY: run-chat
+run-chat: build-debug ## Run C chat example (Gruvbox by default; THEME=... overrides)
+	@SOFTLINE_PROMPT_THEME="$(if $(strip $(THEME)),$(THEME),gruvbox)" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-default
+run-chat-default: build-debug ## Run C chat example with the default ANSI theme
+	@SOFTLINE_PROMPT_THEME="default" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-default-sr
+run-chat-default-sr: build-debug ## Run default C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="default" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-accent-sr
+run-chat-accent-sr: build-debug ## Run accent C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="accent" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-dracula-sr
+run-chat-dracula-sr: build-debug ## Run Dracula C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="dracula" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-riced
+run-chat-riced: build-debug ## Run C chat example with the riced theme
+	@SOFTLINE_PROMPT_THEME="riced" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-plain
+run-chat-plain: build-debug ## Run C chat example with the uncoloured plain theme
+	@SOFTLINE_PROMPT_THEME="plain" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-plain-sr
+run-chat-plain-sr: build-debug ## Run plain C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="plain" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-monogreen
+run-chat-monogreen: build-debug ## Run C chat example with the monogreen theme
+	@SOFTLINE_PROMPT_THEME="monogreen" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-monochrome
+run-chat-monochrome: build-debug ## Run C chat example with the monochrome theme
+	@SOFTLINE_PROMPT_THEME="monochrome" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-synthwave
+run-chat-synthwave: build-debug ## Run C chat example with the synthwave theme
+	@SOFTLINE_PROMPT_THEME="synthwave" ./build/debug/examples/example_chat
 
 .PHONY: build-release
 build-release: ## Build release target
@@ -131,11 +183,11 @@ lua-debug-env: ## Print shell exports for Lua facade against build/debug/libsoft
 
 .PHONY: lua-debug-simple
 lua-debug-simple: ## Run examples/simple.lua against build/debug/libsoftline
-	@./scripts/lua-debug.sh simple
+	@$(EXAMPLE_THEME_ENV) ./scripts/lua-debug.sh simple
 
 .PHONY: lua-debug-chat
 lua-debug-chat: ## Run examples/chat.lua against build/debug/libsoftline
-	@./scripts/lua-debug.sh chat
+	@$(EXAMPLE_THEME_ENV) ./scripts/lua-debug.sh chat
 
 .PHONY: package
 package: ## Build release packages

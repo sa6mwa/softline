@@ -4,7 +4,7 @@ set -eu
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
-SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-0}"
+SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
 BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
 BOOTLIN_TARGET=""
 BOOTLIN_TOOLCHAIN_ARG=""

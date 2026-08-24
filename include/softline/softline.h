@@ -15,7 +15,7 @@ typedef struct sl sl_t;
  *
  * The callback runs synchronously on the thread calling sl_readline(). It may
  * use public receiver methods to inspect or mutate the active buffer, submit,
- * cancel, or print above a bounded prompt. It must not destroy self.
+ * cancel, or print above the active prompt. It must not destroy self.
  */
 typedef void (*sl_idle_callback_t)(sl_t *self, void *userdata);
 
@@ -60,6 +60,10 @@ typedef enum sl_key {
   SL_KEY_CTRL_K = 11,
   /** Enter or carriage return. */
   SL_KEY_ENTER = 13,
+  /** Ctrl-N, recall the next history entry. */
+  SL_KEY_CTRL_N = 14,
+  /** Ctrl-P, recall the previous history entry. */
+  SL_KEY_CTRL_P = 16,
   /** Ctrl-R, reverse incremental history search unless rebound. */
   SL_KEY_CTRL_R = 18,
   /** Ctrl-U, delete from beginning of buffer to cursor. */
@@ -189,6 +193,51 @@ typedef enum sl_readline_status {
   SL_READLINE_ERROR = 5
 } sl_readline_status_t;
 
+/** How a text value returned by sl_next_prompt() entered the application. */
+typedef enum sl_prompt_source {
+  /** No prompt text was returned. */
+  SL_PROMPT_SOURCE_NONE = 0,
+  /** The user submitted the active editor with Enter. */
+  SL_PROMPT_SOURCE_DIRECT = 1,
+  /** The user previously queued the text with Tab. */
+  SL_PROMPT_SOURCE_QUEUED = 2
+} sl_prompt_source_t;
+
+/**
+ * Renderer-owned visual treatment for the complete interactive prompt UI.
+ *
+ * The selected theme styles the prompt marker, queue preview panel, optional
+ * status line, and status markers. SL_PROMPT_THEME_DEFAULT uses only the
+ * standard 16 ANSI colours; the other colour themes may use their embedded
+ * palette encodings.
+ */
+typedef enum sl_prompt_theme {
+  /** Compact, uncoloured prompt UI. */
+  SL_PROMPT_THEME_PLAIN = 0,
+  /** A restrained cyan accent treatment. */
+  SL_PROMPT_THEME_ACCENT = 1,
+  /** The Dracula true-colour palette. */
+  SL_PROMPT_THEME_DRACULA = 2,
+  /** The Gruvbox true-colour palette. */
+  SL_PROMPT_THEME_GRUVBOX = 3,
+  /** An amber monochrome CRT palette. */
+  SL_PROMPT_THEME_MONOCHROME = 4,
+  /** A green monochrome terminal palette. */
+  SL_PROMPT_THEME_MONOGREEN = 5,
+  /** The Outrun true-colour palette. */
+  SL_PROMPT_THEME_OUTRUN = 6,
+  /** The Riced true-colour palette. */
+  SL_PROMPT_THEME_RICED = 7,
+  /** The Synthwave true-colour palette. */
+  SL_PROMPT_THEME_SYNTHWAVE = 8,
+  /** The standard 16-colour ANSI prompt palette. */
+  SL_PROMPT_THEME_DEFAULT = 9
+} sl_prompt_theme_t;
+
+/** Maximum number of retained status-line elements. Excess bulk elements end
+ * in a final `...` element. */
+#define SL_STATUS_MAX_ELEMENTS 32
+
 /**
  * Editor configuration initialized by sl_config_init().
  *
@@ -211,10 +260,37 @@ typedef struct sl_config {
   int screen_height;
   /** Non-zero enables bounded prompt rendering. */
   int bounded;
+  /** Non-zero lets an unbounded active prompt pin itself at the terminal
+   * bottom and stream output through a temporary scroll region. Disabled by
+   * default, preserving normal clear-and-redraw scrollback behavior. */
+  int live_scroll_region;
   /** Maximum retained history entries; default is 100. */
   int history_max_len;
   /** Maximum editable line length in bytes; default is 4096. */
   size_t line_max_len;
+  /** Non-zero enables Tab queueing while the interactive terminal editor is
+   * active. Editing is plain when either input or output is not a TTY. */
+  int prompt_queue;
+  /** Maximum queued prompts; default is 64 when queueing is enabled. */
+  int prompt_queue_max_entries;
+  /** Maximum FIFO previews shown above the active editor; default is 3. */
+  int prompt_queue_preview_entries;
+  /** Built-in visual treatment for the complete interactive prompt UI;
+   * defaults to SL_PROMPT_THEME_DEFAULT. */
+  sl_prompt_theme_t prompt_theme;
+  /** Non-zero renders the optional status line between queue previews and the
+   * editor. */
+  int statusline;
+  /** Palette index assigned to the first status-line element; successive
+   * elements cycle through the theme's eight element colours. */
+  size_t statusline_start_element;
+  /** Non-zero animates /-\\| while the status line is busy. */
+  int status_spinner;
+  /** Non-zero selects the busy status marker. */
+  int status_busy;
+  /** Printable ASCII marker shown while idle; defaults to '+'. '\0' leaves
+   * its reserved status marker slot blank. */
+  char status_idle_marker;
 } sl_config_t;
 
 /**
@@ -254,6 +330,9 @@ struct sl {
   int (*set_bounds)(sl_t *self, int x, int y, int width, int height);
   /** Set normal prompt wrapping width for non-bounded rendering. */
   int (*set_screen_width)(sl_t *self, int width);
+  /** Enable or disable bottom-pinned scroll-region output for unbounded
+   * prompts. The setting applies to subsequent print_above() calls. */
+  int (*set_live_scroll_region)(sl_t *self, int enabled);
   /** Register or clear the per-handle idle callback. */
   int (*set_idle_callback)(sl_t *self, sl_idle_callback_t callback,
                            void *userdata);
@@ -277,7 +356,9 @@ struct sl {
   int (*submit)(sl_t *self);
   /** Cancel the active readline() call from a callback or idle hook. */
   int (*cancel)(sl_t *self);
-  /** Stream output through the area above the active bounded prompt. */
+  /** Stream callback output above the active prompt. Bounded prompts use their
+   * output region; normal prompts clear and redraw by default, or use an
+   * enabled live scroll region once they reach the terminal bottom. */
   int (*print_above)(sl_t *self, sl_stream_callback_t callback, void *userdata);
   /** Return the most recent readline() status for this handle. */
   sl_readline_status_t (*last_readline_status)(const sl_t *self);
@@ -285,6 +366,33 @@ struct sl {
   const char *(*last_error)(const sl_t *self);
   /** Private implementation pointer; callers must not read or modify it. */
   void *impl;
+  /** Return the next queued prompt FIFO, or read a direct prompt when empty.
+   * source may be NULL. */
+  char *(*next_prompt)(sl_t *self, const char *prompt,
+                       sl_prompt_source_t *source);
+  /** Enable/configure Tab queueing; reducing capacity below queued work
+   * fails. */
+  int (*set_prompt_queue)(sl_t *self, int enabled, int max_entries,
+                          int preview_entries);
+  /** Select one of the built-in themes for the complete interactive prompt
+   * UI. */
+  int (*set_prompt_theme)(sl_t *self, sl_prompt_theme_t theme);
+  /** Enable or disable the status line and select its first palette index;
+   * successive elements cycle through the theme's eight colours. */
+  int (*set_statusline)(sl_t *self, int enabled, size_t starting_element);
+  /** Replace status-line elements; inputs beyond 32 are rendered with a final
+   * ellipsis element. */
+  int (*set_status_elements)(sl_t *self, const char *const *elements,
+                             size_t count);
+  /** Set, replace, or clear one retained status-line element. */
+  int (*set_status_element)(sl_t *self, size_t index, const char *element);
+  /** Set busy state; busy renders x (or a spinner), while idle uses the
+   * configured marker, which defaults to green +. */
+  int (*set_status_busy)(sl_t *self, int busy);
+  /** Enable or disable the 500ms /-\\| busy spinner. */
+  int (*set_status_spinner)(sl_t *self, int enabled);
+  /** Set the printable ASCII idle marker, or '\0' for a blank reserved slot. */
+  int (*set_status_idle_marker)(sl_t *self, char marker);
 };
 
 /**
@@ -292,6 +400,10 @@ struct sl {
  *
  * Passing NULL is ignored. Defaults are stdin/stdout file descriptors,
  * unbounded rendering, 100 history entries, and a 4096-byte editable line.
+ * Prompt queueing and live scroll regions are disabled; the queue defaults to
+ * a capacity of 64 and three previews when enabled. The prompt theme is
+ * SL_PROMPT_THEME_DEFAULT, the status line and spinner are disabled, busy is
+ * false, and the idle status marker is '+'.
  */
 void sl_config_init(sl_config_t *config);
 
@@ -317,6 +429,15 @@ sl_t *sl_create_with_config(const sl_config_t *config);
  * the next readline() call to classify NULL precisely.
  */
 char *sl_readline(sl_t *self, const char *prompt);
+
+/**
+ * Return the next application prompt. Queued prompts are returned FIFO without
+ * entering the terminal editor and set *source to SL_PROMPT_SOURCE_QUEUED.
+ * With no queued prompt this behaves as sl_readline() and sets *source to
+ * SL_PROMPT_SOURCE_DIRECT when text is submitted. source may be NULL.
+ */
+char *sl_next_prompt(sl_t *self, const char *prompt,
+                     sl_prompt_source_t *source);
 
 /**
  * Destroy a handle and restore terminal state owned by it.
@@ -350,6 +471,46 @@ int sl_set_bounds(sl_t *self, int x, int y, int width, int height);
 /** Set normal prompt wrapping width; zero returns to terminal-width probing. */
 int sl_set_screen_width(sl_t *self, int width);
 
+/** Enable or disable bottom-pinned scroll-region output for unbounded prompts.
+ * Disabled by default; when enabled softline attempts it only after the active
+ * prompt reaches the terminal bottom. */
+int sl_set_live_scroll_region(sl_t *self, int enabled);
+
+/** Enable/configure Tab queueing for the interactive terminal editor;
+ * disabling clears the queue. Editing is plain when either input or output is
+ * not a TTY. Reducing the capacity below the current queue length returns
+ * SL_ERROR_INVALID. */
+int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
+                        int preview_entries);
+
+/** Select a built-in theme for the complete interactive prompt UI. */
+int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
+
+/** Enable or disable the status line and choose the palette index used for
+ * its first element. Status elements wrap between elements where possible. */
+int sl_set_statusline(sl_t *self, int enabled, size_t starting_element);
+
+/** Replace all status-line elements. At most 32 elements are retained; longer
+ * input is represented by the first 31 elements followed by `...`. Elements
+ * must be valid UTF-8 without C0/C1 controls or DEL. */
+int sl_set_status_elements(sl_t *self, const char *const *elements,
+                           size_t count);
+
+/** Set, replace, or clear one status-line element. index must be below
+ * SL_STATUS_MAX_ELEMENTS; non-NULL text must be valid UTF-8 without C0/C1
+ * controls or DEL. */
+int sl_set_status_element(sl_t *self, size_t index, const char *element);
+
+/** Set the status-line busy state. With the spinner disabled, busy renders x;
+ * idle renders the configured marker or a blank reserved slot by default. */
+int sl_set_status_busy(sl_t *self, int busy);
+
+/** Enable or disable the 500ms /-\\| spinner used while status is busy. */
+int sl_set_status_spinner(sl_t *self, int enabled);
+
+/** Set a printable ASCII idle marker, or '\0' for a blank reserved slot. */
+int sl_set_status_idle_marker(sl_t *self, char marker);
+
 /** Register or clear an idle callback for this handle. */
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,
                          void *userdata);
@@ -382,7 +543,9 @@ int sl_submit(sl_t *self);
 /** Cancel the active readline() operation from inside a callback. */
 int sl_cancel(sl_t *self);
 
-/** Write callback-produced chunks above the active bounded prompt. */
+/** Write callback-produced chunks above the active prompt. Bounded prompts use
+ * their output region; normal prompts clear and redraw by default, or use an
+ * enabled live scroll region once they reach the terminal bottom. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Return the status of the most recent readline() call on this handle. */

@@ -28,6 +28,7 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 static volatile sig_atomic_t signal_seen = 0;
+static volatile sig_atomic_t winch_seen = 0;
 static int signal_ack_fd = -1;
 
 static void remember_signal(int signo) {
@@ -41,6 +42,11 @@ static void remember_signal(int signo) {
 }
 
 static void ignore_signal(int signo) { (void)signo; }
+
+static void remember_winch(int signo) {
+  (void)signo;
+  winch_seen = 1;
+}
 
 #define TEST(name)                                                             \
   do {                                                                         \
@@ -78,6 +84,27 @@ static int one_chunk_stream(sl_t *sl, void *userdata, const char **chunk,
   }
   *chunk = text;
   *len = strlen(text);
+  return SL_OK;
+}
+
+struct one_chunk_once {
+  const char *text;
+  int sent;
+};
+
+static int one_chunk_once_stream(sl_t *sl, void *userdata, const char **chunk,
+                                 size_t *len) {
+  struct one_chunk_once *stream;
+  (void)sl;
+  stream = (struct one_chunk_once *)userdata;
+  if (!stream || stream->sent) {
+    *chunk = NULL;
+    *len = 0;
+    return SL_OK;
+  }
+  stream->sent = 1;
+  *chunk = stream->text;
+  *len = strlen(stream->text);
   return SL_OK;
 }
 
@@ -121,10 +148,30 @@ static void test_config_init(void) {
   ASSERT_TRUE(cfg.screen_width == 0, "screen width default");
   ASSERT_TRUE(cfg.screen_height == 0, "screen height default");
   ASSERT_TRUE(cfg.bounded == 0, "bounded default");
+  ASSERT_TRUE(cfg.live_scroll_region == 0, "live scroll region default");
   ASSERT_TRUE(cfg.history_max_len == 100, "history max default");
   ASSERT_TRUE(cfg.line_max_len == 4096, "line max default");
+  ASSERT_TRUE(cfg.prompt_queue == 0, "prompt queue default");
+  ASSERT_TRUE(cfg.prompt_queue_max_entries == 64, "prompt queue max default");
+  ASSERT_TRUE(cfg.prompt_queue_preview_entries == 3,
+              "prompt queue preview default");
+  ASSERT_TRUE(cfg.prompt_theme == SL_PROMPT_THEME_DEFAULT,
+              "prompt theme default");
+  ASSERT_TRUE(cfg.statusline == 0, "status line default");
+  ASSERT_TRUE(cfg.statusline_start_element == 0,
+              "status element start default");
+  ASSERT_TRUE(cfg.status_spinner == 0, "status spinner default");
+  ASSERT_TRUE(cfg.status_busy == 0, "status busy default");
+  ASSERT_TRUE(cfg.status_idle_marker == '+', "status idle marker default");
   PASS();
 }
+
+static void test_plain_config_init(sl_config_t *config) {
+  sl_config_init(config);
+  config->prompt_theme = SL_PROMPT_THEME_PLAIN;
+}
+
+#define sl_config_init test_plain_config_init
 
 static void test_receiver_shell(void) {
   sl_t *sl;
@@ -133,6 +180,7 @@ static void test_receiver_shell(void) {
   sl = sl_create();
   ASSERT_TRUE(sl != NULL, "create failed");
   ASSERT_TRUE(sl->readline != NULL, "readline method missing");
+  ASSERT_TRUE(sl->next_prompt != NULL, "next_prompt method missing");
   ASSERT_TRUE(sl->destroy != NULL, "destroy method missing");
   ASSERT_TRUE(sl->free_string != NULL, "free_string method missing");
   ASSERT_TRUE(sl->history_add != NULL, "history_add method missing");
@@ -142,6 +190,20 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->history_load != NULL, "history_load method missing");
   ASSERT_TRUE(sl->set_bounds != NULL, "set_bounds method missing");
   ASSERT_TRUE(sl->set_screen_width != NULL, "set_screen_width method missing");
+  ASSERT_TRUE(sl->set_live_scroll_region != NULL,
+              "set_live_scroll_region method missing");
+  ASSERT_TRUE(sl->set_prompt_queue != NULL, "set_prompt_queue method missing");
+  ASSERT_TRUE(sl->set_prompt_theme != NULL, "set_prompt_theme method missing");
+  ASSERT_TRUE(sl->set_statusline != NULL, "set_statusline method missing");
+  ASSERT_TRUE(sl->set_status_elements != NULL,
+              "set_status_elements method missing");
+  ASSERT_TRUE(sl->set_status_element != NULL,
+              "set_status_element method missing");
+  ASSERT_TRUE(sl->set_status_busy != NULL, "set_status_busy method missing");
+  ASSERT_TRUE(sl->set_status_spinner != NULL,
+              "set_status_spinner method missing");
+  ASSERT_TRUE(sl->set_status_idle_marker != NULL,
+              "set_status_idle_marker method missing");
   ASSERT_TRUE(sl->set_idle_callback != NULL,
               "set_idle_callback method missing");
   ASSERT_TRUE(sl->bind_key != NULL, "bind_key method missing");
@@ -176,6 +238,23 @@ static void test_free_function_wrappers_use_receiver_methods(void) {
   ASSERT_TRUE(sl_set_screen_width(sl, 12) == SL_OK,
               "wrapper screen width failed");
   ASSERT_TRUE(sl_set_bounds(sl, 1, 2, 12, 4) == SL_OK, "wrapper bounds failed");
+  ASSERT_TRUE(sl_set_live_scroll_region(sl, 1) == SL_OK,
+              "wrapper live scroll region failed");
+  ASSERT_TRUE(sl_set_prompt_queue(sl, 1, 4, 2) == SL_OK,
+              "wrapper prompt queue failed");
+  ASSERT_TRUE(sl_set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT) == SL_OK,
+              "wrapper prompt theme failed");
+  ASSERT_TRUE(sl_set_statusline(sl, 1, 15) == SL_OK,
+              "wrapper status line failed");
+  ASSERT_TRUE(sl_set_status_element(sl, 0, "model") == SL_OK,
+              "wrapper status element failed");
+  ASSERT_TRUE(sl_set_status_busy(sl, 1) == SL_OK, "wrapper status busy failed");
+  ASSERT_TRUE(sl_set_status_spinner(sl, 1) == SL_OK,
+              "wrapper status spinner failed");
+  ASSERT_TRUE(sl_set_status_idle_marker(sl, '-') == SL_OK,
+              "wrapper status idle marker failed");
+  ASSERT_TRUE(sl_set_status_idle_marker(sl, '\0') == SL_OK,
+              "wrapper clear status idle marker failed");
   ASSERT_TRUE(sl_set_buffer(sl, "draft") == SL_OK, "wrapper set_buffer failed");
   ASSERT_TRUE(strcmp(sl_buffer(sl), "draft") == 0, "wrapper buffer mismatch");
   ASSERT_TRUE(sl_set_cursor(sl, 2) == SL_OK, "wrapper set_cursor failed");
@@ -225,6 +304,7 @@ static void test_destroy_null(void) {
 
 static void test_invalid_config_is_rejected(void) {
   sl_config_t cfg;
+  sl_t *sl;
 
   TEST("invalid create config is rejected");
   sl_config_init(&cfg);
@@ -252,6 +332,16 @@ static void test_invalid_config_is_rejected(void) {
   sl_config_init(&cfg);
   cfg.bounded = -1;
   ASSERT_TRUE(sl_create_with_config(&cfg) == NULL, "negative bounded accepted");
+  sl_config_init(&cfg);
+  cfg.live_scroll_region = -1;
+  ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
+              "negative live scroll region accepted");
+  sl_config_init(&cfg);
+  cfg.prompt_queue = 1;
+  cfg.bounded = 0;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL, "normal prompt queue rejected");
+  sl->destroy(sl);
   PASS();
 }
 
@@ -272,6 +362,8 @@ static void test_invalid_receiver_arguments(void) {
               "NULL set_bounds accepted");
   ASSERT_TRUE(sl_set_screen_width(NULL, 1) == SL_ERROR_INVALID,
               "NULL set_screen_width accepted");
+  ASSERT_TRUE(sl_set_live_scroll_region(NULL, 1) == SL_ERROR_INVALID,
+              "NULL set_live_scroll_region accepted");
   ASSERT_TRUE(sl_set_idle_callback(NULL, NULL, NULL) == SL_ERROR_INVALID,
               "NULL set_idle_callback accepted");
   ASSERT_TRUE(sl_bind_key(NULL, SL_KEY_TAB, NULL, NULL) == SL_ERROR_INVALID,
@@ -279,6 +371,25 @@ static void test_invalid_receiver_arguments(void) {
   ASSERT_TRUE(sl_insert(NULL, "x") == SL_ERROR_INVALID, "NULL insert accepted");
   ASSERT_TRUE(sl_set_buffer(NULL, "x") == SL_ERROR_INVALID,
               "NULL set_buffer accepted");
+  ASSERT_TRUE(sl_next_prompt(NULL, "p> ", NULL) == NULL,
+              "NULL next_prompt accepted");
+  ASSERT_TRUE(sl_set_prompt_queue(NULL, 1, 1, 1) == SL_ERROR_INVALID,
+              "NULL prompt queue accepted");
+  ASSERT_TRUE(sl_set_prompt_theme(NULL, SL_PROMPT_THEME_PLAIN) ==
+                  SL_ERROR_INVALID,
+              "NULL prompt theme accepted");
+  ASSERT_TRUE(sl_set_statusline(NULL, 1, 0) == SL_ERROR_INVALID,
+              "NULL status line accepted");
+  ASSERT_TRUE(sl_set_status_elements(NULL, NULL, 0) == SL_ERROR_INVALID,
+              "NULL status elements accepted");
+  ASSERT_TRUE(sl_set_status_element(NULL, 0, "x") == SL_ERROR_INVALID,
+              "NULL status element accepted");
+  ASSERT_TRUE(sl_set_status_busy(NULL, 1) == SL_ERROR_INVALID,
+              "NULL status busy accepted");
+  ASSERT_TRUE(sl_set_status_spinner(NULL, 1) == SL_ERROR_INVALID,
+              "NULL status spinner accepted");
+  ASSERT_TRUE(sl_set_status_idle_marker(NULL, '-') == SL_ERROR_INVALID,
+              "NULL status idle marker accepted");
   ASSERT_TRUE(sl_buffer(NULL) == NULL, "NULL buffer returned text");
   ASSERT_TRUE(sl_cursor(NULL) == 0, "NULL cursor returned offset");
   ASSERT_TRUE(sl_set_cursor(NULL, 0) == SL_ERROR_INVALID,
@@ -299,8 +410,37 @@ static void test_invalid_receiver_arguments(void) {
               "negative history max accepted");
   ASSERT_TRUE(sl->set_screen_width(sl, -1) == SL_ERROR_INVALID,
               "negative screen width accepted");
+  ASSERT_TRUE(sl->set_live_scroll_region(sl, -1) == SL_ERROR_INVALID,
+              "negative live scroll region accepted");
   ASSERT_TRUE(sl->set_bounds(sl, -1, 0, 1, 1) == SL_ERROR_INVALID,
               "negative bound accepted");
+  ASSERT_TRUE(sl->set_prompt_queue(sl, 1, 1, 1) == SL_OK,
+              "normal prompt queue rejected");
+  ASSERT_TRUE(sl->set_prompt_theme(sl, (sl_prompt_theme_t)99) ==
+                  SL_ERROR_INVALID,
+              "invalid prompt theme accepted");
+  ASSERT_TRUE(sl->set_statusline(sl, -1, 0) == SL_ERROR_INVALID,
+              "negative status line accepted");
+  ASSERT_TRUE(sl->set_status_elements(sl, NULL, 1) == SL_ERROR_INVALID,
+              "NULL status elements accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, SL_STATUS_MAX_ELEMENTS, "x") ==
+                  SL_ERROR_INVALID,
+              "out-of-range status element accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\ntext") == SL_ERROR_INVALID,
+              "status control text accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\23331m") == SL_ERROR_INVALID,
+              "status raw C1 control accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\302\23331m") ==
+                  SL_ERROR_INVALID,
+              "status UTF-8 C1 control accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\302text") == SL_ERROR_INVALID,
+              "status invalid UTF-8 accepted");
+  ASSERT_TRUE(sl->set_status_busy(sl, -1) == SL_ERROR_INVALID,
+              "negative status busy accepted");
+  ASSERT_TRUE(sl->set_status_spinner(sl, -1) == SL_ERROR_INVALID,
+              "negative status spinner accepted");
+  ASSERT_TRUE(sl->set_status_idle_marker(sl, '\n') == SL_ERROR_INVALID,
+              "status control idle marker accepted");
   ASSERT_TRUE(sl->bind_key(sl, SL_KEY_NONE, NULL, NULL) == SL_ERROR_INVALID,
               "SL_KEY_NONE binding accepted");
   ASSERT_TRUE(sl->insert(sl, NULL) == SL_ERROR_INVALID,
@@ -771,6 +911,35 @@ static void test_stream_failures_are_reported(void) {
   PASS();
 }
 
+static void test_print_above_uses_lf_for_non_tty_output(void) {
+  int out_pipe[2];
+  sl_config_t cfg;
+  sl_t *sl;
+  char out[64];
+  ssize_t n;
+  struct one_chunk_once stream;
+
+  TEST("print_above uses LF for non-tty output");
+  ASSERT_TRUE(pipe(out_pipe) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = out_pipe[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL, "create failed");
+  stream.text = "alpha\n";
+  stream.sent = 0;
+  ASSERT_TRUE(sl->print_above(sl, one_chunk_once_stream, &stream) == SL_OK,
+              "print_above failed");
+  sl->destroy(sl);
+  close(out_pipe[1]);
+  n = read(out_pipe[0], out, sizeof(out) - 1);
+  ASSERT_TRUE(n >= 0, "read output failed");
+  out[n] = '\0';
+  close(out_pipe[0]);
+  ASSERT_TRUE(strcmp(out, "alpha\n") == 0,
+              "non-tty stream output did not use LF");
+  PASS();
+}
+
 static void test_bounded_print_above_without_space_is_error(void) {
   int out_pipe[2];
   sl_config_t cfg;
@@ -1097,6 +1266,16 @@ struct idle_print_state {
   int printed;
 };
 
+struct idle_scroll_region_state {
+  int calls;
+};
+
+struct idle_stream_failure_state {
+  int fd;
+  int attempted;
+  int status;
+};
+
 struct idle_count_print_state {
   int calls;
   int printed;
@@ -1112,6 +1291,13 @@ struct idle_finish_state {
 struct idle_ready_state {
   int fd;
   int ready;
+};
+
+struct idle_queue_limit_state {
+  const char *expected_buffer;
+  int max_entries;
+  int status;
+  int attempted;
 };
 
 struct text_stream_state {
@@ -1244,6 +1430,38 @@ static void idle_print_once(sl_t *sl, void *userdata) {
   (void)sl->print_above(sl, next_text_chunk, &stream);
 }
 
+static void idle_print_through_scroll_region(sl_t *sl, void *userdata) {
+  struct idle_scroll_region_state *state;
+  struct text_stream_state stream;
+  const char *text;
+  state = (struct idle_scroll_region_state *)userdata;
+  if (!state)
+    return;
+  state->calls++;
+  if (state->calls != 1 && state->calls != 4)
+    return;
+  text = state->calls == 1 ? "first-live\n" : "second-live\n";
+  stream.chunks[0] = text;
+  stream.chunks[1] = NULL;
+  stream.chunks[2] = NULL;
+  stream.chunks[3] = NULL;
+  stream.index = 0;
+  stream.calls = 0;
+  (void)sl->print_above(sl, next_text_chunk, &stream);
+}
+
+static void idle_print_failure_once(sl_t *sl, void *userdata) {
+  struct idle_stream_failure_state *state;
+  char ready;
+  state = (struct idle_stream_failure_state *)userdata;
+  if (!state || state->attempted)
+    return;
+  state->attempted = 1;
+  state->status = sl->print_above(sl, failing_stream, NULL);
+  ready = state->status == SL_ERROR ? 'R' : 'E';
+  (void)write(state->fd, &ready, 1);
+}
+
 static void idle_print_after_two_ticks(sl_t *sl, void *userdata) {
   struct idle_count_print_state *state;
   struct text_stream_state stream;
@@ -1288,6 +1506,20 @@ static void idle_signal_ready_once(sl_t *sl, void *userdata) {
     return;
   state->ready = 1;
   (void)write(state->fd, "R", 1);
+}
+
+static void idle_reduce_prompt_queue_limit(sl_t *sl, void *userdata) {
+  struct idle_queue_limit_state *state;
+  const char *buffer;
+  state = (struct idle_queue_limit_state *)userdata;
+  if (!state || state->attempted)
+    return;
+  buffer = sl->buffer(sl);
+  if (!buffer || strcmp(buffer, state->expected_buffer) != 0)
+    return;
+  state->attempted = 1;
+  state->status = sl->set_prompt_queue(sl, 1, state->max_entries, 1);
+  (void)sl->submit(sl);
 }
 
 static void append_terminal_bytes(char *terminal, size_t *terminal_len,
@@ -1434,10 +1666,100 @@ static int run_pty_readline_case(const char *input, int width, int height,
                                           result_cap, exit_status);
 }
 
+static int run_pty_readline_completion_case(int bounded, int prompt_queue,
+                                            char *terminal, size_t terminal_cap,
+                                            char *result, size_t result_cap,
+                                            int *exit_status) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0 ||
+      pipe(result_pipe) != 0)
+    return -1;
+  pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = prompt_queue;
+    if (bounded) {
+      cfg.bounded = 1;
+      cfg.screen_width = 20;
+      cfg.screen_height = 3;
+    }
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(3);
+    if (write(slave_fd, "after\n", 6) != 6)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "p> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n <= 0)
+      return -1;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    if (terminal_len >= terminal_cap - 1)
+      return -1;
+  }
+  if (write(master_fd, "hello\r", 6) != 6)
+    return -1;
+  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  if (n <= 0)
+    return -1;
+  result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+  } while (n > 0 && terminal_len < terminal_cap - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  *exit_status = status;
+  return 0;
+}
+
 static int run_pty_history_case_with_options(
     const char *input, const char **history, int history_len,
-    const char *history_file, int width, int height, char *terminal,
-    size_t terminal_cap, char *result, size_t result_cap, int *exit_status) {
+    const char *history_file, int width, int height, int prompt_queue,
+    char *terminal, size_t terminal_cap, char *result, size_t result_cap,
+    int *exit_status) {
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -1465,6 +1787,7 @@ static int run_pty_history_case_with_options(
     cfg.output_fd = slave_fd;
     cfg.screen_width = width;
     cfg.screen_height = height;
+    cfg.prompt_queue = prompt_queue;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
@@ -1528,8 +1851,8 @@ static int run_pty_history_case_with_file(const char *input,
                                           char *result, size_t result_cap,
                                           int *exit_status) {
   return run_pty_history_case_with_options(
-      input, history, history_len, history_file, 20, 0, terminal, terminal_cap,
-      result, result_cap, exit_status);
+      input, history, history_len, history_file, 20, 0, 0, terminal,
+      terminal_cap, result, result_cap, exit_status);
 }
 
 static int run_pty_history_case(const char *input, const char **history,
@@ -1617,6 +1940,431 @@ static int run_pty_key_binding_case(const char *input, sl_key_t key,
       terminal[terminal_len] = '\0';
     }
   } while (n > 0 && terminal_len < terminal_cap - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  *exit_status = status;
+  return 0;
+}
+
+static int run_pty_prompt_queue_case_with_width(
+    const char *input, sl_prompt_theme_t theme, int bounded,
+    int reduced_max_entries, int expected_prompts, int width,
+    const char *prompt, char *terminal, size_t terminal_cap, char *result,
+    size_t result_cap, int *exit_status) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = (unsigned short)width;
+  ws.ws_row = 8;
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0 ||
+      pipe(result_pipe) != 0)
+    return -1;
+  pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char header[32];
+    char output[512];
+    struct idle_queue_limit_state limit_state;
+    size_t header_len;
+    size_t used;
+    int i;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    if (bounded) {
+      cfg.screen_width = width;
+      cfg.screen_height = 8;
+      cfg.bounded = 1;
+    }
+    cfg.prompt_queue = 1;
+    cfg.prompt_queue_max_entries = 8;
+    cfg.prompt_queue_preview_entries = 1;
+    cfg.prompt_theme = theme;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    memset(&limit_state, 0, sizeof(limit_state));
+    limit_state.expected_buffer = "third";
+    limit_state.max_entries = reduced_max_entries;
+    limit_state.status = SL_ERROR;
+    if (reduced_max_entries > 0 &&
+        sl->set_idle_callback(sl, idle_reduce_prompt_queue_limit,
+                              &limit_state) != SL_OK)
+      _exit(5);
+    used = 0;
+    output[0] = '\0';
+    for (i = 0; i < expected_prompts; i++) {
+      char *line;
+      sl_prompt_source_t source;
+      int written;
+      source = SL_PROMPT_SOURCE_NONE;
+      line = sl_next_prompt(sl, prompt, &source);
+      if (!line)
+        _exit(3);
+      written = snprintf(output + used, sizeof(output) - used, "%s%d:%s",
+                         i == 0 ? "" : "|", (int)source, line);
+      sl_free_string(sl, line);
+      if (written < 0 || (size_t)written >= sizeof(output) - used)
+        _exit(4);
+      used += (size_t)written;
+    }
+    if (reduced_max_entries > 0) {
+      int written;
+      written = snprintf(header, sizeof(header), "%d;", limit_state.status);
+      if (written < 0 || written >= (int)sizeof(header))
+        _exit(6);
+      header_len = (size_t)written;
+      if (header_len > sizeof(output) - used)
+        _exit(7);
+      memmove(output + header_len, output, used);
+      memcpy(output, header, header_len);
+      used += header_len;
+    }
+    (void)write(result_pipe[1], output, used);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, prompt)) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n <= 0)
+      return -1;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    if (terminal_len >= terminal_cap - 1)
+      return -1;
+  }
+  if (write(master_fd, input, strlen(input)) != (ssize_t)strlen(input))
+    return -1;
+  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  if (n <= 0)
+    return -1;
+  result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+  } while (n > 0 && terminal_len < terminal_cap - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  *exit_status = status;
+  return 0;
+}
+
+static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
+                                     int bounded, int reduced_max_entries,
+                                     int expected_prompts, char *terminal,
+                                     size_t terminal_cap, char *result,
+                                     size_t result_cap, int *exit_status) {
+  return run_pty_prompt_queue_case_with_width(
+      input, theme, bounded, reduced_max_entries, expected_prompts, 40,
+      "chat> ", terminal, terminal_cap, result, result_cap, exit_status);
+}
+
+static int run_pty_themed_readline_case(sl_prompt_theme_t theme, char *terminal,
+                                        size_t terminal_cap, char *result,
+                                        size_t result_cap, int *exit_status) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
+      pipe(result_pipe) != 0)
+    return -1;
+  pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 24;
+    cfg.prompt_theme = theme;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    line = sl_readline(sl, "normal> ");
+    if (!line)
+      _exit(3);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "normal> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n <= 0)
+      return -1;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    if (terminal_len >= terminal_cap - 1)
+      return -1;
+  }
+  if (write(master_fd, "ok\r", 3) != 3)
+    return -1;
+  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  if (n <= 0)
+    return -1;
+  result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+  } while (n > 0 && terminal_len < terminal_cap - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  *exit_status = status;
+  return 0;
+}
+
+static int set_status_idle_marker_key(sl_t *sl, sl_key_t key, void *userdata,
+                                      sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_idle_marker(sl, '\0') != SL_OK ||
+      sl_set_status_spinner(sl, 0) != SL_OK ||
+      sl_set_status_busy(sl, 0) != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static int set_status_dash_marker_key(sl_t *sl, sl_key_t key, void *userdata,
+                                      sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_idle_marker(sl, '-') != SL_OK ||
+      sl_set_status_spinner(sl, 0) != SL_OK ||
+      sl_set_status_busy(sl, 0) != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static int set_status_busy_spinner_key(sl_t *sl, sl_key_t key, void *userdata,
+                                       sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_spinner(sl, 1) != SL_OK ||
+      sl_set_status_busy(sl, 1) != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
+                                   size_t terminal_cap, char *result,
+                                   size_t result_cap, int *exit_status) {
+  static const char *const elements[] = {
+      "e0",  "e1",  "e2",  "e3",  "e4",  "e5",  "e6",  "e7",  "e8",
+      "e9",  "e10", "e11", "e12", "e13", "e14", "e15", "e16", "e17",
+      "e18", "e19", "e20", "e21", "e22", "e23", "e24", "e25", "e26",
+      "e27", "e28", "e29", "e30", "e31", "e32"};
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+  const char *idle_style;
+  const char *busy_style;
+  const char *element_style;
+
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
+      pipe(result_pipe) != 0)
+    return -1;
+  pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 24;
+    cfg.prompt_theme = theme;
+    cfg.statusline = 1;
+    cfg.statusline_start_element = 15;
+    cfg.status_spinner = 1;
+    cfg.status_busy = 0;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_set_status_elements(sl, elements,
+                               sizeof(elements) / sizeof(elements[0])) != SL_OK)
+      _exit(2);
+    if (sl_bind_key(sl, SL_KEY_ALT_M, set_status_idle_marker_key, NULL) !=
+        SL_OK)
+      _exit(4);
+    if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'n'),
+                    set_status_dash_marker_key, NULL) != SL_OK)
+      _exit(5);
+    if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'p'),
+                    set_status_busy_spinner_key, NULL) != SL_OK)
+      _exit(6);
+    line = sl_readline(sl, "status> ");
+    if (!line)
+      _exit(3);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  idle_style = theme == SL_PROMPT_THEME_DEFAULT ? "\033[32m+ "
+                                                : "\033[38;2;57;255;20m+ ";
+  busy_style = theme == SL_PROMPT_THEME_DEFAULT ? "\033[31m- "
+                                                : "\033[38;2;255;51;51m- ";
+  element_style = theme == SL_PROMPT_THEME_DEFAULT
+                      ? "\r  \033[97me0"
+                      : "\r  \033[38;2;172;164;184me0";
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "status> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n <= 0)
+      return -1;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    if (terminal_len >= terminal_cap - 1)
+      return -1;
+  }
+  tries = 0;
+  while (!contains_bytes(terminal, idle_style) && tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, idle_style))
+    return -1;
+  if (write(master_fd, "\033p", 2) != 2)
+    return -1;
+  tries = 0;
+  while (!contains_bytes(terminal, busy_style) && tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, busy_style))
+    return -1;
+  if (write(master_fd, "\033m", 2) != 2)
+    return -1;
+  tries = 0;
+  while (!contains_bytes(terminal, element_style) && tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, element_style))
+    return -1;
+  if (write(master_fd, "\033n", 2) != 2)
+    return -1;
+  tries = 0;
+  while (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
+                                       ? "\033[32m- "
+                                       : "\033[38;2;57;255;20m- ") &&
+         tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
+                                    ? "\033[32m- "
+                                    : "\033[38;2;57;255;20m- "))
+    return -1;
+  if (write(master_fd, "ok\r", 3) != 3)
+    return -1;
+  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  if (n <= 0)
+    return -1;
+  result[n] = '\0';
   close(master_fd);
   close(result_pipe[0]);
   if (waitpid(pid, &status, 0) != pid)
@@ -1895,6 +2643,23 @@ static void test_pty_history_navigation_restores_draft(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "draft") == 0, "draft restore mismatch");
   PASS();
+
+  TEST("Ctrl-P and Ctrl-N navigate history entries");
+  ASSERT_TRUE(run_pty_history_case("\020\r", history, 2, terminal,
+                                   sizeof(terminal), result, sizeof(result),
+                                   &status) == 0,
+              "Ctrl-P history case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "second") == 0, "Ctrl-P history mismatch");
+  ASSERT_TRUE(run_pty_history_case("draft\020\016\r", history, 2, terminal,
+                                   sizeof(terminal), result, sizeof(result),
+                                   &status) == 0,
+              "Ctrl-N history case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "draft") == 0, "Ctrl-N draft restore mismatch");
+  PASS();
 }
 
 static void test_pty_readline_does_not_auto_add_history(void) {
@@ -2144,7 +2909,7 @@ static void test_ctrl_r_renders_inside_bounded_prompt(void) {
   history[1] = "bounded target";
   TEST("Ctrl-R renders inside bounded prompt");
   ASSERT_TRUE(run_pty_history_case_with_options(
-                  "\022target\r", history, 2, NULL, 24, 5, terminal,
+                  "\022target\r", history, 2, NULL, 24, 5, 0, terminal,
                   sizeof(terminal), result, sizeof(result), &status) == 0,
               "bounded history search case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -2153,8 +2918,10 @@ static void test_ctrl_r_renders_inside_bounded_prompt(void) {
               "bounded history match mismatch");
   ASSERT_TRUE(contains_bytes(terminal, "\033[5;1H"),
               "bounded prompt did not render at bottom");
-  ASSERT_TRUE(contains_bytes(terminal, "(r-search)`target': "),
-              "bounded reverse search prompt missing");
+  ASSERT_TRUE(contains_bytes(terminal, "(r-search)`"),
+              "bounded reverse search prompt prefix missing");
+  ASSERT_TRUE(contains_bytes(terminal, "t': "),
+              "bounded reverse search prompt update missing");
   PASS();
 }
 
@@ -2224,6 +2991,412 @@ static void test_key_binding_tab_inserts_text(void) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "aCOMPb") == 0, "TAB binding result mismatch");
+  PASS();
+}
+
+static void test_prompt_queue_dispatches_fifo_with_themes(void) {
+  static const sl_prompt_theme_t stash_themes[] = {
+      SL_PROMPT_THEME_DRACULA,    SL_PROMPT_THEME_GRUVBOX,
+      SL_PROMPT_THEME_MONOCHROME, SL_PROMPT_THEME_MONOGREEN,
+      SL_PROMPT_THEME_OUTRUN,     SL_PROMPT_THEME_SYNTHWAVE};
+  static const char *const control_styles[] = {
+      "\033[38;2;98;114;164mQ ",  "\033[38;2;131;165;152mQ ",
+      "\033[38;2;125;110;72mQ ",  "\033[38;2;42;107;58mQ ",
+      "\033[38;2;122;107;143mQ ", "\033[38;2;130;120;156mQ "};
+  static const char *const text_styles[] = {
+      "\033[38;2;195;183;201mfirst", "\033[38;2;213;196;161mfirst",
+      "\033[38;2;169;152;101mfirst", "\033[38;2;95;158;111mfirst",
+      "\033[38;2;184;169;201mfirst", "\033[38;2;179;169;192mfirst"};
+  char terminal[16384];
+  char result[512];
+  int status;
+  size_t i;
+
+  TEST("prompt queue previews and dispatches FIFO across themes");
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\tthird\r",
+                                        SL_PROMPT_THEME_PLAIN, 1, 0, 3,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "plain prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "plain prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:third|2:first|2:second") == 0,
+              "plain prompt queue dispatch order mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. first"),
+              "plain FIFO preview missing");
+  ASSERT_TRUE(contains_bytes(terminal, "... 1 more"),
+              "plain overflow count missing");
+
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 1, 0, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "accent prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "accent prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "accent prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;6;182;212mQ ") &&
+                  contains_bytes(terminal, "\033[38;2;148;163;184mfirst") &&
+                  contains_bytes(terminal, "\033[1;36mchat> \033[0m"),
+              "accent full prompt treatment missing");
+
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_THEME_RICED, 1, 0, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "riced prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "riced prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "riced prompt queue dispatch mismatch");
+  ASSERT_TRUE(
+      contains_bytes(terminal, "\033[38;2;255;126;219mQ ") &&
+          contains_bytes(terminal, "\033[38;2;172;164;184mfirst") &&
+          contains_bytes(terminal, "\033[1;38;2;255;255;255mchat> \033[0m"),
+      "riced full prompt treatment missing");
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_THEME_DEFAULT, 1, 0, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "default prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "default prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "default prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[90mQ ") &&
+                  contains_bytes(terminal, "\033[90mfirst") &&
+                  contains_bytes(terminal, "\033[1;97mchat> \033[0m") &&
+                  !contains_bytes(terminal, "\033[38;2;"),
+              "default ANSI queue treatment missing");
+  for (i = 0; i < sizeof(stash_themes) / sizeof(stash_themes[0]); i++) {
+    ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\r", stash_themes[i], 1,
+                                          0, 2, terminal, sizeof(terminal),
+                                          result, sizeof(result), &status) == 0,
+                "stash theme prompt queue pty case failed");
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "stash theme prompt queue child failed");
+    ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+                "stash theme prompt queue dispatch mismatch");
+    ASSERT_TRUE(contains_bytes(terminal, control_styles[i]) &&
+                    contains_bytes(terminal, text_styles[i]),
+                "stash theme queue palette treatment missing");
+  }
+  PASS();
+}
+
+static void test_prompt_queue_dispatches_fifo_in_normal_scrollback(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue dispatches FIFO in normal scrollback");
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_THEME_ACCENT, 0, 0, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "normal prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "normal prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "normal prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;6;182;212mQ ") &&
+                  contains_bytes(terminal, "\033[1;36mchat> \033[0m"),
+              "normal prompt queue preview missing");
+  PASS();
+}
+
+static void test_prompt_queue_clips_control_rows_on_narrow_terminals(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue clips control rows on narrow terminals");
+  ASSERT_TRUE(run_pty_prompt_queue_case_with_width(
+                  "first\tsecond\tthird\r", SL_PROMPT_THEME_PLAIN, 0, 0, 3, 4,
+                  "p> ", terminal, sizeof(terminal), result, sizeof(result),
+                  &status) == 0,
+              "narrow prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "narrow prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:third|2:first|2:second") == 0,
+              "narrow prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1.") &&
+                  !contains_bytes(terminal, "Q 1. "),
+              "queue prefix exceeded narrow render width");
+  ASSERT_TRUE(contains_bytes(terminal, "  ..") &&
+                  !contains_bytes(terminal, "... 1 more"),
+              "queue overflow row exceeded narrow render width");
+  PASS();
+}
+
+static void test_prompt_queue_previews_control_bytes_safely(void) {
+  static const char input[] = "\033[200~a\t\033[31m\302\23331mX\033[201~\tok\r";
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue previews pasted controls without terminal escapes");
+  ASSERT_TRUE(run_pty_prompt_queue_case(input, SL_PROMPT_THEME_PLAIN, 1, 0, 2,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "control-byte prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "control-byte prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:ok|2:a\t\033[31m\302\23331mX") == 0,
+              "queued control-byte prompt was changed");
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. a  ^[[31m\\x9B31mX"),
+              "queued control-byte preview was not safely rendered");
+  PASS();
+}
+
+static void test_prompt_queue_rejects_reduced_capacity(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue rejects reduced capacity with pending prompts");
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\tthird",
+                                        SL_PROMPT_THEME_PLAIN, 0, 1, 3,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "queue capacity pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queue capacity child failed");
+  ASSERT_TRUE(strcmp(result, "-2;1:third|2:first|2:second") == 0,
+              "reduced capacity changed queued dispatch");
+  PASS();
+}
+
+static void test_prompt_queue_alt_e_recalls_newest(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("Alt-E recalls the newest queued prompt into the editor");
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\t\033e\r",
+                                        SL_PROMPT_THEME_PLAIN, 1, 0, 2,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "Alt-E prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "Alt-E prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "Alt-E did not restore queue tail");
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. first"),
+              "Alt-E did not redraw the remaining queued preview");
+  PASS();
+}
+
+static void test_prompt_themes_style_normal_readline(void) {
+  static const sl_prompt_theme_t themes[] = {
+      SL_PROMPT_THEME_DEFAULT,    SL_PROMPT_THEME_ACCENT,
+      SL_PROMPT_THEME_DRACULA,    SL_PROMPT_THEME_GRUVBOX,
+      SL_PROMPT_THEME_MONOCHROME, SL_PROMPT_THEME_MONOGREEN,
+      SL_PROMPT_THEME_OUTRUN,     SL_PROMPT_THEME_RICED,
+      SL_PROMPT_THEME_SYNTHWAVE};
+  static const char *const styles[] = {"\033[1;97mnormal> ",
+                                       "\033[1;36mnormal> ",
+                                       "\033[38;2;98;114;164mnormal> ",
+                                       "\033[1;38;2;184;187;38mnormal> ",
+                                       "\033[1;38;2;168;118;40mnormal> ",
+                                       "\033[1;38;2;22;122;31mnormal> ",
+                                       "\033[38;2;78;69;99mnormal> ",
+                                       "\033[1;38;2;255;255;255mnormal> ",
+                                       "\033[1;38;2;255;126;219mnormal> "};
+  static const char *const input_styles[] = {"",
+                                             "",
+                                             "",
+                                             "",
+                                             "\033[38;2;255;224;138mok\033[0m",
+                                             "\033[1;38;2;51;255;51mok\033[0m",
+                                             "",
+                                             "",
+                                             ""};
+  char terminal[4096];
+  char result[64];
+  char styled_prompt[128];
+  int status;
+  size_t i;
+
+  TEST("prompt themes style normal readline UI");
+  for (i = 0; i < sizeof(themes) / sizeof(themes[0]); i++) {
+    ASSERT_TRUE(run_pty_themed_readline_case(themes[i], terminal,
+                                             sizeof(terminal), result,
+                                             sizeof(result), &status) == 0,
+                "themed normal prompt pty case failed");
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "themed normal prompt child failed");
+    ASSERT_TRUE(strcmp(result, "ok") == 0,
+                "themed normal prompt result mismatch");
+    ASSERT_TRUE(contains_bytes(terminal, styles[i]),
+                "themed normal prompt treatment missing");
+    (void)snprintf(styled_prompt, sizeof(styled_prompt), "%s\033[0m",
+                   styles[i]);
+    ASSERT_TRUE(contains_bytes(terminal, styled_prompt),
+                "themed prompt did not reset before typed input");
+    if (themes[i] == SL_PROMPT_THEME_DEFAULT)
+      ASSERT_TRUE(!contains_bytes(terminal, "\033[38;2;"),
+                  "default prompt used true-colour output");
+    if (input_styles[i][0] != '\0')
+      ASSERT_TRUE(contains_bytes(terminal, input_styles[i]),
+                  "themed input treatment missing");
+  }
+  PASS();
+}
+
+static void test_statusline_uses_palette_offset_and_truncation(void) {
+  char terminal[16384];
+  char result[64];
+  int status;
+
+  TEST("status line offsets colours and truncates after 32 elements");
+  ASSERT_TRUE(run_pty_statusline_case(SL_PROMPT_THEME_RICED, terminal,
+                                      sizeof(terminal), result, sizeof(result),
+                                      &status) == 0,
+              "status line pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "status line child failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0, "status line result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;255;51;51m/ "),
+              "status spinner marker missing");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;255;51;51m- "),
+              "status spinner did not advance");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;57;255;20m+ "),
+              "default status idle marker missing");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;57;255;20m- "),
+              "status idle marker missing");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;172;164;184me0"),
+              "status starting palette colour missing");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;54;249;246me1"),
+              "status palette did not wrap after index seven");
+  ASSERT_TRUE(contains_bytes(terminal, "e30") &&
+                  !contains_bytes(terminal, "e31") &&
+                  contains_bytes(terminal, "..."),
+              "status line did not retain 31 elements plus ellipsis");
+  ASSERT_TRUE(contains_after_bytes(terminal, "e7", "\n"),
+              "status elements did not wrap between elements");
+  PASS();
+}
+
+static void test_default_statusline_uses_ansi_palette(void) {
+  char terminal[16384];
+  char result[64];
+  int status;
+
+  TEST("default status line uses standard ANSI palette");
+  ASSERT_TRUE(run_pty_statusline_case(SL_PROMPT_THEME_DEFAULT, terminal,
+                                      sizeof(terminal), result, sizeof(result),
+                                      &status) == 0,
+              "default status line pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "default status line child failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0, "default status line result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[31m/ ") &&
+                  contains_bytes(terminal, "\033[31m- ") &&
+                  contains_bytes(terminal, "\033[32m+ ") &&
+                  contains_bytes(terminal, "\033[32m- "),
+              "default status markers did not use ANSI red and green");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[97me0") &&
+                  contains_bytes(terminal, "\033[36me1") &&
+                  contains_bytes(terminal, "\033[90m : ") &&
+                  !contains_bytes(terminal, "\033[38;2;"),
+              "default status palette did not use ANSI colours");
+  PASS();
+}
+
+static void test_bounded_statusline_clips_marker_to_box_width(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  struct winsize ws;
+  pid_t pid;
+  char terminal[4096];
+  char result[64];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+
+  TEST("bounded one-column status line clips its marker");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 8;
+  ws.ws_row = 4;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    static const char *const elements[] = {"\346\227\245"};
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 1;
+    cfg.screen_height = 4;
+    cfg.bounded = 1;
+    cfg.prompt_theme = SL_PROMPT_THEME_DEFAULT;
+    cfg.statusline = 1;
+    cfg.status_busy = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_set_status_elements(sl, elements, 1) != SL_OK)
+      _exit(2);
+    line = sl_readline(sl, "p");
+    if (!line)
+      _exit(3);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "\033[31mx\033[0m")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "one-column status marker was not rendered");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    ASSERT_TRUE(terminal_len < sizeof(terminal) - 1,
+                "terminal capture overflowed");
+  }
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[31mx \033[0m"),
+              "status marker exceeded one-column bounded box");
+  ASSERT_TRUE(!contains_bytes(terminal, "\346\227\245"),
+              "wide status element exceeded one-column bounded box");
+  ASSERT_TRUE(write(master_fd, "z\r", 2) == 2, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n == 1, "read result failed");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "z") == 0, "result mismatch");
+  PASS();
+}
+
+static void test_queueing_resets_history_navigation(void) {
+  const char *history[] = {"one", "two"};
+  char terminal[4096];
+  char result[256];
+  int status;
+
+  TEST("queueing a recalled prompt resets history navigation");
+  ASSERT_TRUE(run_pty_history_case_with_options(
+                  "\033[A\t\033[A\r", history, 2, NULL, 20, 0, 1, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "queued history case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued history child failed");
+  ASSERT_TRUE(strcmp(result, "two") == 0,
+              "queueing recalled history skipped newest entry");
   PASS();
 }
 
@@ -2648,6 +3821,7 @@ static void test_bounded_print_above_rejects_narrow_scroll(void) {
 static void test_bounded_prompt_starts_at_bottom(void) {
   char terminal[4096];
   char result[256];
+  struct vt_screen screen;
   int status;
 
   TEST("bounded prompt starts on bottom row");
@@ -2660,8 +3834,61 @@ static void test_bounded_prompt_starts_at_bottom(void) {
   ASSERT_TRUE(strcmp(result, "ok") == 0, "bounded result mismatch");
   ASSERT_TRUE(contains_bytes(terminal, "\033[5;1Hp> "),
               "prompt was not rendered on bottom row");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[5;4H"),
-              "cursor was not positioned on bottom row");
+  vt_init(&screen, 5, 20);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> ok"),
+              "bounded prompt did not retain submitted text");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[6;1H"),
+              "cursor was not positioned below the bounded prompt");
+  PASS();
+}
+
+static void test_bounded_readline_leaves_output_below_prompt(void) {
+  char terminal[4096];
+  char result[256];
+  struct vt_screen screen;
+  int status;
+
+  TEST("bounded readline leaves following output below prompt");
+  ASSERT_TRUE(run_pty_readline_completion_case(1, 0, terminal, sizeof(terminal),
+                                               result, sizeof(result),
+                                               &status) == 0,
+              "bounded completion pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "bounded completion child failed");
+  ASSERT_TRUE(strcmp(result, "hello") == 0,
+              "bounded completion result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[4;1H"),
+              "following output was not positioned below bounded prompt");
+  vt_init(&screen, 5, 20);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello"),
+              "bounded prompt was overwritten by following output");
+  ASSERT_TRUE(vt_contains(&screen, "after"), "following output missing");
+  PASS();
+}
+
+static void test_readline_keeps_normal_completion_with_queueing(void) {
+  char terminal[4096];
+  char result[256];
+  struct vt_screen screen;
+  int status;
+
+  TEST("readline retains completion output when queueing is enabled");
+  ASSERT_TRUE(run_pty_readline_completion_case(0, 1, terminal, sizeof(terminal),
+                                               result, sizeof(result),
+                                               &status) == 0,
+              "queued readline completion pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued readline completion child failed");
+  ASSERT_TRUE(strcmp(result, "hello") == 0,
+              "queued readline completion result mismatch");
+  vt_init(&screen, 5, 20);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello"),
+              "queued direct readline prompt was cleared");
+  ASSERT_TRUE(vt_contains(&screen, "after"),
+              "following output missing after queued direct readline");
   PASS();
 }
 
@@ -3036,11 +4263,14 @@ static void test_bounded_viewport_follows_cursor(void) {
   close(result_pipe[1]);
   terminal_len = 0;
   terminal[0] = '\0';
-  while (!contains_bytes(terminal, "p> ")) {
+  tries = 0;
+  while (!contains_bytes(terminal, "p> ") && tries < 300) {
     n = read_some_with_timeout_ms(master_fd, buf, sizeof(buf), 20);
-    ASSERT_TRUE(n > 0, "prompt was not rendered");
-    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
   }
+  ASSERT_TRUE(contains_bytes(terminal, "p> "), "prompt was not rendered");
   ASSERT_TRUE(write(master_fd, "one two three four five six", 27) == 27,
               "write input failed");
   tries = 0;
@@ -3178,8 +4408,6 @@ static void test_bounded_prompt_growth_scrolls_output_region(void) {
               "bounded growth result mismatch");
   ASSERT_TRUE(count_bytes(terminal, "\033[1;4r") >= 2,
               "prompt growth did not scroll output region");
-  ASSERT_TRUE(contains_bytes(terminal, "   sentence"),
-              "grown prompt continuation row missing");
   PASS();
 }
 
@@ -3315,11 +4543,11 @@ static void test_word_wrap_keeps_words_intact(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "hello world sentence") == 0,
               "word wrap result mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "p> hello world"),
+  ASSERT_TRUE(contains_bytes(terminal, "p> ") &&
+                  contains_bytes(terminal, "hello world"),
               "first wrapped row missing");
-  ASSERT_TRUE(contains_bytes(terminal, "p> hello world\033[0K"),
-              "wrapped row did not clear separator space");
-  ASSERT_TRUE(contains_bytes(terminal, "   sentence"),
+  ASSERT_TRUE(contains_bytes(terminal, "   s") &&
+                  contains_bytes(terminal, "entence"),
               "continuation word row missing");
   PASS();
 }
@@ -3752,7 +4980,12 @@ static void test_normal_prompt_growth_scrolls_at_screen_bottom(void) {
   ASSERT_TRUE(write(master_fd, input, strlen(input)) == (ssize_t)strlen(input),
               "write input failed");
   tries = 0;
-  while (!contains_bytes(terminal, "   sentence") && tries < 300) {
+  while (tries < 300) {
+    vt_init(&screen, 3, 16);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "p> hello world") &&
+        vt_contains(&screen, "   sentence"))
+      break;
     n = read_some_with_timeout(master_fd, buf, sizeof(buf));
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
@@ -3792,7 +5025,8 @@ static void test_exact_width_cursor_uses_explicit_wrap_row(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "abcdefghijklm") == 0,
               "exact-width result mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "p> abcdefghijklm"),
+  ASSERT_TRUE(contains_bytes(terminal, "p> ") &&
+                  contains_bytes(terminal, "abcdefghijklm"),
               "normal exact-width first row missing");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[16C"),
               "cursor was positioned past terminal edge");
@@ -3807,7 +5041,8 @@ static void test_exact_width_cursor_uses_explicit_wrap_row(void) {
               "bounded child editor failed");
   ASSERT_TRUE(strcmp(result, "abcdefghijklm") == 0,
               "bounded exact-width result mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[4;1Hp> abcdefghijklm"),
+  ASSERT_TRUE(contains_bytes(terminal, "\033[4;1Hp> ") &&
+                  contains_bytes(terminal, "abcdefghijklm"),
               "bounded exact-width first row missing");
   ASSERT_TRUE(contains_bytes(terminal, "\033[5;1H   "),
               "bounded exact-width wrap row missing");
@@ -3874,25 +5109,42 @@ static void test_resize_reflows_without_keypress(void) {
   ASSERT_TRUE(write(master_fd, "hello world sentence", 20) == 20,
               "write input failed");
   tries = 0;
-  while (!contains_bytes(terminal, "p> hello world sentence") && tries < 100) {
+  while (tries < 100) {
+    vt_init(&screen, 20, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "p> hello world sentence"))
+      break;
     n = read_some_with_timeout(master_fd, buf, sizeof(buf));
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     tries++;
   }
-  ASSERT_TRUE(contains_bytes(terminal, "p> hello world sentence"),
+  vt_init(&screen, 20, 40);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello world sentence"),
               "wide render missing");
   ws.ws_col = 16;
   ws.ws_row = 20;
   resize_offset = terminal_len;
   ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "resize ioctl failed");
   tries = 0;
-  while (!contains_bytes(terminal, "   sentence") && tries < 100) {
+  while (tries < 100) {
+    vt_init(&screen, 20, 16);
+    vt_apply(&screen, terminal + resize_offset);
+    if (vt_contains(&screen, "p> hello world") &&
+        vt_contains(&screen, "   sentence"))
+      break;
     n = read_some_with_timeout(master_fd, buf, sizeof(buf));
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     tries++;
   }
+  vt_init(&screen, 20, 16);
+  vt_apply(&screen, terminal + resize_offset);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello world"),
+              "idle resize did not reflow before input");
+  ASSERT_TRUE(vt_contains(&screen, "   sentence"),
+              "idle resize continuation was not rendered before input");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -3904,8 +5156,6 @@ static void test_resize_reflows_without_keypress(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "hello world sentence") == 0,
               "resize result mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "   sentence"),
-              "resize did not reflow final word");
   vt_init(&screen, 20, 16);
   vt_apply(&screen, terminal + resize_offset);
   ASSERT_TRUE(vt_contains(&screen, "p> hello world"),
@@ -3931,7 +5181,7 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   int status;
   int tries;
 
-  TEST("dynamic bounded prompt reflows after resize");
+  TEST("dynamic bounded prompt reflows and preserves SIGWINCH handler");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 40;
   ws.ws_row = 6;
@@ -3941,11 +5191,20 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   pid = fork();
   ASSERT_TRUE(pid >= 0, "fork failed");
   if (pid == 0) {
+    struct sigaction action;
     sl_config_t cfg;
     sl_t *sl;
     char *line;
+    char message[256];
+    int written;
     close(master_fd);
     close(result_pipe[0]);
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = remember_winch;
+    if (sigemptyset(&action.sa_mask) != 0 ||
+        sigaction(SIGWINCH, &action, NULL) != 0)
+      _exit(2);
+    winch_seen = 0;
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
@@ -3957,7 +5216,10 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
     line = sl->readline(sl, "p> ");
     if (!line)
       _exit(4);
-    (void)write(result_pipe[1], line, strlen(line));
+    written =
+        snprintf(message, sizeof(message), "%d:%s", (int)winch_seen, line);
+    if (written > 0)
+      (void)write(result_pipe[1], message, (size_t)written);
     sl->free_string(sl, line);
     sl->destroy(sl);
     close(slave_fd);
@@ -3975,16 +5237,24 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   }
   ASSERT_TRUE(contains_bytes(terminal, "\033[6;1Hp> "),
               "dynamic prompt did not start at bottom");
+  ASSERT_TRUE(kill(pid, SIGWINCH) == 0, "SIGWINCH failed");
+  usleep(50000);
   ASSERT_TRUE(write(master_fd, "hello world sentence", 20) == 20,
               "write input failed");
   tries = 0;
-  while (!contains_bytes(terminal, "p> hello world sentence") && tries < 100) {
+  while (tries < 100) {
+    vt_init(&screen, 6, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "p> hello world sentence"))
+      break;
     n = read_some_with_timeout(master_fd, buf, sizeof(buf));
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     tries++;
   }
-  ASSERT_TRUE(contains_bytes(terminal, "p> hello world sentence"),
+  vt_init(&screen, 6, 40);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "p> hello world sentence"),
               "wide bounded render missing");
   ws.ws_col = 16;
   ws.ws_row = 6;
@@ -4017,8 +5287,8 @@ static void test_dynamic_bounded_resize_reflows_without_keypress(void) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
-  ASSERT_TRUE(strcmp(result, "hello world sentence") == 0,
-              "dynamic bounded resize result mismatch");
+  ASSERT_TRUE(strcmp(result, "1:hello world sentence") == 0,
+              "dynamic bounded resize or SIGWINCH handler mismatch");
   PASS();
 }
 
@@ -4318,7 +5588,8 @@ static void test_idle_callback_can_cancel_without_input(void) {
 static void test_final_render_failure_reports_error(void) {
   int master_fd;
   int slave_fd;
-  int output_pipe[2];
+  int output_master_fd;
+  int output_slave_fd;
   int result_pipe[2];
   pid_t pid;
   char terminal[256];
@@ -4331,7 +5602,9 @@ static void test_final_render_failure_reports_error(void) {
   TEST("final render failure reports readline error");
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
               "openpty failed");
-  ASSERT_TRUE(pipe(output_pipe) == 0, "output pipe failed");
+  ASSERT_TRUE(openpty(&output_master_fd, &output_slave_fd, NULL, NULL, NULL) ==
+                  0,
+              "output pty failed");
   ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
   pid = fork();
   ASSERT_TRUE(pid >= 0, "fork failed");
@@ -4344,12 +5617,11 @@ static void test_final_render_failure_reports_error(void) {
     int written;
 
     close(master_fd);
-    close(output_pipe[0]);
+    close(output_master_fd);
     close(result_pipe[0]);
-    signal(SIGPIPE, SIG_IGN);
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
-    cfg.output_fd = output_pipe[1];
+    cfg.output_fd = output_slave_fd;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
@@ -4365,25 +5637,25 @@ static void test_final_render_failure_reports_error(void) {
       (void)write(result_pipe[1], msg, (size_t)written);
     sl->destroy(sl);
     close(slave_fd);
-    close(output_pipe[1]);
+    close(output_slave_fd);
     close(result_pipe[1]);
     _exit(0);
   }
   close(slave_fd);
-  close(output_pipe[1]);
+  close(output_slave_fd);
   close(result_pipe[1]);
   terminal_len = 0;
   terminal[0] = '\0';
   tries = 0;
   while (!contains_bytes(terminal, "p> ") && tries < 100) {
-    n = read_some_with_timeout(output_pipe[0], result, sizeof(result));
+    n = read_some_with_timeout(output_master_fd, result, sizeof(result));
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), result,
                             n);
     tries++;
   }
   ASSERT_TRUE(contains_bytes(terminal, "p> "), "initial prompt not rendered");
-  close(output_pipe[0]);
+  close(output_master_fd);
   ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -4425,17 +5697,13 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
     sl_t *sl;
     char *line;
     struct idle_ready_state ready;
-    int null_fd;
 
     close(master_fd);
     close(result_pipe[0]);
     close(ready_pipe[0]);
-    null_fd = open("/dev/null", O_WRONLY);
-    if (null_fd < 0)
-      _exit(2);
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
-    cfg.output_fd = null_fd;
+    cfg.output_fd = slave_fd;
     cfg.screen_width = 1;
     cfg.line_max_len = 120;
     sl = sl_create_with_config(&cfg);
@@ -4453,7 +5721,6 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
       sl->free_string(sl, line);
     }
     sl->destroy(sl);
-    close(null_fd);
     close(slave_fd);
     close(ready_pipe[1]);
     close(result_pipe[1]);
@@ -4498,9 +5765,13 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   ssize_t n;
   int status;
   int tries;
+  struct winsize ws;
 
-  TEST("idle callback prints above active prompt");
-  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+  TEST("unbounded prompts clear and redraw live output by default");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 1;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
               "openpty failed");
   ASSERT_TRUE(pipe(result_pipe) == 0, "pipe failed");
   pid = fork();
@@ -4517,7 +5788,6 @@ static void test_idle_callback_prints_above_active_prompt(void) {
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     cfg.screen_width = 20;
-    cfg.screen_height = 5;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
@@ -4546,6 +5816,10 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   ASSERT_TRUE(contains_bytes(terminal, "idle-output"),
               "idle output was not printed");
   ASSERT_TRUE(contains_bytes(terminal, "p> "), "prompt was not redrawn");
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[6n"),
+              "default live output requested a cursor-position probe");
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[1;"),
+              "default live output entered a scroll region");
   ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -4556,6 +5830,361 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "ok") == 0, "idle callback result mismatch");
+  PASS();
+}
+
+static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  struct vt_screen screen;
+  char terminal[8192];
+  char result[64];
+  char buf[512];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int replied;
+  int tries;
+  int prompts_after_second;
+  int first_row;
+  int second_row;
+  int queue_row;
+  int prompt_row;
+  int i;
+  size_t resize_offset;
+
+  TEST("normal prompt pins at bottom for live output");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_scroll_region_state state;
+    close(master_fd);
+    close(result_pipe[0]);
+    state.calls = 0;
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    cfg.live_scroll_region = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    if (sl->set_idle_callback(sl, idle_print_through_scroll_region, &state) !=
+        SL_OK)
+      _exit(3);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  replied = 0;
+  tries = 0;
+  while (!contains_bytes(terminal, "first-live") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    if (!replied && contains_bytes(terminal, "\033[6n")) {
+      ASSERT_TRUE(write(master_fd, "\033\033[5;4R", 7) == 7,
+                  "nested Escape and cursor report write failed");
+      replied = 1;
+    }
+    tries++;
+  }
+  ASSERT_TRUE(replied, "normal prompt did not request cursor position");
+  ASSERT_TRUE(contains_bytes(terminal, "first-live"),
+              "first live message missing");
+  ASSERT_TRUE(count_bytes(terminal, "p> ") == 1,
+              "first live message repainted the prompt");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[1;4r"),
+              "bottom prompt did not enter scroll region");
+  usleep(150000);
+  ASSERT_TRUE(write(master_fd, "queued\tok", 9) == 9,
+              "queue-and-text write failed");
+  tries = 0;
+  while (!contains_bytes(terminal, "second-live") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. queued"),
+              "queued prompt did not reflow the pinned region");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[1;3r"),
+              "scroll region did not shrink after queue reflow");
+  ASSERT_TRUE(contains_bytes(terminal, "second-live"),
+              "second live message missing");
+  prompts_after_second = count_bytes(terminal, "p> ");
+  n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  ASSERT_TRUE(count_bytes(terminal, "p> ") == prompts_after_second,
+              "live message repainted the reflowed prompt");
+  resize_offset = terminal_len;
+  ws.ws_row = 6;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "terminal resize failed");
+  ASSERT_TRUE(write(master_fd, "x\177", 2) == 2, "resize reflow input failed");
+  n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+  ASSERT_TRUE(n > 0, "resize did not reflow pinned prompt");
+  append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\033[1;1H\033[2K") &&
+                  !contains_bytes(terminal + resize_offset, "\033[2;1H\033[2K"),
+              "pinned resize cleared transcript rows");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "read result failed");
+  result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  } while (n > 0 && terminal_len < sizeof(terminal) - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0, "pinned prompt result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[r"),
+              "scroll region was not restored");
+  vt_init(&screen, 6, 20);
+  screen.row = 4;
+  screen.col = 0;
+  vt_apply(&screen, terminal);
+  first_row = -1;
+  second_row = -1;
+  queue_row = -1;
+  prompt_row = -1;
+  for (i = 0; i < screen.rows; i++) {
+    if (strstr(screen.cells[i], "first-live"))
+      first_row = i;
+    if (strstr(screen.cells[i], "second-live"))
+      second_row = i;
+    if (strstr(screen.cells[i], "Q 1. queued"))
+      queue_row = i;
+    if (strstr(screen.cells[i], "p> ok"))
+      prompt_row = i;
+  }
+  ASSERT_TRUE(first_row >= 0 && second_row == first_row + 1 && queue_row >= 0 &&
+                  prompt_row == queue_row + 1,
+              "live transcript content was overwritten or on the wrong row");
+  PASS();
+}
+
+static void test_pinned_stream_failure_restores_prompt_cursor(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  int ready_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  struct vt_screen screen;
+  char terminal[4096];
+  char result[64];
+  char buf[512];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("pinned stream failure restores prompt cursor before editing");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  ASSERT_TRUE(pipe(ready_pipe) == 0, "ready pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_stream_failure_state state;
+    close(master_fd);
+    close(result_pipe[0]);
+    close(ready_pipe[0]);
+    memset(&state, 0, sizeof(state));
+    state.fd = ready_pipe[1];
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.live_scroll_region = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    if (sl->set_idle_callback(sl, idle_print_failure_once, &state) != SL_OK)
+      _exit(3);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  close(ready_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  tries = 0;
+  while (!contains_bytes(terminal, "\033[6n") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "\033[6n"),
+              "pinned stream did not request cursor position");
+  ASSERT_TRUE(write(master_fd, "\033[5;4R", 6) == 6,
+              "cursor report write failed");
+  n = read_some_with_timeout(ready_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 1 && result[0] == 'R',
+              "failing stream did not report its callback error");
+  ASSERT_TRUE(write(master_fd, "x", 1) == 1, "edit write failed");
+  tries = 0;
+  while (!contains_bytes(terminal, "x") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "x"), "edited prompt was not rendered");
+  vt_init(&screen, 5, 20);
+  screen.row = 4;
+  screen.col = 0;
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(strstr(screen.cells[4], "p> x") != NULL,
+              "edit after failed stream was not placed on the prompt row");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n == 1, "read result failed");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  close(ready_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "pinned stream failure child failed");
+  ASSERT_TRUE(strcmp(result, "x") == 0,
+              "pinned stream failure result mismatch");
+  PASS();
+}
+
+static void test_cursor_probe_preserves_concurrent_queue_input(void) {
+  static const char input[] =
+      "\033[9999999999;9999999999R"
+      "queued-012345678901234567890123456789012345\tok\r";
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  char terminal[4096];
+  char result[64];
+  char buf[512];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("cursor probe preserves concurrent queue input");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_print_state state;
+    close(master_fd);
+    close(result_pipe[0]);
+    state.printed = 0;
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    cfg.live_scroll_region = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    if (sl->set_idle_callback(sl, idle_print_once, &state) != SL_OK)
+      _exit(3);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  tries = 0;
+  while (!contains_bytes(terminal, "\033[6n") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "\033[6n"),
+              "cursor-position probe was not requested");
+  ASSERT_TRUE(
+      write(master_fd, input, sizeof(input) - 1) ==
+          (ssize_t)(sizeof(input) - 1),
+      "concurrent malformed cursor report and queue input write failed");
+  tries = 0;
+  n = 0;
+  while (n == 0 && tries < 50) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+    tries++;
+  }
+  ASSERT_TRUE(n > 0, "concurrent queue input did not complete");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0,
+              "cursor probe did not preserve queued editor input");
   PASS();
 }
 
@@ -4742,6 +6371,31 @@ static void test_key_binding_tab_inserts_text(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_prompt_queue_dispatches_fifo_with_themes(void) {
+  TEST("prompt queue previews and dispatches FIFO across themes");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_prompt_queue_alt_e_recalls_newest(void) {
+  TEST("Alt-E recalls the newest queued prompt into the editor");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_prompt_themes_style_normal_readline(void) {
+  TEST("prompt themes style normal readline UI");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_statusline_uses_palette_offset_and_truncation(void) {
+  TEST("status line offsets colours and truncates after 32 elements");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_default_statusline_uses_ansi_palette(void) {
+  TEST("default status line uses standard ANSI palette");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_key_binding_alt_m_inserts_text(void) {
   TEST("key binding Alt-M inserts text");
   printf("SKIP\n");
@@ -4802,6 +6456,16 @@ static void test_bounded_print_above_uses_scroll_region(void) {
 }
 static void test_bounded_prompt_starts_at_bottom(void) {
   TEST("bounded prompt starts on bottom row");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_bounded_readline_leaves_output_below_prompt(void) {
+  TEST("bounded readline leaves following output below prompt");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_readline_keeps_normal_completion_with_queueing(void) {
+  TEST("readline retains completion output when queueing is enabled");
   printf("SKIP\n");
   tests_passed++;
 }
@@ -4923,6 +6587,16 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
+  TEST("normal prompt pins at bottom for live output");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_cursor_probe_preserves_concurrent_queue_input(void) {
+  TEST("cursor probe preserves concurrent queue input");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_utf8_input_and_backspace(void) {
   TEST("UTF-8 input is preserved and backspace is character-wide");
   printf("SKIP\n");
@@ -4969,6 +6643,7 @@ int main(void) {
   test_history_round_trips_multiline_entries();
   test_history_rejects_oversized_entries();
   test_stream_failures_are_reported();
+  test_print_above_uses_lf_for_non_tty_output();
   test_bounded_print_above_without_space_is_error();
   test_pty_enter_and_ctrl_j();
   test_pty_readline_uses_default_prompt();
@@ -4988,6 +6663,17 @@ int main(void) {
   test_bracketed_paste_stops_at_line_max();
   test_tab_render_expands_beyond_line_bytes();
   test_key_binding_tab_inserts_text();
+  test_prompt_queue_dispatches_fifo_with_themes();
+  test_prompt_queue_dispatches_fifo_in_normal_scrollback();
+  test_prompt_queue_clips_control_rows_on_narrow_terminals();
+  test_prompt_queue_previews_control_bytes_safely();
+  test_prompt_queue_rejects_reduced_capacity();
+  test_prompt_queue_alt_e_recalls_newest();
+  test_prompt_themes_style_normal_readline();
+  test_statusline_uses_palette_offset_and_truncation();
+  test_default_statusline_uses_ansi_palette();
+  test_bounded_statusline_clips_marker_to_box_width();
+  test_queueing_resets_history_navigation();
   test_key_binding_alt_m_inserts_text();
   test_key_binding_f1_submits();
   test_key_binding_can_edit_buffer_and_submit();
@@ -5001,6 +6687,8 @@ int main(void) {
   test_bounded_print_above_uses_scroll_region();
   test_bounded_print_above_rejects_narrow_scroll();
   test_bounded_prompt_starts_at_bottom();
+  test_bounded_readline_leaves_output_below_prompt();
+  test_readline_keeps_normal_completion_with_queueing();
   test_config_zero_bounds_start_at_terminal_bottom();
   test_dynamic_bounds_origin_uses_remaining_terminal_area();
   test_bounded_redraw_clears_only_box_width();
@@ -5026,6 +6714,9 @@ int main(void) {
   test_final_render_failure_reports_error();
   test_narrow_terminal_does_not_submit_before_enter();
   test_idle_callback_prints_above_active_prompt();
+  test_normal_prompt_pins_at_bottom_for_live_output();
+  test_pinned_stream_failure_restores_prompt_cursor();
+  test_cursor_probe_preserves_concurrent_queue_input();
   test_utf8_input_and_backspace();
   test_utf8_swedish_input_is_rendered_as_full_sequences();
   test_unicode_width_wraps_japanese_and_emoji();

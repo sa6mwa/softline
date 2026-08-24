@@ -22,10 +22,183 @@ typedef struct sl_render {
   int count;
   int cursor_row;
   int cursor_col;
+  int editor_first;
 } sl_render_t;
+
+typedef struct sl_rgb {
+  unsigned char red;
+  unsigned char green;
+  unsigned char blue;
+} sl_rgb_t;
+
+typedef struct sl_theme_palette {
+  sl_rgb_t elements[8];
+  sl_rgb_t separator;
+  sl_rgb_t prompt;
+  sl_rgb_t queue;
+  sl_rgb_t queue_text;
+  int prompt_bold;
+  sl_rgb_t input;
+  int input_bold;
+} sl_theme_palette_t;
+
+static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0}},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        0,
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{56, 189, 248},
+                                                         {34, 211, 238},
+                                                         {167, 139, 250},
+                                                         {244, 114, 182},
+                                                         {251, 191, 36},
+                                                         {52, 211, 153},
+                                                         {251, 146, 60},
+                                                         {248, 113, 113}},
+                                                        {100, 116, 139},
+                                                        {6, 182, 212},
+                                                        {6, 182, 212},
+                                                        {148, 163, 184},
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{139, 233, 253},
+                                                         {241, 250, 140},
+                                                         {189, 147, 249},
+                                                         {255, 184, 108},
+                                                         {80, 250, 123},
+                                                         {255, 85, 85},
+                                                         {255, 121, 198},
+                                                         {195, 183, 201}},
+                                                        {98, 114, 164},
+                                                        {98, 114, 164},
+                                                        {98, 114, 164},
+                                                        {195, 183, 201},
+                                                        0,
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{250, 189, 47},
+                                                         {184, 187, 38},
+                                                         {131, 165, 152},
+                                                         {211, 134, 155},
+                                                         {254, 128, 25},
+                                                         {142, 192, 124},
+                                                         {251, 73, 52},
+                                                         {213, 196, 161}},
+                                                        {102, 92, 84},
+                                                        {184, 187, 38},
+                                                        {131, 165, 152},
+                                                        {213, 196, 161},
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90},
+                                                         {224, 184, 90}},
+                                                        {88, 83, 74},
+                                                        {168, 118, 40},
+                                                        {125, 110, 72},
+                                                        {169, 152, 101},
+                                                        1,
+                                                        {255, 224, 138},
+                                                        0},
+                                                       {{{51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51},
+                                                         {51, 255, 51}},
+                                                        {79, 91, 79},
+                                                        {22, 122, 31},
+                                                        {42, 107, 58},
+                                                        {95, 158, 111},
+                                                        1,
+                                                        {51, 255, 51},
+                                                        1},
+                                                       {{{0, 229, 255},
+                                                         {248, 248, 242},
+                                                         {157, 78, 221},
+                                                         {255, 42, 109},
+                                                         {199, 125, 255},
+                                                         {0, 255, 204},
+                                                         {184, 169, 201},
+                                                         {122, 107, 143}},
+                                                        {78, 69, 99},
+                                                        {78, 69, 99},
+                                                        {122, 107, 143},
+                                                        {184, 169, 201},
+                                                        0,
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{54, 249, 246},
+                                                         {254, 222, 93},
+                                                         {185, 103, 255},
+                                                         {255, 139, 139},
+                                                         {0, 240, 255},
+                                                         {255, 0, 204},
+                                                         {255, 126, 219},
+                                                         {172, 164, 184}},
+                                                        {72, 76, 105},
+                                                        {255, 255, 255},
+                                                        {255, 126, 219},
+                                                        {172, 164, 184},
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{255, 126, 219},
+                                                         {248, 248, 242},
+                                                         {54, 249, 246},
+                                                         {185, 103, 255},
+                                                         {54, 249, 246},
+                                                         {255, 126, 219},
+                                                         {179, 169, 192},
+                                                         {130, 120, 156}},
+                                                        {95, 89, 117},
+                                                        {255, 126, 219},
+                                                        {130, 120, 156},
+                                                        {179, 169, 192},
+                                                        1,
+                                                        {0, 0, 0},
+                                                        0},
+                                                       {{{0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0}},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        0,
+                                                        {0, 0, 0},
+                                                        0}};
 
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
+static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
+                             unsigned long *codepoint);
+static int sl_render_clear_active(sl_t *self);
+static int sl_try_pin_scroll_region(sl_t *self);
 
 static sl_impl_t *sl_impl(sl_t *self) {
   if (!self)
@@ -69,6 +242,121 @@ static char *sl_strdup(const char *s) {
   return copy;
 }
 
+static void sl_prompt_queue_clear(sl_prompt_queue_t *queue) {
+  int i;
+  if (!queue)
+    return;
+  for (i = 0; i < queue->len; i++)
+    free(queue->items[i]);
+  free(queue->items);
+  queue->items = NULL;
+  queue->len = 0;
+  queue->cap = 0;
+}
+
+static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
+  char **items;
+  int cap;
+  if (!queue)
+    return -1;
+  if (entries <= queue->cap)
+    return 0;
+  cap = queue->cap > 0 ? queue->cap : 8;
+  while (cap < entries) {
+    if (cap > INT_MAX / 2) {
+      cap = entries;
+      break;
+    }
+    cap *= 2;
+  }
+  items = (char **)realloc(queue->items, (size_t)cap * sizeof(*items));
+  if (!items)
+    return -1;
+  queue->items = items;
+  queue->cap = cap;
+  return 0;
+}
+
+static int sl_prompt_queue_append(sl_impl_t *impl, const char *text) {
+  char *copy;
+  if (!impl || !text)
+    return -1;
+  if (impl->prompt_queue.len >= impl->prompt_queue.max_entries)
+    return 1;
+  copy = sl_strdup(text);
+  if (!copy)
+    return -1;
+  if (sl_prompt_queue_reserve(&impl->prompt_queue,
+                              impl->prompt_queue.len + 1) != 0) {
+    free(copy);
+    return -1;
+  }
+  impl->prompt_queue.items[impl->prompt_queue.len++] = copy;
+  return 0;
+}
+
+static char *sl_prompt_queue_take(sl_prompt_queue_t *queue, int index) {
+  char *item;
+  int i;
+  if (!queue || index < 0 || index >= queue->len)
+    return NULL;
+  item = queue->items[index];
+  for (i = index; i + 1 < queue->len; i++)
+    queue->items[i] = queue->items[i + 1];
+  queue->len--;
+  return item;
+}
+
+static int sl_prompt_queue_enabled(const sl_impl_t *impl) {
+  return impl && impl->prompt_queue.enabled;
+}
+
+static void sl_statusline_clear(sl_statusline_t *statusline) {
+  size_t i;
+  if (!statusline)
+    return;
+  for (i = 0; i < SL_STATUS_MAX_ELEMENTS; i++) {
+    free(statusline->elements[i]);
+    statusline->elements[i] = NULL;
+  }
+  statusline->count = 0;
+  statusline->truncated = 0;
+}
+
+static int sl_statusline_text_valid(const char *text) {
+  size_t len;
+  size_t pos;
+  if (!text)
+    return 1;
+  len = strlen(text);
+  pos = 0;
+  while (pos < len) {
+    unsigned long codepoint;
+    size_t n;
+    n = sl_utf8_decode(text, len, pos, &codepoint);
+    if (n == 0 || ((unsigned char)text[pos] >= 0x80 && n == 1) ||
+        codepoint < 32 || codepoint == 127 ||
+        (codepoint >= 0x80 && codepoint <= 0x9f))
+      return 0;
+    pos += n;
+  }
+  return 1;
+}
+
+static const sl_theme_palette_t *sl_theme_palette(sl_prompt_theme_t theme) {
+  if (theme < SL_PROMPT_THEME_PLAIN || theme > SL_PROMPT_THEME_DEFAULT)
+    return NULL;
+  return &sl_theme_palettes[(int)theme];
+}
+
+static int sl_rgb_style(char *buf, size_t cap, sl_rgb_t rgb, int bold) {
+  int n;
+  n = snprintf(buf, cap, bold ? "\033[1;38;2;%u;%u;%um" : "\033[38;2;%u;%u;%um",
+               (unsigned int)rgb.red, (unsigned int)rgb.green,
+               (unsigned int)rgb.blue);
+  return n > 0 && n < (int)cap ? 0 : -1;
+}
+
 static int sl_write_all(int fd, const char *buf, size_t len) {
   while (len > 0) {
     ssize_t n;
@@ -93,6 +381,22 @@ static int sl_wstr(int fd, const char *s) {
 }
 
 static int sl_wchar(int fd, char c) { return sl_write_all(fd, &c, 1); }
+
+/* Let the output terminal's ONLCR setting perform carriage return expansion.
+ * Explicit CRLF on a normal terminal becomes CRCRLF and visibly jolts a TUI. */
+static int sl_write_line_break(sl_impl_t *impl) {
+  struct termios termios_state;
+  if (!impl)
+    return -1;
+  if (!isatty(impl->output_fd))
+    return sl_wchar(impl->output_fd, '\n');
+  if (isatty(impl->output_fd) &&
+      tcgetattr(impl->output_fd, &termios_state) == 0 &&
+      (termios_state.c_oflag & OPOST) != 0 &&
+      (termios_state.c_oflag & ONLCR) != 0)
+    return sl_wchar(impl->output_fd, '\n');
+  return sl_wstr(impl->output_fd, "\r\n");
+}
 
 static int sl_write_cursor_up(int fd, int rows) {
   char seq[32];
@@ -155,15 +459,26 @@ static int sl_set_scroll_region(int fd, int top, int bottom) {
 
 static int sl_reset_scroll_region(int fd) { return sl_wstr(fd, "\033[r"); }
 
-static int sl_scroll_region_up(int fd, int top, int bottom, int rows) {
+static void sl_release_auto_scroll_region(sl_impl_t *impl) {
+  if (!impl || !impl->auto_scroll_pinned)
+    return;
+  (void)sl_reset_scroll_region(impl->output_fd);
+  impl->auto_scroll_pinned = 0;
+}
+
+static int sl_scroll_region_up(sl_impl_t *impl, int top, int bottom, int rows) {
   int i;
+  int fd;
+  if (!impl)
+    return -1;
+  fd = impl->output_fd;
   if (rows <= 0 || bottom < top)
     return 0;
   if (sl_set_scroll_region(fd, top, bottom) != 0 ||
       sl_write_cursor_pos(fd, bottom, 0) != 0)
     return -1;
   for (i = 0; i < rows; i++) {
-    if (sl_wstr(fd, "\r\n") != 0) {
+    if (sl_write_line_break(impl) != 0) {
       (void)sl_reset_scroll_region(fd);
       return -1;
     }
@@ -187,6 +502,24 @@ static void sl_disable_bracketed_paste(sl_impl_t *impl) {
   (void)sl_wstr(impl->output_fd, "\033[?2004l");
 }
 
+static int sl_hide_cursor(sl_impl_t *impl) {
+  if (!impl || impl->cursor_hidden)
+    return impl ? 0 : -1;
+  if (sl_wstr(impl->output_fd, "\033[?25l") != 0)
+    return -1;
+  impl->cursor_hidden = 1;
+  return 0;
+}
+
+static int sl_show_cursor(sl_impl_t *impl) {
+  if (!impl || !impl->cursor_hidden)
+    return impl ? 0 : -1;
+  if (sl_wstr(impl->output_fd, "\033[?25h") != 0)
+    return -1;
+  impl->cursor_hidden = 0;
+  return 0;
+}
+
 static int sl_terminal_columns(sl_impl_t *impl) {
   struct winsize ws;
   if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
@@ -198,6 +531,8 @@ static int sl_terminal_columns(sl_impl_t *impl) {
 
 static int sl_terminal_width(sl_impl_t *impl) {
   int width;
+  if (impl && impl->auto_scroll_pinned)
+    return sl_terminal_columns(impl);
   if (!impl->dynamic_width && impl->screen_width > 0)
     return impl->screen_width;
   width = sl_terminal_columns(impl);
@@ -209,6 +544,11 @@ static int sl_terminal_width(sl_impl_t *impl) {
 static int sl_terminal_height(sl_impl_t *impl) {
   struct winsize ws;
   int height;
+  if (impl && impl->auto_scroll_pinned) {
+    if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+      return (int)ws.ws_row;
+    return 24;
+  }
   if (!impl->dynamic_height && impl->screen_height > 0)
     return impl->screen_height;
   if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
@@ -220,7 +560,17 @@ static int sl_terminal_height(sl_impl_t *impl) {
   return height > 0 ? height : 1;
 }
 
-static int sl_bounded_mode(sl_impl_t *impl) { return impl->bounded; }
+static int sl_bounded_mode(sl_impl_t *impl) {
+  return impl && (impl->bounded || impl->auto_scroll_pinned);
+}
+
+static int sl_box_left(sl_impl_t *impl) {
+  return impl && impl->auto_scroll_pinned ? 0 : impl->screen_x;
+}
+
+static int sl_box_top(sl_impl_t *impl) {
+  return impl && impl->auto_scroll_pinned ? 0 : impl->screen_y;
+}
 
 static int sl_box_width(sl_impl_t *impl) {
   int width;
@@ -229,6 +579,8 @@ static int sl_box_width(sl_impl_t *impl) {
 }
 
 static int sl_bounded_scroll_spans_full_width(sl_impl_t *impl) {
+  if (impl && impl->auto_scroll_pinned)
+    return 1;
   if (!impl || impl->screen_x != 0)
     return 0;
   return sl_box_width(impl) >= sl_terminal_columns(impl);
@@ -242,7 +594,27 @@ static int sl_clear_box_tail(sl_impl_t *impl, int from_col) {
   return sl_write_spaces(impl->output_fd, remaining);
 }
 
+/* A full-width box can use the terminal's erase primitive. This avoids
+ * visibly painting a run of spaces while dismissing a chat prompt. */
+static int sl_clear_bounded_tail(sl_impl_t *impl, int from_col) {
+  if (!impl)
+    return -1;
+  if (sl_bounded_scroll_spans_full_width(impl))
+    return sl_wstr(impl->output_fd, "\033[0K");
+  return sl_clear_box_tail(impl, from_col);
+}
+
+static int sl_clear_bounded_row(sl_impl_t *impl) {
+  if (!impl)
+    return -1;
+  if (sl_bounded_scroll_spans_full_width(impl))
+    return sl_wstr(impl->output_fd, "\033[2K");
+  return sl_clear_box_tail(impl, 0);
+}
+
 static int sl_box_bottom(sl_impl_t *impl) {
+  if (impl && impl->auto_scroll_pinned)
+    return sl_terminal_height(impl) - 1;
   return impl->screen_y + sl_terminal_height(impl) - 1;
 }
 
@@ -255,8 +627,8 @@ static int sl_prompt_top(sl_impl_t *impl, int prompt_rows) {
   if (prompt_rows > height)
     prompt_rows = height;
   top = sl_box_bottom(impl) - prompt_rows + 1;
-  if (top < impl->screen_y)
-    top = impl->screen_y;
+  if (top < sl_box_top(impl))
+    top = sl_box_top(impl);
   return top;
 }
 
@@ -1306,6 +1678,8 @@ static void sl_render_store_clear(sl_impl_t *impl) {
   impl->rendered_rows = 0;
   impl->rendered_cursor_row = 0;
   impl->rendered_cursor_col = 0;
+  impl->rendered_width = 0;
+  impl->rendered_height = 0;
 }
 
 static int sl_render_store_reserve(sl_impl_t *impl, int rows) {
@@ -1385,6 +1759,66 @@ static int sl_row_equal(sl_impl_t *impl, sl_render_t *render, int row,
                 impl->rendered_lens[row]) == 0;
 }
 
+static size_t sl_ansi_sequence_len(const char *text, size_t len, size_t pos) {
+  size_t i;
+  if (!text || pos + 2 > len || text[pos] != '\033' || text[pos + 1] != '[')
+    return 0;
+  i = pos + 2;
+  while (i < len && (text[i] < '@' || text[i] > '~'))
+    i++;
+  return i < len ? i - pos + 1 : 0;
+}
+
+static int sl_row_prefix_cols(const char *text, size_t len) {
+  int cols;
+  size_t pos;
+  cols = 0;
+  pos = 0;
+  while (pos < len) {
+    int cells;
+    size_t ansi_len;
+    size_t char_len;
+    ansi_len = sl_ansi_sequence_len(text, len, pos);
+    if (ansi_len > 0) {
+      pos += ansi_len;
+      continue;
+    }
+    char_len = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (char_len == 0)
+      break;
+    cols += cells;
+    pos += char_len;
+  }
+  return cols;
+}
+
+/* Return a cluster-safe byte prefix shared by two retained view rows. */
+static size_t sl_row_shared_prefix(const char *old_text, size_t old_len,
+                                   const char *new_text, size_t new_len) {
+  size_t pos;
+  size_t limit;
+  pos = 0;
+  limit = old_len < new_len ? old_len : new_len;
+  while (pos < limit && old_text[pos] == new_text[pos]) {
+    size_t ansi_len;
+    int cells;
+    size_t char_len;
+    ansi_len = sl_ansi_sequence_len(new_text, limit, pos);
+    if (ansi_len > 0) {
+      if (memcmp(old_text + pos, new_text + pos, ansi_len) != 0)
+        break;
+      pos += ansi_len;
+      continue;
+    }
+    char_len = sl_utf8_cluster_len_width(new_text, limit, pos, &cells);
+    if (char_len == 0 || pos + char_len > limit ||
+        memcmp(old_text + pos, new_text + pos, char_len) != 0)
+      break;
+    pos += char_len;
+  }
+  return pos;
+}
+
 static int sl_render_visible_equal(sl_impl_t *impl, sl_render_t *render,
                                    int first_row, int row_count, int cursor_row,
                                    int cursor_col, int top_row) {
@@ -1455,6 +1889,421 @@ static int sl_word_width(const char *buf, size_t len, size_t pos,
   return width;
 }
 
+static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
+                                       int available, const char *style) {
+  size_t pos;
+  size_t len;
+  int cols;
+  int screen_cols;
+  int clipped;
+  const char *reset;
+  if (!row || !text || available < 1)
+    return 0;
+  reset = style && style[0] != '\0' ? "\033[0m" : "";
+  if (sl_row_append(row, style ? style : "", style ? strlen(style) : 0) != 0)
+    return -1;
+  pos = 0;
+  len = strlen(text);
+  cols = 0;
+  screen_cols = row->cols;
+  clipped = 0;
+  while (pos < len && text[pos] != '\n') {
+    unsigned char ch;
+    unsigned long codepoint;
+    int cells;
+    int escaped_control;
+    size_t n;
+    char visible[9];
+    ch = (unsigned char)text[pos];
+    n = 1;
+    escaped_control = 0;
+    if (ch == '\t') {
+      cells = 8 - (screen_cols % 8);
+      memset(visible, ' ', (size_t)cells);
+      visible[cells] = '\0';
+    } else if (ch < 0x20 || ch == 0x7f) {
+      cells = 2;
+      visible[0] = '^';
+      visible[1] = ch == 0x7f ? '?' : (char)(ch + '@');
+      visible[2] = '\0';
+    } else if (ch >= 0x80 && ch <= 0x9f) {
+      cells = 4;
+      (void)snprintf(visible, sizeof(visible), "\\x%02X", ch);
+      escaped_control = 1;
+    } else {
+      n = sl_utf8_decode(text, len, pos, &codepoint);
+      if (n == 0) {
+        n = 1;
+        cells = 1;
+      } else if (codepoint >= 0x80 && codepoint <= 0x9f) {
+        cells = 4;
+        (void)snprintf(visible, sizeof(visible), "\\x%02lX", codepoint);
+        escaped_control = 1;
+      } else {
+        n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+        if (n == 0) {
+          n = 1;
+          cells = 1;
+        }
+      }
+    }
+    if (cells > 0 && cols + cells > available) {
+      clipped = 1;
+      break;
+    }
+    if (ch == '\t' || ch < 0x20 || ch == 0x7f || escaped_control) {
+      if (sl_row_append_cells(row, visible, strlen(visible), cells) != 0)
+        return -1;
+    } else if (sl_row_append_cells(row, text + pos, n, cells) != 0) {
+      return -1;
+    }
+    cols += cells;
+    screen_cols += cells;
+    pos += n;
+  }
+  if (pos < len)
+    clipped = 1;
+  if (clipped && available - cols >= 3 &&
+      sl_row_append_cells(row, "...", 3, 3) != 0)
+    return -1;
+  return sl_row_append(row, reset, strlen(reset));
+}
+
+static const char *sl_prompt_theme_style(sl_prompt_theme_t theme) {
+  if (theme == SL_PROMPT_THEME_DEFAULT)
+    return "\033[1;97m";
+  if (theme == SL_PROMPT_THEME_ACCENT)
+    return "\033[1;36m";
+  if (theme == SL_PROMPT_THEME_DRACULA)
+    return "\033[38;2;98;114;164m";
+  if (theme == SL_PROMPT_THEME_GRUVBOX)
+    return "\033[1;38;2;184;187;38m";
+  if (theme == SL_PROMPT_THEME_MONOCHROME)
+    return "\033[1;38;2;168;118;40m";
+  if (theme == SL_PROMPT_THEME_MONOGREEN)
+    return "\033[1;38;2;22;122;31m";
+  if (theme == SL_PROMPT_THEME_OUTRUN)
+    return "\033[38;2;78;69;99m";
+  if (theme == SL_PROMPT_THEME_RICED)
+    return "\033[1;38;2;255;255;255m";
+  if (theme == SL_PROMPT_THEME_SYNTHWAVE)
+    return "\033[1;38;2;255;126;219m";
+  return "";
+}
+
+static int sl_prompt_input_style(const sl_impl_t *impl, char *style,
+                                 size_t style_cap) {
+  const sl_theme_palette_t *palette;
+  if (!impl || !style || style_cap == 0)
+    return -1;
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (!palette || (palette->input.red == 0 && palette->input.green == 0 &&
+                   palette->input.blue == 0)) {
+    style[0] = '\0';
+    return 0;
+  }
+  return sl_rgb_style(style, style_cap, palette->input, palette->input_bold);
+}
+
+static int sl_render_close_input_row(sl_render_t *render,
+                                     const char *input_style) {
+  if (!render || !input_style)
+    return -1;
+  if (input_style[0] == '\0')
+    return 0;
+  return sl_row_append(&render->rows[render->count - 1], "\033[0m", 4);
+}
+
+static int sl_render_new_input_row(sl_render_t *render, int indent,
+                                   size_t start, const char *input_style) {
+  if (sl_render_close_input_row(render, input_style) != 0 ||
+      sl_render_new_indented_row(render, indent, start) != 0)
+    return -1;
+  if (input_style[0] == '\0')
+    return 0;
+  return sl_row_append(&render->rows[render->count - 1], input_style,
+                       strlen(input_style));
+}
+
+static int sl_row_append_styled(sl_row_t *row, const char *text,
+                                const char *style) {
+  const char *reset;
+  if (!row || !text)
+    return -1;
+  reset = style && style[0] != '\0' ? "\033[0m" : "";
+  return sl_row_append(row, style ? style : "", style ? strlen(style) : 0) ||
+                 sl_row_append_cells(row, text, strlen(text),
+                                     sl_text_width(text, strlen(text))) ||
+                 sl_row_append(row, reset, strlen(reset))
+             ? -1
+             : 0;
+}
+
+static int sl_statusline_spinner_advance(sl_statusline_t *statusline) {
+  struct timeval now;
+  long elapsed_ms;
+  if (!statusline || !statusline->spinner || !statusline->busy)
+    return 0;
+  if (gettimeofday(&now, NULL) != 0)
+    return 0;
+  if (!statusline->spinner_time_valid) {
+    statusline->spinner_time = now;
+    statusline->spinner_time_valid = 1;
+    return 1;
+  }
+  elapsed_ms = (long)(now.tv_sec - statusline->spinner_time.tv_sec) * 1000L +
+               (long)(now.tv_usec - statusline->spinner_time.tv_usec) / 1000L;
+  if (elapsed_ms < 500L)
+    return 0;
+  statusline->spinner_frame = (statusline->spinner_frame + 1) % 4;
+  statusline->spinner_time = now;
+  return 1;
+}
+
+static int sl_statusline_append_wrapped(sl_render_t *render, int width,
+                                        int *col, const char *text,
+                                        const char *style, int indent) {
+  size_t pos;
+  size_t len;
+  const char *reset;
+  if (!render || !col || !text || width < 1)
+    return -1;
+  len = strlen(text);
+  if (len == 0)
+    return 0;
+  reset = style && style[0] != '\0' ? "\033[0m" : "";
+  if (sl_row_append(&render->rows[render->count - 1], style ? style : "",
+                    style ? strlen(style) : 0) != 0)
+    return -1;
+  pos = 0;
+  while (pos < len) {
+    int cells;
+    size_t n;
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0) {
+      n = 1;
+      cells = 1;
+    }
+    if (cells > width - *col && *col > 0) {
+      if (sl_row_append(&render->rows[render->count - 1], reset,
+                        strlen(reset)) != 0 ||
+          sl_render_new_row_at(render, 0, 0) != 0)
+        return -1;
+      *col = 0;
+      if (indent > 0 && cells <= width - indent) {
+        if (sl_row_append_cells(&render->rows[render->count - 1], "  ",
+                                (size_t)indent, indent) != 0)
+          return -1;
+        *col = indent;
+      }
+      if (sl_row_append(&render->rows[render->count - 1], style ? style : "",
+                        style ? strlen(style) : 0) != 0)
+        return -1;
+    }
+    if (cells > width - *col) {
+      pos += n;
+      continue;
+    }
+    if (sl_row_append_cells(&render->rows[render->count - 1], text + pos, n,
+                            cells) != 0)
+      return -1;
+    *col += cells;
+    pos += n;
+  }
+  return sl_row_append(&render->rows[render->count - 1], reset, strlen(reset));
+}
+
+static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
+                                       int width) {
+  static const char spinner_frames[] = "/-\\|";
+  static const sl_rgb_t busy_colour = {255, 51, 51};
+  static const sl_rgb_t idle_colour = {57, 255, 20};
+  static const char *const default_element_styles[] = {
+      "\033[36m", "\033[33m", "\033[35m", "\033[34m",
+      "\033[32m", "\033[31m", "\033[37m", "\033[97m"};
+  sl_impl_t *impl;
+  sl_statusline_t *statusline;
+  const sl_theme_palette_t *palette;
+  const char *default_style;
+  char marker[3];
+  char style[32];
+  int col;
+  int marker_width;
+  int have_element;
+  size_t i;
+  impl = sl_impl(self);
+  if (!impl || !render || !impl->statusline.enabled)
+    return 0;
+  statusline = &impl->statusline;
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (sl_render_new_row_at(render, 0, 0) != 0)
+    return -1;
+  if (statusline->spinner && statusline->busy) {
+    (void)sl_statusline_spinner_advance(statusline);
+    marker[0] = spinner_frames[statusline->spinner_frame];
+    marker[1] = ' ';
+    marker[2] = '\0';
+    marker_width = 2;
+  } else if (statusline->busy) {
+    marker[0] = 'x';
+    marker[1] = ' ';
+    marker[2] = '\0';
+    marker_width = 2;
+  } else {
+    marker[0] = statusline->idle_marker ? statusline->idle_marker : ' ';
+    marker[1] = ' ';
+    marker[2] = '\0';
+    marker_width = 2;
+  }
+  if (marker_width > width)
+    marker_width = width;
+  marker[marker_width] = '\0';
+  default_style = NULL;
+  if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT &&
+      (statusline->busy || statusline->idle_marker != '\0')) {
+    default_style = statusline->busy ? "\033[31m" : "\033[32m";
+  }
+  if (default_style) {
+    if (sl_row_append_styled(&render->rows[render->count - 1], marker,
+                             default_style) != 0)
+      return -1;
+  } else if ((statusline->busy || statusline->idle_marker != '\0') && palette &&
+             impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+    sl_rgb_t colour;
+    colour = statusline->busy ? busy_colour : idle_colour;
+    if (sl_rgb_style(style, sizeof(style), colour, 0) != 0 ||
+        sl_row_append_styled(&render->rows[render->count - 1], marker, style) !=
+            0)
+      return -1;
+  } else if (marker_width > 0 &&
+             sl_row_append_cells(&render->rows[render->count - 1], marker,
+                                 (size_t)marker_width, marker_width) != 0) {
+    return -1;
+  }
+  col = marker_width;
+  have_element = 0;
+  for (i = 0; i < statusline->count; i++) {
+    const char *element;
+    int element_width;
+    int indent;
+    element = statusline->elements[i];
+    if (!element || element[0] == '\0')
+      continue;
+    element_width = sl_text_width(element, strlen(element));
+    indent = marker_width > 0 && width > 2 ? 2 : 0;
+    if ((have_element && element_width + 3 > width - col) ||
+        (!have_element && element_width > width - col)) {
+      if (sl_render_new_row_at(render, 0, 0) != 0 ||
+          (indent > 0 &&
+           sl_row_append_cells(&render->rows[render->count - 1], "  ",
+                               (size_t)indent, indent) != 0))
+        return -1;
+      col = indent;
+      have_element = 0;
+    }
+    if (have_element) {
+      if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
+        if (sl_row_append_styled(&render->rows[render->count - 1], " : ",
+                                 "\033[90m") != 0)
+          return -1;
+      } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+        if (sl_rgb_style(style, sizeof(style), palette->separator, 0) != 0 ||
+            sl_row_append_styled(&render->rows[render->count - 1], " : ",
+                                 style) != 0)
+          return -1;
+      } else if (sl_row_append_cells(&render->rows[render->count - 1], " : ", 3,
+                                     3) != 0) {
+        return -1;
+      }
+      col += 3;
+    }
+    if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
+      if (sl_statusline_append_wrapped(
+              render, width, &col, element,
+              default_element_styles[(statusline->start_element + i) % 8],
+              indent) != 0)
+        return -1;
+    } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+      if (sl_rgb_style(style, sizeof(style),
+                       palette->elements[(statusline->start_element + i) % 8],
+                       0) != 0 ||
+          sl_statusline_append_wrapped(render, width, &col, element, style,
+                                       indent) != 0)
+        return -1;
+    } else if (sl_statusline_append_wrapped(render, width, &col, element, "",
+                                            indent) != 0) {
+      return -1;
+    }
+    have_element = 1;
+  }
+  return 0;
+}
+
+static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
+                                        int width) {
+  sl_impl_t *impl;
+  sl_prompt_queue_t *queue;
+  const char *control_style;
+  const char *text_style;
+  const sl_theme_palette_t *palette;
+  char queue_style[32];
+  char queue_text_style[32];
+  int i;
+  int shown;
+  impl = sl_impl(self);
+  if (!sl_prompt_queue_enabled(impl) || !render)
+    return 0;
+  queue = &impl->prompt_queue;
+  if (queue->len == 0)
+    return 0;
+  control_style = "";
+  text_style = "";
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
+    control_style = "\033[90m";
+    text_style = "\033[90m";
+  } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+    if (sl_rgb_style(queue_style, sizeof(queue_style), palette->queue, 0) !=
+            0 ||
+        sl_rgb_style(queue_text_style, sizeof(queue_text_style),
+                     palette->queue_text, 0) != 0)
+      return -1;
+    control_style = queue_style;
+    text_style = queue_text_style;
+  }
+  shown = queue->preview_entries;
+  if (shown > queue->len)
+    shown = queue->len;
+  for (i = 0; i < shown; i++) {
+    char prefix[32];
+    char number[24];
+    const char *entry_prefix;
+    int prefix_width;
+    sl_row_t *row;
+    if (sl_render_new_row_at(render, 0, 0) != 0)
+      return -1;
+    row = &render->rows[render->count - 1];
+    (void)snprintf(number, sizeof(number), "%d. ", i + 1);
+    entry_prefix = i == 0 ? "Q " : "  ";
+    (void)snprintf(prefix, sizeof(prefix), "%s%s", entry_prefix, number);
+    if (sl_queue_row_append_preview(row, prefix, width, control_style) != 0)
+      return -1;
+    prefix_width = row->cols;
+    if (sl_queue_row_append_preview(row, queue->items[i], width - prefix_width,
+                                    text_style) != 0)
+      return -1;
+  }
+  if (shown < queue->len) {
+    char more[64];
+    (void)snprintf(more, sizeof(more), "  ... %d more", queue->len - shown);
+    if (sl_render_new_row_at(render, 0, 0) != 0 ||
+        sl_queue_row_append_preview(&render->rows[render->count - 1], more,
+                                    width, control_style) != 0)
+      return -1;
+  }
+  return 0;
+}
+
 static int sl_render_build(sl_t *self, const char *prompt,
                            sl_render_t *render) {
   sl_impl_t *impl;
@@ -1462,6 +2311,8 @@ static int sl_render_build(sl_t *self, const char *prompt,
   int col;
   int prompt_width;
   int indent;
+  const char *prompt_style;
+  char input_style[32];
   size_t i;
   memset(render, 0, sizeof(*render));
   impl = sl_impl(self);
@@ -1472,18 +2323,35 @@ static int sl_render_build(sl_t *self, const char *prompt,
   width = sl_terminal_width(impl);
   if (width < 1)
     width = 1;
+  if (sl_render_append_queue_panel(self, render, width) != 0)
+    return -1;
+  if (sl_render_append_statusline(self, render, width) != 0)
+    return -1;
+  render->editor_first = render->count;
+  prompt_style = sl_prompt_theme_style(impl->prompt_theme);
   prompt_width = prompt ? sl_text_width(prompt, strlen(prompt)) : 0;
   if (sl_render_new_row_at(render, 0, prompt_width) != 0)
     return -1;
+  if (sl_prompt_input_style(impl, input_style, sizeof(input_style)) != 0)
+    return -1;
   if (prompt && prompt[0] != '\0' &&
-      sl_row_append(&render->rows[0], prompt, strlen(prompt)) != 0)
+      (sl_row_append(&render->rows[render->editor_first], prompt_style,
+                     strlen(prompt_style)) != 0 ||
+       sl_row_append(&render->rows[render->editor_first], prompt,
+                     strlen(prompt)) != 0 ||
+       (prompt_style[0] != '\0' &&
+        sl_row_append(&render->rows[render->editor_first], "\033[0m", 4) != 0)))
+    return -1;
+  if (input_style[0] != '\0' &&
+      sl_row_append(&render->rows[render->editor_first], input_style,
+                    strlen(input_style)) != 0)
     return -1;
   indent = prompt_width;
   if (indent >= width)
     indent = width > 1 ? width - 1 : 0;
   col = prompt_width;
   if (impl->cursor == 0) {
-    render->cursor_row = 0;
+    render->cursor_row = render->editor_first;
     render->cursor_col = col;
   }
   i = 0;
@@ -1501,7 +2369,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
         render->cursor_col = col;
       }
       render->rows[render->count - 1].end = i;
-      if (sl_render_new_indented_row(render, indent, i + 1) != 0)
+      if (sl_render_new_input_row(render, indent, i + 1, input_style) != 0)
         return -1;
       col = indent;
       i++;
@@ -1523,7 +2391,8 @@ static int sl_render_build(sl_t *self, const char *prompt,
       if (word_len > 0 && word_width <= avail &&
           col + (int)spaces + word_width > width) {
         render->rows[render->count - 1].end = i;
-        if (sl_render_new_indented_row(render, indent, i + spaces) != 0)
+        if (sl_render_new_input_row(render, indent, i + spaces, input_style) !=
+            0)
           return -1;
         col = indent;
         if (impl->cursor >= i && impl->cursor <= i + spaces) {
@@ -1544,13 +2413,13 @@ static int sl_render_build(sl_t *self, const char *prompt,
       if (avail < 1)
         avail = 1;
       if (word_width <= avail && col + word_width > width) {
-        if (sl_render_new_indented_row(render, indent, i) != 0)
+        if (sl_render_new_input_row(render, indent, i, input_style) != 0)
           return -1;
         col = indent;
       }
     }
     if (col >= width || (char_width > 0 && col + char_width > width)) {
-      if (sl_render_new_indented_row(render, indent, i) != 0)
+      if (sl_render_new_input_row(render, indent, i, input_style) != 0)
         return -1;
       col = indent;
     }
@@ -1563,7 +2432,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
       spaces = 8 - (col % 8);
       while (spaces-- > 0) {
         if (col >= width) {
-          if (sl_render_new_indented_row(render, indent, i) != 0)
+          if (sl_render_new_input_row(render, indent, i, input_style) != 0)
             return -1;
           col = indent;
         }
@@ -1583,13 +2452,15 @@ static int sl_render_build(sl_t *self, const char *prompt,
   }
   if (impl->cursor == impl->len) {
     if (col >= width) {
-      if (sl_render_new_indented_row(render, indent, impl->len) != 0)
+      if (sl_render_new_input_row(render, indent, impl->len, input_style) != 0)
         return -1;
       col = indent;
     }
     render->cursor_row = render->count - 1;
     render->cursor_col = col;
   }
+  if (sl_render_close_input_row(render, input_style) != 0)
+    return -1;
   return 0;
 }
 
@@ -1637,7 +2508,7 @@ static int sl_move_visual(sl_t *self, const char *prompt, int direction) {
     return 0;
   }
   target_row = render.cursor_row + direction;
-  if (target_row < 0 || target_row >= render.count) {
+  if (target_row < render.editor_first || target_row >= render.count) {
     sl_render_free(&render);
     return 0;
   }
@@ -1660,13 +2531,41 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   int old_top;
   int clear_top;
   int clear_bottom;
+  int current_row;
+  int current_col;
   int i;
   int rc;
   int height;
+  int width;
+  char input_style[32];
+  int input_styled;
   impl = sl_impl(self);
   if (!impl)
     return -1;
+  if (sl_prompt_input_style(impl, input_style, sizeof(input_style)) != 0)
+    return -1;
+  input_styled = input_style[0] != '\0';
   height = sl_terminal_height(impl);
+  width = sl_box_width(impl);
+  if (impl->rendered_rows > 0 &&
+      (impl->rendered_width != width || impl->rendered_height != height)) {
+    clear_top = sl_box_top(impl);
+    clear_bottom = sl_box_bottom(impl);
+    if (impl->auto_scroll_pinned) {
+      clear_top = impl->rendered_top_row;
+      clear_bottom = clear_top + impl->rendered_rows - 1;
+      if (clear_top < sl_box_top(impl))
+        clear_top = sl_box_top(impl);
+      if (clear_bottom > sl_box_bottom(impl))
+        clear_bottom = sl_box_bottom(impl);
+    }
+    for (i = clear_top; i <= clear_bottom; i++) {
+      if (sl_write_cursor_pos(impl->output_fd, i, sl_box_left(impl)) != 0 ||
+          sl_clear_bounded_row(impl) != 0)
+        return -1;
+    }
+    sl_render_store_clear(impl);
+  }
   visible = render->count;
   if (visible > height)
     visible = height;
@@ -1688,47 +2587,99 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     return 0;
   old_rows = impl->rendered_rows;
   old_top = impl->rendered_top_row;
+  current_row = old_rows > 0 && old_top == top ? impl->rendered_cursor_row : -1;
+  current_col = old_rows > 0 && old_top == top ? impl->rendered_cursor_col : -1;
   rc = 0;
 
   if (old_rows > 0 && old_top != top) {
-    if (top < old_top && sl_scroll_region_up(impl->output_fd, impl->screen_y,
-                                             old_top - 1, old_top - top) != 0)
-      rc = -1;
-    clear_top = old_top < top ? old_top : top;
-    clear_bottom = sl_box_bottom(impl);
-    for (i = clear_top; rc == 0 && i <= clear_bottom; i++) {
-      if (sl_write_cursor_pos(impl->output_fd, i, impl->screen_x) != 0 ||
-          sl_clear_box_tail(impl, 0) != 0)
+    if (old_top >= sl_box_top(impl)) {
+      if (top < old_top && sl_scroll_region_up(impl, sl_box_top(impl),
+                                               old_top - 1, old_top - top) != 0)
         rc = -1;
+      clear_top = old_top < top ? old_top : top;
+      clear_bottom = sl_box_bottom(impl);
+      for (i = clear_top; rc == 0 && i <= clear_bottom; i++) {
+        if (sl_write_cursor_pos(impl->output_fd, i, sl_box_left(impl)) != 0 ||
+            sl_clear_bounded_row(impl) != 0)
+          rc = -1;
+      }
     }
     sl_render_store_clear(impl);
     old_rows = 0;
+    current_row = -1;
+    current_col = -1;
   }
 
   for (i = 0; rc == 0 && i < visible; i++) {
     int render_row;
+    int patch_row;
+    int prefix_col;
+    size_t prefix_len;
     render_row = first + i;
     if (i >= old_rows || !sl_row_equal(impl, render, i, render_row)) {
-      if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0)
-        rc = -1;
-      if (rc == 0 && render->rows[render_row].len > 0 &&
-          sl_write_all(impl->output_fd, render->rows[render_row].text,
-                       render->rows[render_row].len) != 0)
-        rc = -1;
+      patch_row = 0;
+      prefix_len = 0;
+      prefix_col = 0;
+      if (!input_styled && i < old_rows && render_row >= render->editor_first) {
+        prefix_len = sl_row_shared_prefix(
+            impl->rendered_lines[i], impl->rendered_lens[i],
+            render->rows[render_row].text, render->rows[render_row].len);
+        if (prefix_len > 0) {
+          prefix_col =
+              sl_row_prefix_cols(render->rows[render_row].text, prefix_len);
+          patch_row = 1;
+        }
+      }
+      if (!patch_row) {
+        if (sl_write_cursor_pos(impl->output_fd, top + i, sl_box_left(impl)) !=
+            0)
+          rc = -1;
+        if (rc == 0 && render->rows[render_row].len > 0 &&
+            sl_write_all(impl->output_fd, render->rows[render_row].text,
+                         render->rows[render_row].len) != 0)
+          rc = -1;
+        current_row = i;
+        current_col = render->rows[render_row].cols;
+      } else {
+        if (current_row != i || current_col != prefix_col) {
+          if (sl_write_cursor_pos(impl->output_fd, top + i,
+                                  sl_box_left(impl) + prefix_col) != 0)
+            rc = -1;
+        }
+        if (rc == 0 && prefix_len < render->rows[render_row].len &&
+            sl_write_all(impl->output_fd,
+                         render->rows[render_row].text + prefix_len,
+                         render->rows[render_row].len - prefix_len) != 0)
+          rc = -1;
+        current_row = i;
+        current_col = render->rows[render_row].cols;
+      }
       if (rc == 0 &&
           (i >= old_rows ||
            impl->rendered_cols[i] > render->rows[render_row].cols) &&
-          sl_clear_box_tail(impl, render->rows[render_row].cols) != 0)
+          sl_clear_bounded_tail(impl, render->rows[render_row].cols) != 0)
         rc = -1;
+      if ((i >= old_rows ||
+           impl->rendered_cols[i] > render->rows[render_row].cols) &&
+          !sl_bounded_scroll_spans_full_width(impl)) {
+        current_row = -1;
+        current_col = -1;
+      }
     }
   }
   for (i = visible; rc == 0 && i < old_rows; i++) {
-    if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0 ||
-        sl_clear_box_tail(impl, 0) != 0)
+    if (sl_write_cursor_pos(impl->output_fd, top + i, sl_box_left(impl)) != 0 ||
+        sl_clear_bounded_row(impl) != 0)
       rc = -1;
+    current_row = -1;
+    current_col = -1;
   }
-  if (rc == 0 && sl_write_cursor_pos(impl->output_fd, top + cursor_row,
-                                     impl->screen_x + render->cursor_col) != 0)
+  if (rc == 0 &&
+      (current_row != cursor_row || current_col != render->cursor_col) &&
+      sl_write_cursor_pos(impl->output_fd, top + cursor_row,
+                          sl_box_left(impl) + render->cursor_col) != 0)
+    rc = -1;
+  if (rc == 0 && sl_show_cursor(impl) != 0)
     rc = -1;
   if (rc == 0 &&
       sl_render_store_update(impl, render, first, visible, cursor_row,
@@ -1736,6 +2687,12 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     sl_set_error(self, "out of memory while storing terminal render state");
     rc = -1;
   }
+  if (rc == 0) {
+    impl->rendered_width = width;
+    impl->rendered_height = height;
+  }
+  if (rc != 0)
+    (void)sl_show_cursor(impl);
   return rc;
 }
 
@@ -1747,7 +2704,6 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   int i;
   int fd;
   int rc;
-  int initial;
   impl = sl_impl(self);
   if (!impl)
     return -1;
@@ -1771,9 +2727,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   fd = impl->output_fd;
   rc = 0;
   old_rows = impl->rendered_rows;
-  initial = old_rows == 0;
-  if (!initial && (sl_wchar(fd, '\r') != 0 ||
-                   sl_write_cursor_up(fd, impl->rendered_cursor_row) != 0))
+  if (old_rows > 0 && (sl_wchar(fd, '\r') != 0 ||
+                       sl_write_cursor_up(fd, impl->rendered_cursor_row) != 0))
     rc = -1;
   max_rows = old_rows > render.count ? old_rows : render.count;
   for (i = 0; rc == 0 && i < max_rows; i++) {
@@ -1790,12 +2745,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
         rc = -1;
     }
     if (rc == 0 && i + 1 < max_rows) {
-      if (initial) {
-        if (sl_wstr(fd, "\r\n") != 0)
-          rc = -1;
-      } else if (sl_wstr(fd, "\r\n") != 0) {
+      if (sl_write_line_break(impl) != 0)
         rc = -1;
-      }
     }
   }
   if (rc == 0) {
@@ -1816,18 +2767,56 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   return rc;
 }
 
-static int sl_render_finish(sl_t *self) {
+static int sl_render_finish(sl_t *self, int queue_dispatch) {
   sl_impl_t *impl;
   impl = sl_impl(self);
   if (!impl)
     return -1;
+  if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN &&
+      sl_wstr(impl->output_fd, "\033[0m") != 0)
+    return -1;
+  if (impl->auto_scroll_pinned) {
+    if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
+      int top;
+      top = impl->rendered_top_row;
+      if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
+        (void)sl_show_cursor(impl);
+        return -1;
+      }
+      sl_release_auto_scroll_region(impl);
+      if (sl_write_cursor_pos(impl->output_fd, top, 0) != 0 ||
+          sl_show_cursor(impl) != 0)
+        return -1;
+      return 0;
+    }
+    sl_release_auto_scroll_region(impl);
+    if (sl_write_line_break(impl) != 0) {
+      sl_set_error(self, "failed to write final newline");
+      return -1;
+    }
+    sl_render_store_clear(impl);
+    return 0;
+  }
   if (sl_bounded_mode(impl)) {
+    if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
+      if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
+        (void)sl_show_cursor(impl);
+        return -1;
+      }
+    }
     if (sl_write_cursor_pos(impl->output_fd, sl_box_bottom(impl) + 1, 0) != 0)
       return -1;
     sl_render_store_clear(impl);
     return 0;
   }
-  if (sl_wstr(impl->output_fd, "\r\n") != 0) {
+  if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
+    if (sl_render_clear_active(self) != 0) {
+      sl_set_error(self, "failed to clear queued prompt before dispatch");
+      return -1;
+    }
+    return 0;
+  }
+  if (sl_write_line_break(impl) != 0) {
     sl_set_error(self, "failed to write final newline");
     return -1;
   }
@@ -1843,13 +2832,18 @@ static int sl_render_clear_active(sl_t *self) {
   if (!impl || impl->rendered_rows <= 0)
     return 0;
   if (sl_bounded_mode(impl)) {
+    if (sl_hide_cursor(impl) != 0)
+      return -1;
     for (i = 0; i < impl->rendered_rows; i++) {
       if (sl_write_cursor_pos(impl->output_fd, impl->rendered_top_row + i,
-                              impl->screen_x) != 0 ||
-          sl_clear_box_tail(impl, 0) != 0)
+                              sl_box_left(impl)) != 0 ||
+          sl_clear_bounded_row(impl) != 0)
         return -1;
     }
     sl_render_store_clear(impl);
+    if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN &&
+        sl_wstr(impl->output_fd, "\033[0m") != 0)
+      return -1;
     return 0;
   }
   rows = impl->rendered_rows;
@@ -1867,13 +2861,21 @@ static int sl_render_clear_active(sl_t *self) {
       sl_wchar(impl->output_fd, '\r') != 0)
     return -1;
   sl_render_store_clear(impl);
+  if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN &&
+      sl_wstr(impl->output_fd, "\033[0m") != 0)
+    return -1;
   return 0;
 }
 
-static int sl_write_stream_chunk(int fd, const char *chunk, size_t len) {
+static int sl_write_stream_chunk(sl_impl_t *impl, const char *chunk,
+                                 size_t len) {
   const char *p;
   const char *start;
   size_t n;
+  int fd;
+  if (!impl)
+    return -1;
+  fd = impl->output_fd;
   p = chunk;
   start = chunk;
   while ((size_t)(p - chunk) < len) {
@@ -1881,7 +2883,7 @@ static int sl_write_stream_chunk(int fd, const char *chunk, size_t len) {
       n = (size_t)(p - start);
       if (n > 0 && sl_write_all(fd, start, n) != 0)
         return -1;
-      if (sl_wstr(fd, "\r\n") != 0)
+      if (sl_write_line_break(impl) != 0)
         return -1;
       p++;
       start = p;
@@ -1914,7 +2916,83 @@ static int sl_write_stream(sl_t *self, sl_stream_callback_t callback,
       return SL_OK;
     if (!chunk)
       return SL_ERROR_INVALID;
-    if (sl_write_stream_chunk(impl->output_fd, chunk, len) != 0)
+    if (sl_write_stream_chunk(impl, chunk, len) != 0)
+      return SL_ERROR_IO;
+  }
+}
+
+/* A live transcript owns the row immediately above the fixed prompt. Scroll
+ * before its first byte and defer a trailing newline, so a complete message
+ * remains on that bottom transcript row instead of being scrolled one row too
+ * far upward. */
+static int sl_write_scroll_stream_chunk(sl_impl_t *impl, const char *chunk,
+                                        size_t len, int *pending_newline) {
+  const char *p;
+  const char *start;
+  size_t n;
+  if (!impl || !chunk || !pending_newline)
+    return -1;
+  p = chunk;
+  start = chunk;
+  while ((size_t)(p - chunk) < len) {
+    if (*p == '\n') {
+      n = (size_t)(p - start);
+      if (*pending_newline && sl_write_line_break(impl) != 0)
+        return -1;
+      *pending_newline = 1;
+      if (n > 0 && sl_write_all(impl->output_fd, start, n) != 0)
+        return -1;
+      p++;
+      start = p;
+    } else {
+      if (*pending_newline) {
+        if (sl_write_line_break(impl) != 0)
+          return -1;
+        *pending_newline = 0;
+      }
+      p++;
+    }
+  }
+  n = (size_t)(p - start);
+  if (*pending_newline && n > 0) {
+    if (sl_write_line_break(impl) != 0)
+      return -1;
+    *pending_newline = 0;
+  }
+  if (n > 0 && sl_write_all(impl->output_fd, start, n) != 0)
+    return -1;
+  return 0;
+}
+
+static int sl_write_scroll_stream(sl_t *self, sl_stream_callback_t callback,
+                                  void *userdata) {
+  sl_impl_t *impl;
+  int started;
+  int pending_newline;
+  impl = sl_impl(self);
+  if (!impl || !callback)
+    return SL_ERROR_INVALID;
+  started = 0;
+  pending_newline = 0;
+  for (;;) {
+    const char *chunk;
+    size_t len;
+    int rc;
+    chunk = NULL;
+    len = 0;
+    rc = callback(self, userdata, &chunk, &len);
+    if (rc != SL_OK)
+      return rc;
+    if (len == 0)
+      return SL_OK;
+    if (!chunk)
+      return SL_ERROR_INVALID;
+    if (!started) {
+      if (sl_write_line_break(impl) != 0)
+        return SL_ERROR_IO;
+      started = 1;
+    }
+    if (sl_write_scroll_stream_chunk(impl, chunk, len, &pending_newline) != 0)
       return SL_ERROR_IO;
   }
 }
@@ -1930,33 +3008,74 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   impl = sl_impl(self);
   if (!impl)
     return SL_ERROR_INVALID;
+  if (!sl_bounded_mode(impl) && impl->live_scroll_region && impl->active_prompt)
+    (void)sl_try_pin_scroll_region(self);
   if (sl_bounded_mode(impl)) {
     prompt_rows = impl->rendered_rows > 0 ? impl->rendered_rows : 1;
     prompt_top = sl_prompt_top(impl, prompt_rows);
-    content_top = impl->screen_y;
+    content_top = sl_box_top(impl);
     content_bottom = prompt_top - 1;
     if (content_bottom >= content_top) {
+      if (impl->auto_scroll_pinned && impl->active_prompt &&
+          impl->rendered_rows > 0 && impl->rendered_top_row < 0) {
+        impl->rendered_top_row = prompt_top;
+        impl->rendered_width = sl_box_width(impl);
+        impl->rendered_height = sl_terminal_height(impl);
+      }
+      if ((impl->active_prompt || impl->cursor_hidden) &&
+          sl_hide_cursor(impl) != 0)
+        return SL_ERROR_IO;
       if (!sl_bounded_scroll_spans_full_width(impl)) {
         sl_set_error(self,
                      "bounded print_above requires full-width terminal bounds");
+        (void)sl_show_cursor(impl);
         return SL_ERROR_INVALID;
       }
       if (sl_set_scroll_region(impl->output_fd, content_top, content_bottom) !=
               0 ||
           sl_write_cursor_pos(impl->output_fd, content_bottom,
-                              impl->screen_x) != 0)
+                              sl_box_left(impl)) != 0) {
+        (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
-      rc = sl_write_stream(self, callback, userdata);
-      if (sl_reset_scroll_region(impl->output_fd) != 0)
+      }
+      rc = impl->auto_scroll_pinned
+               ? sl_write_scroll_stream(self, callback, userdata)
+               : sl_write_stream(self, callback, userdata);
+      if (sl_reset_scroll_region(impl->output_fd) != 0) {
+        (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
-      if (rc != SL_OK)
+      }
+      if (rc != SL_OK) {
+        if (impl->active_prompt && impl->rendered_rows > 0 &&
+            sl_write_cursor_pos(
+                impl->output_fd,
+                impl->rendered_top_row + impl->rendered_cursor_row,
+                sl_box_left(impl) + impl->rendered_cursor_col) != 0)
+          sl_render_store_clear(impl);
+        (void)sl_show_cursor(impl);
         return rc;
-      sl_render_store_clear(impl);
-      if (sl_render_apply(self, impl->active_prompt) != 0)
+      }
+      if (impl->active_prompt && impl->rendered_rows > 0) {
+        if (impl->rendered_top_row < 0) {
+          impl->rendered_top_row = prompt_top;
+          impl->rendered_width = sl_box_width(impl);
+          impl->rendered_height = sl_terminal_height(impl);
+        }
+        if (sl_write_cursor_pos(
+                impl->output_fd,
+                impl->rendered_top_row + impl->rendered_cursor_row,
+                sl_box_left(impl) + impl->rendered_cursor_col) != 0 ||
+            sl_show_cursor(impl) != 0)
+          return SL_ERROR_IO;
+      } else if (impl->active_prompt &&
+                 sl_render_apply(self, impl->active_prompt) != 0) {
+        (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
+      }
       return SL_OK;
     }
     sl_set_error(self, "bounded prompt has no space above it");
+    (void)sl_show_cursor(impl);
     return SL_ERROR_INVALID;
   }
   if (impl->active_prompt) {
@@ -1973,32 +3092,241 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   return SL_OK;
 }
 
-static ssize_t sl_read_escape_byte(int fd, char *ch) {
+static ssize_t sl_read_terminal_byte(sl_impl_t *impl, char *ch,
+                                     int timeout_ms) {
   fd_set readfds;
   struct timeval tv;
   int ready;
+  if (!impl || !ch)
+    return -1;
+  if (timeout_ms < 0)
+    return read(impl->input_fd, ch, 1);
   FD_ZERO(&readfds);
-  FD_SET(fd, &readfds);
-  tv.tv_sec = 0;
-  tv.tv_usec = 100000;
-  ready = select(fd + 1, &readfds, NULL, NULL, &tv);
+  FD_SET(impl->input_fd, &readfds);
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+  ready = select(impl->input_fd + 1, &readfds, NULL, NULL, &tv);
   if (ready <= 0)
     return ready;
-  return read(fd, ch, 1);
+  return read(impl->input_fd, ch, 1);
 }
 
-static ssize_t sl_read_available_byte(int fd, char *ch) {
-  fd_set readfds;
-  struct timeval tv;
-  int ready;
-  FD_ZERO(&readfds);
-  FD_SET(fd, &readfds);
-  tv.tv_sec = 0;
-  tv.tv_usec = 0;
-  ready = select(fd + 1, &readfds, NULL, NULL, &tv);
-  if (ready <= 0)
-    return ready;
-  return read(fd, ch, 1);
+static ssize_t sl_read_input_byte(sl_impl_t *impl, char *ch, int timeout_ms) {
+  if (!impl || !ch)
+    return -1;
+  if (impl->pending_input_len > 0) {
+    *ch = impl->pending_input[0];
+    if (impl->pending_input_len > 1)
+      memmove(impl->pending_input, impl->pending_input + 1,
+              impl->pending_input_len - 1);
+    impl->pending_input_len--;
+    return 1;
+  }
+  return sl_read_terminal_byte(impl, ch, timeout_ms);
+}
+
+static ssize_t sl_read_escape_byte(sl_impl_t *impl, char *ch) {
+  return sl_read_input_byte(impl, ch, 100);
+}
+
+static ssize_t sl_read_available_byte(sl_impl_t *impl, char *ch) {
+  return sl_read_input_byte(impl, ch, 0);
+}
+
+static int sl_pending_input_append(sl_impl_t *impl, const char *text,
+                                   size_t len) {
+  size_t needed;
+  size_t cap;
+  char *next;
+  if (!impl || !text)
+    return -1;
+  if (len == 0)
+    return 0;
+  if (len > (size_t)-1 - impl->pending_input_len)
+    return -1;
+  needed = impl->pending_input_len + len;
+  if (needed > impl->pending_input_cap) {
+    cap = impl->pending_input_cap ? impl->pending_input_cap
+                                  : SL_PENDING_INPUT_MAX;
+    while (cap < needed) {
+      if (cap > (size_t)-1 / 2) {
+        cap = needed;
+        break;
+      }
+      cap *= 2;
+    }
+    next = (char *)realloc(impl->pending_input, cap);
+    if (!next)
+      return -1;
+    impl->pending_input = next;
+    impl->pending_input_cap = cap;
+  }
+  memcpy(impl->pending_input + impl->pending_input_len, text, len);
+  impl->pending_input_len += len;
+  return 0;
+}
+
+static int sl_decimal_append_int(int *value, char ch) {
+  int digit;
+  if (!value || ch < '0' || ch > '9')
+    return -1;
+  digit = ch - '0';
+  if (*value > (INT_MAX - digit) / 10)
+    return -1;
+  *value = *value * 10 + digit;
+  return 0;
+}
+
+/* Read a Device Status Report cursor-position reply while preserving any user
+ * input that happens to arrive first. A terminal that does not support DSR is
+ * simply left on the normal unbounded rendering path. */
+static int sl_query_cursor_row(sl_t *self) {
+  sl_impl_t *impl;
+  char candidate[SL_PENDING_INPUT_MAX];
+  size_t candidate_len;
+  struct timeval started;
+  int row;
+  int col;
+  int have_row;
+  int have_col;
+  impl = sl_impl(self);
+  if (!impl || impl->cursor_position_probe < 0 || !isatty(impl->input_fd) ||
+      !isatty(impl->output_fd))
+    return -1;
+  if (sl_wstr(impl->output_fd, "\033[6n") != 0) {
+    impl->cursor_position_probe = -1;
+    return -1;
+  }
+  if (gettimeofday(&started, NULL) != 0) {
+    impl->cursor_position_probe = -1;
+    return -1;
+  }
+  candidate_len = 0;
+  for (;;) {
+    struct timeval now;
+    long elapsed_ms;
+    int timeout_ms;
+    char ch;
+    ssize_t n;
+    int valid;
+    size_t i;
+    size_t restart;
+    if (gettimeofday(&now, NULL) != 0)
+      break;
+    elapsed_ms = (long)(now.tv_sec - started.tv_sec) * 1000L +
+                 (long)(now.tv_usec - started.tv_usec) / 1000L;
+    if (elapsed_ms >= 100L)
+      break;
+    timeout_ms = 100 - (int)elapsed_ms;
+    n = sl_read_terminal_byte(impl, &ch, timeout_ms);
+    if (n != 1)
+      break;
+    if (candidate_len == 0 && ch != '\033') {
+      if (sl_pending_input_append(impl, &ch, 1) != 0)
+        goto preserve_failed;
+      continue;
+    }
+    if (candidate_len >= sizeof(candidate)) {
+      if (sl_pending_input_append(impl, candidate, candidate_len) != 0 ||
+          sl_pending_input_append(impl, &ch, 1) != 0)
+        goto preserve_failed;
+      candidate_len = 0;
+      continue;
+    }
+    candidate[candidate_len++] = ch;
+    valid = 1;
+    row = 0;
+    col = 0;
+    have_row = 0;
+    have_col = 0;
+    if (candidate[0] != '\033')
+      valid = 0;
+    if (valid && candidate_len > 1 && candidate[1] != '[')
+      valid = 0;
+    i = 2;
+    while (valid && i < candidate_len && candidate[i] >= '0' &&
+           candidate[i] <= '9') {
+      if (sl_decimal_append_int(&row, candidate[i]) != 0) {
+        valid = 0;
+        break;
+      }
+      have_row = 1;
+      i++;
+    }
+    if (valid && i < candidate_len && candidate[i] != ';')
+      valid = 0;
+    if (valid && i < candidate_len) {
+      i++;
+      while (i < candidate_len && candidate[i] >= '0' && candidate[i] <= '9') {
+        if (sl_decimal_append_int(&col, candidate[i]) != 0) {
+          valid = 0;
+          break;
+        }
+        have_col = 1;
+        i++;
+      }
+      if (i < candidate_len && candidate[i] != 'R')
+        valid = 0;
+      else if (i < candidate_len)
+        i++;
+    }
+    if (!valid || i < candidate_len) {
+      restart = candidate_len;
+      for (i = candidate_len; i > 1; i--) {
+        if (candidate[i - 1] == '\033') {
+          restart = i - 1;
+          break;
+        }
+      }
+      if (sl_pending_input_append(impl, candidate, restart) != 0)
+        goto preserve_failed;
+      if (restart < candidate_len) {
+        memmove(candidate, candidate + restart, candidate_len - restart);
+        candidate_len -= restart;
+      } else {
+        candidate_len = 0;
+      }
+      continue;
+    }
+    if (have_row && have_col && i == candidate_len &&
+        candidate[candidate_len - 1] == 'R') {
+      if (row > 0 && col > 0) {
+        impl->cursor_position_probe = 1;
+        return row;
+      }
+      break;
+    }
+  }
+  if (sl_pending_input_append(impl, candidate, candidate_len) != 0)
+    goto preserve_failed;
+  impl->cursor_position_probe = -1;
+  return -1;
+
+preserve_failed:
+  sl_set_error(self, "failed to preserve input during cursor probe");
+  impl->cursor_position_probe = -1;
+  return -1;
+}
+
+static int sl_try_pin_scroll_region(sl_t *self) {
+  sl_impl_t *impl;
+  int cursor_row;
+  int prompt_top;
+  int prompt_bottom;
+  impl = sl_impl(self);
+  if (!impl || !impl->live_scroll_region || impl->bounded ||
+      impl->auto_scroll_pinned || !impl->active_prompt ||
+      impl->rendered_rows < 1)
+    return 0;
+  cursor_row = sl_query_cursor_row(self);
+  if (cursor_row < 1)
+    return 0;
+  prompt_top = cursor_row - 1 - impl->rendered_cursor_row;
+  prompt_bottom = prompt_top + impl->rendered_rows - 1;
+  if (prompt_top < 0 || prompt_bottom < sl_terminal_height(impl) - 1)
+    return 0;
+  impl->auto_scroll_pinned = 1;
+  return 1;
 }
 
 static int sl_read_utf8_input(sl_impl_t *impl, char first, char *buf,
@@ -2024,7 +3352,7 @@ static int sl_read_utf8_input(sl_impl_t *impl, char first, char *buf,
   for (i = 1; i < need; i++) {
     char next;
     ssize_t n;
-    n = sl_read_escape_byte(impl->input_fd, &next);
+    n = sl_read_escape_byte(impl, &next);
     if (n != 1)
       return 0;
     if (((unsigned char)next & 0xc0) != 0x80)
@@ -2039,12 +3367,12 @@ static int sl_read_key(sl_impl_t *impl) {
   char ch;
   ssize_t n;
   errno = 0;
-  n = read(impl->input_fd, &ch, 1);
+  n = sl_read_input_byte(impl, &ch, -1);
   if (n <= 0)
     return SL_KEY_NONE;
   if (ch != '\033')
     return (int)(unsigned char)ch;
-  n = sl_read_escape_byte(impl->input_fd, &ch);
+  n = sl_read_escape_byte(impl, &ch);
   if (n <= 0)
     return SL_KEY_ESCAPE;
   if (ch == 'b')
@@ -2058,7 +3386,7 @@ static int sl_read_key(sl_impl_t *impl) {
       return SL_KEY_ALT_BASE + (unsigned char)ch;
     return SL_KEY_UNKNOWN;
   }
-  n = sl_read_escape_byte(impl->input_fd, &ch);
+  n = sl_read_escape_byte(impl, &ch);
   if (n <= 0)
     return SL_KEY_UNKNOWN;
   switch (ch) {
@@ -2086,23 +3414,29 @@ static int sl_read_key(sl_impl_t *impl) {
   if (ch >= '0' && ch <= '9') {
     int code;
     int modifier;
+    int overflow;
     code = ch - '0';
     modifier = 0;
-    while (sl_read_escape_byte(impl->input_fd, &ch) == 1) {
+    overflow = 0;
+    while (sl_read_escape_byte(impl, &ch) == 1) {
       if (ch == '~')
         break;
       if (ch == ';') {
-        while (sl_read_escape_byte(impl->input_fd, &ch) == 1) {
+        while (sl_read_escape_byte(impl, &ch) == 1) {
           if (ch < '0' || ch > '9')
             break;
-          modifier = modifier * 10 + (ch - '0');
+          if (!overflow && sl_decimal_append_int(&modifier, ch) != 0)
+            overflow = 1;
         }
         break;
       }
       if (ch < '0' || ch > '9')
         break;
-      code = code * 10 + (ch - '0');
+      if (!overflow && sl_decimal_append_int(&code, ch) != 0)
+        overflow = 1;
     }
+    if (overflow)
+      return SL_KEY_UNKNOWN;
     if (ch == 'u') {
       if (code == 13 && modifier == 5)
         return SL_KEY_CTRL_ENTER;
@@ -2153,7 +3487,7 @@ static int sl_read_paste_input(sl_impl_t *impl, char *buf, size_t *len) {
     return SL_KEY_NONE;
   *len = 0;
   errno = 0;
-  n = read(impl->input_fd, &ch, 1);
+  n = sl_read_input_byte(impl, &ch, -1);
   if (n <= 0)
     return SL_KEY_NONE;
   if (ch == '\r')
@@ -2166,7 +3500,7 @@ static int sl_read_paste_input(sl_impl_t *impl, char *buf, size_t *len) {
     return SL_KEY_UNKNOWN;
   }
   for (i = 1; i < sizeof(paste_end) - 1; i++) {
-    n = sl_read_escape_byte(impl->input_fd, &ch);
+    n = sl_read_escape_byte(impl, &ch);
     if (n != 1)
       return SL_KEY_UNKNOWN;
     buf[i] = ch;
@@ -2214,7 +3548,7 @@ static char *sl_readline_plain(sl_t *self, const char *prompt) {
     got = 1;
     if (ch == '\r') {
       char next;
-      nread = sl_read_available_byte(impl->input_fd, &next);
+      nread = sl_read_available_byte(impl, &next);
       if (nread == 1 && next != '\n') {
         impl->plain_pending = 1;
         impl->plain_pending_ch = next;
@@ -2256,6 +3590,14 @@ static void sl_history_nav_start(sl_t *self) {
     impl->history_edit = sl_strdup(impl->buf);
     impl->history_index = impl->history.len;
   }
+}
+
+static void sl_history_nav_reset(sl_impl_t *impl) {
+  if (!impl)
+    return;
+  free(impl->history_edit);
+  impl->history_edit = NULL;
+  impl->history_index = -1;
 }
 
 static void sl_history_nav(sl_t *self, int dir) {
@@ -2480,7 +3822,8 @@ static int sl_dispatch_key_binding(sl_t *self, int key,
   return binding->callback(self, (sl_key_t)key, binding->userdata, action);
 }
 
-static char *sl_readline_method(sl_t *self, const char *prompt) {
+static char *sl_readline_impl(sl_t *self, const char *prompt,
+                              int queue_dispatch) {
   sl_impl_t *impl;
   sl_history_search_t search;
   char *result;
@@ -2495,7 +3838,7 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   sl_set_readline_status(self, SL_READLINE_NONE);
   if (!prompt)
     prompt = SL_DEFAULT_PROMPT;
-  if (!isatty(impl->input_fd))
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
     return sl_readline_plain(self, prompt);
   if (sl_enable_raw(self) != 0) {
     sl_set_readline_status(self, SL_READLINE_ERROR);
@@ -2571,6 +3914,10 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
     case SL_KEY_NONE:
       if (errno == EINTR) {
         errno = 0;
+        if (sl_render_apply(self, render_prompt) != 0) {
+          failed = 1;
+          done = 1;
+        }
       } else if (errno != 0) {
         failed = 1;
         done = 1;
@@ -2691,6 +4038,41 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
       case SL_KEY_ENTER:
         done = 1;
         break;
+      case SL_KEY_TAB:
+        if (sl_prompt_queue_enabled(impl) && impl->len > 0) {
+          int queue_rc;
+          queue_rc = sl_prompt_queue_append(impl, impl->buf);
+          if (queue_rc < 0) {
+            sl_set_error(self, "failed to queue prompt");
+            failed = 1;
+            done = 1;
+          } else if (queue_rc > 0) {
+            sl_set_error(self, "prompt queue is full");
+          } else if (sl_buf_set(self, "") != 0) {
+            sl_set_error(self, "failed to clear queued prompt");
+            failed = 1;
+            done = 1;
+          } else {
+            sl_history_nav_reset(impl);
+          }
+        }
+        break;
+      case SL_KEY_ALT_BASE + 'e':
+        if (sl_prompt_queue_enabled(impl) && impl->prompt_queue.len > 0) {
+          char *queued;
+          queued = sl_prompt_queue_take(&impl->prompt_queue,
+                                        impl->prompt_queue.len - 1);
+          if (!queued || sl_buf_set(self, queued) != 0) {
+            free(queued);
+            sl_set_error(self, "failed to recall queued prompt");
+            failed = 1;
+            done = 1;
+          } else {
+            sl_history_nav_reset(impl);
+          }
+          free(queued);
+        }
+        break;
       case SL_KEY_CTRL_J:
         if (sl_buf_insert(self, impl->cursor, "\n", 1) == 0)
           impl->cursor++;
@@ -2723,8 +4105,15 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
         if (!sl_move_visual(self, prompt, -1) && impl->cursor == impl->len)
           sl_history_nav(self, -1);
         break;
+      case SL_KEY_CTRL_P:
+        sl_history_nav(self, -1);
+        break;
       case SL_KEY_DOWN:
         if (!sl_move_visual(self, prompt, 1) && impl->history_index != -1)
+          sl_history_nav(self, 1);
+        break;
+      case SL_KEY_CTRL_N:
+        if (impl->history_index != -1)
           sl_history_nav(self, 1);
         break;
       case SL_KEY_HOME:
@@ -2801,6 +4190,8 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   if (interrupted) {
     sl_history_search_cleanup(&search);
     sl_render_clear_active(self);
+    sl_release_auto_scroll_region(impl);
+    (void)sl_show_cursor(impl);
     impl->active_prompt = NULL;
     impl->bracketed_paste = 0;
     sl_disable_bracketed_paste(impl);
@@ -2811,6 +4202,8 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   }
   if (failed) {
     sl_history_search_cleanup(&search);
+    sl_release_auto_scroll_region(impl);
+    (void)sl_show_cursor(impl);
     impl->active_prompt = NULL;
     impl->bracketed_paste = 0;
     sl_disable_bracketed_paste(impl);
@@ -2829,12 +4222,14 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   } else {
     sl_history_search_accept(&search);
   }
-  if (!failed &&
-      (sl_render_apply(self, prompt) != 0 || sl_render_finish(self) != 0))
+  if (!failed && (sl_render_apply(self, prompt) != 0 ||
+                  sl_render_finish(self, queue_dispatch) != 0))
     failed = 1;
   impl->bracketed_paste = 0;
   sl_disable_bracketed_paste(impl);
   sl_disable_raw(self);
+  sl_release_auto_scroll_region(impl);
+  (void)sl_show_cursor(impl);
   impl->active_prompt = NULL;
   if (failed) {
     sl_history_search_cleanup(&search);
@@ -2874,16 +4269,52 @@ static char *sl_readline_method(sl_t *self, const char *prompt) {
   return result;
 }
 
+static char *sl_readline_method(sl_t *self, const char *prompt) {
+  return sl_readline_impl(self, prompt, 0);
+}
+
+static char *sl_next_prompt_method(sl_t *self, const char *prompt,
+                                   sl_prompt_source_t *source) {
+  sl_impl_t *impl;
+  char *result;
+  if (source)
+    *source = SL_PROMPT_SOURCE_NONE;
+  impl = sl_impl(self);
+  if (!impl)
+    return NULL;
+  if (sl_prompt_queue_enabled(impl) && impl->prompt_queue.len > 0) {
+    result = sl_prompt_queue_take(&impl->prompt_queue, 0);
+    if (!result) {
+      sl_set_error(self, "failed to dequeue prompt");
+      sl_set_readline_status(self, SL_READLINE_ERROR);
+      return NULL;
+    }
+    sl_set_readline_status(self, SL_READLINE_SUBMITTED);
+    if (source)
+      *source = SL_PROMPT_SOURCE_QUEUED;
+    return result;
+  }
+  result = sl_readline_impl(self, prompt, 1);
+  if (result && source)
+    *source = SL_PROMPT_SOURCE_DIRECT;
+  return result;
+}
+
 static void sl_destroy_method(sl_t *self) {
   sl_impl_t *impl;
   impl = sl_impl(self);
   if (!self)
     return;
   if (impl) {
+    sl_release_auto_scroll_region(impl);
     sl_disable_raw(self);
+    (void)sl_show_cursor(impl);
     sl_history_clear(&impl->history);
+    sl_prompt_queue_clear(&impl->prompt_queue);
+    sl_statusline_clear(&impl->statusline);
     sl_render_store_clear(impl);
     free(impl->history_edit);
+    free(impl->pending_input);
     free(impl->buf);
     free(impl);
   }
@@ -2904,6 +4335,202 @@ static int sl_set_screen_width_method(sl_t *self, int width) {
   }
   impl->screen_width = width;
   impl->dynamic_width = width == 0;
+  return SL_OK;
+}
+
+static int sl_set_live_scroll_region_method(sl_t *self, int enabled) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0) {
+    sl_set_error(self, "invalid live scroll region configuration");
+    return SL_ERROR_INVALID;
+  }
+  if (!enabled && impl->auto_scroll_pinned) {
+    if (sl_render_clear_active(self) != 0) {
+      sl_set_error(self, "failed to leave live scroll region");
+      return SL_ERROR_IO;
+    }
+    sl_release_auto_scroll_region(impl);
+    impl->live_scroll_region = 0;
+    if (impl->active_prompt &&
+        sl_render_apply(self, impl->active_prompt) != 0) {
+      sl_set_error(self,
+                   "failed to redraw prompt after leaving live scroll region");
+      return SL_ERROR_IO;
+    }
+    if (sl_show_cursor(impl) != 0) {
+      sl_set_error(self,
+                   "failed to restore cursor after leaving live scroll region");
+      return SL_ERROR_IO;
+    }
+    return SL_OK;
+  }
+  impl->live_scroll_region = enabled;
+  return SL_OK;
+}
+
+static int sl_set_prompt_queue_method(sl_t *self, int enabled, int max_entries,
+                                      int preview_entries) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0 || max_entries < 1 || preview_entries < 1) {
+    sl_set_error(self, "invalid prompt queue configuration");
+    return SL_ERROR_INVALID;
+  }
+  if (enabled && impl->prompt_queue.len > max_entries) {
+    sl_set_error(self, "prompt queue exceeds requested capacity");
+    return SL_ERROR_INVALID;
+  }
+  if (!enabled)
+    sl_prompt_queue_clear(&impl->prompt_queue);
+  impl->prompt_queue.enabled = enabled;
+  impl->prompt_queue.max_entries = max_entries;
+  impl->prompt_queue.preview_entries = preview_entries;
+  return SL_OK;
+}
+
+static int sl_set_prompt_theme_method(sl_t *self, sl_prompt_theme_t theme) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || theme < SL_PROMPT_THEME_PLAIN ||
+      theme > SL_PROMPT_THEME_DEFAULT) {
+    sl_set_error(self, "invalid prompt theme");
+    return SL_ERROR_INVALID;
+  }
+  impl->prompt_theme = theme;
+  return SL_OK;
+}
+
+static int sl_set_statusline_method(sl_t *self, int enabled,
+                                    size_t starting_element) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0) {
+    sl_set_error(self, "invalid status line configuration");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.enabled = enabled;
+  impl->statusline.start_element = starting_element;
+  return SL_OK;
+}
+
+static int sl_set_status_elements_method(sl_t *self,
+                                         const char *const *elements,
+                                         size_t count) {
+  char *copies[SL_STATUS_MAX_ELEMENTS];
+  sl_impl_t *impl;
+  size_t i;
+  size_t limit;
+  int result;
+  int truncated;
+  memset(copies, 0, sizeof(copies));
+  impl = sl_impl(self);
+  if (!impl || (count > 0 && !elements)) {
+    sl_set_error(self, "invalid status line elements");
+    return SL_ERROR_INVALID;
+  }
+  truncated = count > SL_STATUS_MAX_ELEMENTS;
+  result = SL_ERROR_NOMEM;
+  limit = truncated ? SL_STATUS_MAX_ELEMENTS - 1 : count;
+  for (i = 0; i < limit; i++) {
+    if (!sl_statusline_text_valid(elements[i])) {
+      sl_set_error(self, "status line element contains control characters");
+      result = SL_ERROR_INVALID;
+      goto fail;
+    }
+    if (elements[i]) {
+      copies[i] = sl_strdup(elements[i]);
+      if (!copies[i]) {
+        sl_set_error(self, "failed to allocate status line element");
+        goto fail;
+      }
+    }
+  }
+  if (truncated) {
+    copies[SL_STATUS_MAX_ELEMENTS - 1] = sl_strdup("...");
+    if (!copies[SL_STATUS_MAX_ELEMENTS - 1]) {
+      sl_set_error(self, "failed to allocate status line truncation");
+      goto fail;
+    }
+    limit = SL_STATUS_MAX_ELEMENTS;
+  }
+  sl_statusline_clear(&impl->statusline);
+  for (i = 0; i < limit; i++) {
+    impl->statusline.elements[i] = copies[i];
+    copies[i] = NULL;
+  }
+  impl->statusline.count = limit;
+  impl->statusline.truncated = truncated;
+  return SL_OK;
+
+fail:
+  for (i = 0; i < SL_STATUS_MAX_ELEMENTS; i++)
+    free(copies[i]);
+  return result;
+}
+
+static int sl_set_status_element_method(sl_t *self, size_t index,
+                                        const char *element) {
+  char *copy;
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || index >= SL_STATUS_MAX_ELEMENTS ||
+      !sl_statusline_text_valid(element)) {
+    sl_set_error(self, "invalid status line element");
+    return SL_ERROR_INVALID;
+  }
+  copy = element ? sl_strdup(element) : NULL;
+  if (element && !copy) {
+    sl_set_error(self, "failed to allocate status line element");
+    return SL_ERROR_NOMEM;
+  }
+  free(impl->statusline.elements[index]);
+  impl->statusline.elements[index] = copy;
+  if (copy && index + 1 > impl->statusline.count)
+    impl->statusline.count = index + 1;
+  while (impl->statusline.count > 0 &&
+         !impl->statusline.elements[impl->statusline.count - 1])
+    impl->statusline.count--;
+  if (index == SL_STATUS_MAX_ELEMENTS - 1 && !copy)
+    impl->statusline.truncated = 0;
+  return SL_OK;
+}
+
+static int sl_set_status_busy_method(sl_t *self, int busy) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || busy < 0) {
+    sl_set_error(self, "invalid status busy state");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.busy = busy;
+  impl->statusline.spinner_time_valid = 0;
+  return SL_OK;
+}
+
+static int sl_set_status_spinner_method(sl_t *self, int enabled) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0) {
+    sl_set_error(self, "invalid status spinner configuration");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.spinner = enabled;
+  impl->statusline.spinner_frame = 0;
+  impl->statusline.spinner_time_valid = 0;
+  return SL_OK;
+}
+
+static int sl_set_status_idle_marker_method(sl_t *self, char marker) {
+  sl_impl_t *impl;
+  unsigned char value;
+  impl = sl_impl(self);
+  value = (unsigned char)marker;
+  if (!impl || (marker != '\0' && (value < 0x20 || value > 0x7e))) {
+    sl_set_error(self, "invalid status idle marker");
+    return SL_ERROR_INVALID;
+  }
+  impl->statusline.idle_marker = marker;
   return SL_OK;
 }
 
@@ -2963,8 +4590,18 @@ void sl_config_init(sl_config_t *config) {
   config->screen_width = 0;
   config->screen_height = 0;
   config->bounded = 0;
+  config->live_scroll_region = 0;
   config->history_max_len = SL_HISTORY_DEFAULT_MAX;
   config->line_max_len = SL_LINE_DEFAULT_MAX;
+  config->prompt_queue = 0;
+  config->prompt_queue_max_entries = SL_PROMPT_QUEUE_DEFAULT_MAX;
+  config->prompt_queue_preview_entries = SL_PROMPT_QUEUE_DEFAULT_PREVIEWS;
+  config->prompt_theme = SL_PROMPT_THEME_DEFAULT;
+  config->statusline = 0;
+  config->statusline_start_element = 0;
+  config->status_spinner = 0;
+  config->status_busy = 0;
+  config->status_idle_marker = '+';
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
@@ -2978,6 +4615,16 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   if (config->history_max_len < 0 || config->screen_x < 0 ||
       config->screen_y < 0 || config->screen_width < 0 ||
       config->screen_height < 0 || config->bounded < 0 ||
+      config->live_scroll_region < 0 || config->prompt_queue < 0 ||
+      config->prompt_queue_max_entries < 1 ||
+      config->prompt_queue_preview_entries < 1 ||
+      config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
+      config->prompt_theme > SL_PROMPT_THEME_DEFAULT ||
+      config->statusline < 0 || config->status_spinner < 0 ||
+      config->status_busy < 0 ||
+      (config->status_idle_marker != '\0' &&
+       ((unsigned char)config->status_idle_marker < 0x20 ||
+        (unsigned char)config->status_idle_marker > 0x7e)) ||
       config->line_max_len == 0 || config->line_max_len > (size_t)INT_MAX - 2)
     return NULL;
   self = (sl_t *)calloc(1, sizeof(*self));
@@ -2996,6 +4643,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->history_load = sl_history_load_impl;
   self->set_bounds = sl_set_bounds_method;
   self->set_screen_width = sl_set_screen_width_method;
+  self->set_live_scroll_region = sl_set_live_scroll_region_method;
   self->set_idle_callback = sl_set_idle_callback_method;
   self->bind_key = sl_bind_key_method;
   self->insert = sl_buf_insert_cstr;
@@ -3009,6 +4657,15 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->last_readline_status = sl_last_readline_status_method;
   self->last_error = sl_last_error_method;
   self->impl = impl;
+  self->next_prompt = sl_next_prompt_method;
+  self->set_prompt_queue = sl_set_prompt_queue_method;
+  self->set_prompt_theme = sl_set_prompt_theme_method;
+  self->set_statusline = sl_set_statusline_method;
+  self->set_status_elements = sl_set_status_elements_method;
+  self->set_status_element = sl_set_status_element_method;
+  self->set_status_busy = sl_set_status_busy_method;
+  self->set_status_spinner = sl_set_status_spinner_method;
+  self->set_status_idle_marker = sl_set_status_idle_marker_method;
   impl->input_fd = config->input_fd >= 0 ? config->input_fd : STDIN_FILENO;
   impl->output_fd = config->output_fd >= 0 ? config->output_fd : STDOUT_FILENO;
   impl->screen_x = config->screen_x;
@@ -3019,6 +4676,16 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->dynamic_width = config->screen_width == 0;
   impl->dynamic_height = config->bounded && config->screen_height == 0;
   impl->bounded = config->bounded || config->screen_height > 0;
+  impl->live_scroll_region = config->live_scroll_region;
+  impl->prompt_queue.enabled = config->prompt_queue;
+  impl->prompt_queue.max_entries = config->prompt_queue_max_entries;
+  impl->prompt_queue.preview_entries = config->prompt_queue_preview_entries;
+  impl->prompt_theme = config->prompt_theme;
+  impl->statusline.enabled = config->statusline;
+  impl->statusline.start_element = config->statusline_start_element;
+  impl->statusline.spinner = config->status_spinner;
+  impl->statusline.busy = config->status_busy;
+  impl->statusline.idle_marker = config->status_idle_marker;
   impl->history.max_len = config->history_max_len;
   impl->history_index = -1;
   if (sl_buf_reserve(self, 1) != 0) {
@@ -3043,6 +4710,15 @@ char *sl_readline(sl_t *self, const char *prompt) {
   if (!self || !self->readline)
     return NULL;
   return self->readline(self, prompt);
+}
+
+char *sl_next_prompt(sl_t *self, const char *prompt,
+                     sl_prompt_source_t *source) {
+  if (source)
+    *source = SL_PROMPT_SOURCE_NONE;
+  if (!self || !self->next_prompt)
+    return NULL;
+  return self->next_prompt(self, prompt, source);
 }
 
 void sl_destroy(sl_t *self) {
@@ -3091,6 +4767,62 @@ int sl_set_screen_width(sl_t *self, int width) {
   if (!self || !self->set_screen_width)
     return SL_ERROR_INVALID;
   return self->set_screen_width(self, width);
+}
+
+int sl_set_live_scroll_region(sl_t *self, int enabled) {
+  if (!self || !self->set_live_scroll_region)
+    return SL_ERROR_INVALID;
+  return self->set_live_scroll_region(self, enabled);
+}
+
+int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
+                        int preview_entries) {
+  if (!self || !self->set_prompt_queue)
+    return SL_ERROR_INVALID;
+  return self->set_prompt_queue(self, enabled, max_entries, preview_entries);
+}
+
+int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme) {
+  if (!self || !self->set_prompt_theme)
+    return SL_ERROR_INVALID;
+  return self->set_prompt_theme(self, theme);
+}
+
+int sl_set_statusline(sl_t *self, int enabled, size_t starting_element) {
+  if (!self || !self->set_statusline)
+    return SL_ERROR_INVALID;
+  return self->set_statusline(self, enabled, starting_element);
+}
+
+int sl_set_status_elements(sl_t *self, const char *const *elements,
+                           size_t count) {
+  if (!self || !self->set_status_elements)
+    return SL_ERROR_INVALID;
+  return self->set_status_elements(self, elements, count);
+}
+
+int sl_set_status_element(sl_t *self, size_t index, const char *element) {
+  if (!self || !self->set_status_element)
+    return SL_ERROR_INVALID;
+  return self->set_status_element(self, index, element);
+}
+
+int sl_set_status_busy(sl_t *self, int busy) {
+  if (!self || !self->set_status_busy)
+    return SL_ERROR_INVALID;
+  return self->set_status_busy(self, busy);
+}
+
+int sl_set_status_spinner(sl_t *self, int enabled) {
+  if (!self || !self->set_status_spinner)
+    return SL_ERROR_INVALID;
+  return self->set_status_spinner(self, enabled);
+}
+
+int sl_set_status_idle_marker(sl_t *self, char marker) {
+  if (!self || !self->set_status_idle_marker)
+    return SL_ERROR_INVALID;
+  return self->set_status_idle_marker(self, marker);
 }
 
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,

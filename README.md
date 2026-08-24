@@ -44,19 +44,30 @@ Currently implemented:
 - `Ctrl-C` remains a terminal interrupt instead of being swallowed.
 - `last_readline_status()` distinguishes submitted text, EOF, cancellation,
   interrupt, and failures after `readline()` returns.
-- `Ctrl-U`, `Ctrl-K`, word deletion, movement, history recall, and delete keys
-  operate across the whole multiline buffer.
+- `Ctrl-U`, `Ctrl-K`, word deletion, movement, history recall (`Up`/`Down` or
+  `Ctrl-P`/`Ctrl-N`), and delete keys operate across the whole multiline buffer.
 - `Ctrl-R` starts reverse incremental history search over the handle's current
   in-memory history, including entries loaded before `readline()`.
 - Long input wraps by words where possible and reflows after terminal resize.
 - Bracketed paste is enabled while editing so pasted carriage returns become
   buffer content instead of submitting the prompt.
-- Non-tty input uses a plain silent line reader and does not emit prompts.
+- Editing uses a plain silent line reader when either standard input or output
+  is not a TTY and does not emit prompts; streamed output uses LF line endings
+  instead of terminal CRLF.
 - Keys such as TAB, Enter, function keys, and Alt-letter combinations can be
   bound per handle. A binding may handle the key, pass through to the built-in
   behavior, submit, cancel, interrupt, or mutate the active buffer.
   `SL_KEY_CTRL_ENTER` is available when the terminal sends a distinguishable
   Ctrl-Enter sequence.
+- Chat-like prompts can opt into a FIFO prompt queue. Tab queues a nonempty
+  draft, Alt-E recalls the newest queued draft for editing, and
+  `next_prompt()` returns queued work before opening a direct editor while
+  identifying whether the result was queued or direct. The renderer ships
+  default, plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun,
+  Riced, and Synthwave prompt themes. Optional status lines use the selected
+  palette. The chat examples add sent nonempty prompts to their history, so
+  `Up`/`Down` and `Ctrl-P`/`Ctrl-N` recall sent prompts while Alt-E remains
+  reserved for unsent queued drafts.
 - UTF-8 input is preserved, common Unicode clusters are kept intact by
   cursor/delete operations, and rendering accounts for combining marks, East
   Asian wide characters, and common emoji widths.
@@ -79,14 +90,42 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` enters the alternate screen, keeps the prompt at the bottom of
-the terminal, and prints output through the region above the prompt.
+`example_chat` stays in ordinary terminal scrollback. It posts dispatched text
+with a `[direct]` or `[queued]` source prefix while preserving the submitted
+text, shows a palette-driven status line, and emits a random simulated peer
+message every two seconds while the
+editor is active. Its status demo advances every five seconds through spinner
+and static busy phases. It alternates complete 40-second cycles between green
+idle `+` and blank reserved marker slots.
+Ctrl-C cancels the active editor and keeps the chat open.
+The queue UI, status line, and simulated peer activate only when both standard
+input and standard output are terminals, so piped use remains plain
+line-oriented input/output.
 
 ```sh
-make build
-build/debug/examples/example_simple
-build/debug/examples/example_chat
+make run-simple
+make run-chat
+make run-chat-default
+make run-chat-default-sr
+make run-chat-accent-sr
+make run-chat-dracula-sr
+make run-chat-plain
+make run-chat-plain-sr
+make run-chat-riced
+make run-chat-monogreen
+make run-chat-monochrome
+make run-chat-synthwave
 ```
+
+The chat convenience targets build the C example before launching it.
+`run-chat` uses Gruvbox by default; pass `THEME=...` to override it. Both C
+and Lua examples accept
+`SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
+`monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
+expose that as `THEME=...`. The simple and chat examples default to `default`;
+`make run-chat` supplies Gruvbox. Set `SOFTLINE_LIVE_SCROLL_REGION=1` for
+either chat example, or use a `-sr` convenience target, to demonstrate the
+opt-in scroll-region behavior.
 
 ## Bounded prompts
 
@@ -96,11 +135,94 @@ the prompt grows upward as input wraps while `sl_print_above()` pulls streamed
 chunks from a callback and writes them through the region above the prompt.
 Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
 bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
-in softline.
+in softline. Bounded rendering keeps a retained view of the visible editor
+rows: ordinary edits patch only changed cells, structural changes redraw the
+affected rows, and terminal geometry changes reflow the bounded box while
+editing. During a bounded structural update or transcript dispatch,
+softline hides the hardware cursor and restores it only at the final prompt
+position, preventing visible cursor travel across the prompt area.
+
+For a normal scrollback prompt, streamed output uses the compatible
+clear-and-redraw path by default. Set `live_scroll_region = 1` in
+`sl_config_t`, or call `sl_set_live_scroll_region(sl, 1)`, to opt into a
+temporary full-width scroll region once the active prompt reaches the bottom
+row. That avoids repainting the live prompt while output streams. Queue
+previews, status lines, wrapping, and resize reflow change that region with the
+prompt. Softline resets the region whenever the edit finishes; terminals that
+do not answer the cursor-position report continue with clear-and-redraw.
 
 For a persistent bottom prompt, use this bounded mode as a full-screen terminal
 UI on the alternate screen. That keeps the main scrollback intact and lets
 softline manage the prompt box and transcript scroll region coherently.
+Softline never enters or leaves the alternate screen itself: the embedding
+application chooses normal scrollback or an alternate-screen UI.
+
+## Prompt queueing
+
+Prompt queueing is available for interactive chat-like prompts, including
+normal scrollback terminals. It does not alter non-TTY input. Enable it in the
+handle configuration or after construction, and read application work through
+`next_prompt()`:
+
+```c
+sl_prompt_source_t source;
+
+sl->set_prompt_queue(sl, 1, 64, 3);
+sl->set_prompt_theme(sl, SL_PROMPT_THEME_DEFAULT);
+
+for (;;) {
+  char *line = sl->next_prompt(sl, NULL, &source);
+  if (!line)
+    break;
+  /* source is SL_PROMPT_SOURCE_DIRECT or SL_PROMPT_SOURCE_QUEUED. */
+  sl->free_string(sl, line);
+}
+```
+
+Tab queues a nonempty active editor and leaves a FIFO preview panel above the
+current input; Tab on an empty editor is a no-op. The panel uses the themed
+`Q 1. preview` layout, shows oldest-first previews, and adds `... N more` when
+entries exceed the configured preview count. Alt-E removes the newest queued
+entry and restores it to the editor. Explicit key bindings continue to override
+these defaults. Prompt appearance is renderer-owned so it remains safe with
+layout: `default` uses only standard ANSI colours: a bold bright-white marker,
+normal terminal-colour input, subdued dark-gray queue text and separators,
+standard-colour status elements, and red/green busy markers. `plain` is
+uncoloured; `accent`, Dracula, Gruvbox, monochrome, monogreen, Outrun, Riced,
+and Synthwave use their embedded palettes. The selected theme applies to every
+interactive prompt, including normal readline prompts, status lines, and queue
+panels. Prompt markers reset before typed text; monochrome and monogreen
+additionally colour typed text as defined by their palettes.
+
+## Status lines
+
+Status lines are opt-in renderer-owned live rows between queue previews and the
+editor. Set their elements in bulk or update an individual element from an idle
+or key callback. Element text must be valid UTF-8 without C0/C1 controls or
+DEL. Every colour theme has eight element colours. Element zero is
+the first application element (typically the model name), and the selected
+starting index wraps modulo eight: an offset of 15 therefore uses slot 7 for
+the first element and slot 0 for the second.
+
+```c
+static const char *const status[] = {
+    "gpt-5.6-terra high", "ctx 36%", "~/g/softline", "feat/prompt-queue"};
+
+sl->set_statusline(sl, 1, 0);
+sl->set_status_elements(sl, status, 4);
+sl->set_status_idle_marker(sl, '-');  /* optional green idle marker */
+sl->set_status_busy(sl, 1);    /* x by default, or /-\\| with spinner enabled */
+sl->set_status_spinner(sl, 1);
+```
+
+Idle uses a green `+` by default. Set one printable ASCII character with
+`sl_set_status_idle_marker()` to choose another green marker, or pass `'\0'`
+to leave its reserved two-column marker slot blank while preserving alignment
+with busy markers. Busy uses red `x`; the busy spinner uses that same red, is
+off by default, and advances every 500ms only when both spinner and busy are
+enabled. Elements wrap between elements when possible; an oversized element
+wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
+the first 31 and renders `...` as the final element.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.
@@ -139,7 +261,7 @@ make prerelease
 ```
 
 The core library is compiled as C89 with POSIX terminal APIs. Shared builds use
-the separate CMake `SOFTLINE_ABI_VERSION`, currently `0`, for SONAME/SOVERSION.
+the separate CMake `SOFTLINE_ABI_VERSION`, currently `1`, for SONAME/SOVERSION.
 That ABI version is bumped only for shared-library ABI breaks, not for every
 project release-version bump.
 
@@ -208,6 +330,7 @@ To run the Lua facade and examples against the in-tree debug library:
 make lua-debug-test
 make lua-debug-simple
 make lua-debug-chat
+make lua-debug-chat THEME=riced
 ```
 
 For a fuller status and gap list, see `docs/softline-spec.md`.

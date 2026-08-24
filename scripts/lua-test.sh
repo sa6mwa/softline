@@ -48,6 +48,19 @@ eval "$("${ROOT_DIR}/scripts/lua-env.sh")"
 lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
 lua "${ROOT_DIR}/tests/lua_smoke.lua"
 printf 'hello\n' | lua "${ROOT_DIR}/tests/lua_readline.lua"
+SOFTLINE_LUA_CHAT_OUTPUT="$(printf 'hello\nexit\n' | lua "${ROOT_DIR}/examples/chat.lua")"
+if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "[direct] hello" ]; then
+  echo "ERROR: non-tty Lua chat output mismatch: ${SOFTLINE_LUA_CHAT_OUTPUT}" >&2
+  exit 1
+fi
+case "${SOFTLINE_LUA_CHAT_OUTPUT}" in
+  *"$(printf '\033[')"*)
+    echo "ERROR: non-tty Lua chat emitted terminal control sequences" >&2
+    exit 1
+    ;;
+esac
 python3 "${ROOT_DIR}/tests/lua_chat_ctrl_c.py" "${ROOT_DIR}"
+python3 "${ROOT_DIR}/tests/lua_chat_mixed_tty.py" "${ROOT_DIR}"
+python3 "${ROOT_DIR}/tests/lua_idle_callback.py" "${ROOT_DIR}"
 
 echo "Lua facade tests passed."

@@ -39,7 +39,17 @@ case "${MODE}" in
     lua "${ROOT_DIR}/tests/lua_smoke.lua"
     printf 'hello\n' | lua "${ROOT_DIR}/tests/lua_readline.lua"
     printf 'exit\n' | lua "${ROOT_DIR}/examples/simple.lua" >/dev/null
-    printf 'exit\n' | lua "${ROOT_DIR}/examples/chat.lua" >/dev/null
+    SOFTLINE_LUA_CHAT_OUTPUT="$(printf 'hello\nexit\n' | lua "${ROOT_DIR}/examples/chat.lua")"
+    if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "[direct] hello" ]; then
+      echo "ERROR: non-tty Lua chat output mismatch: ${SOFTLINE_LUA_CHAT_OUTPUT}" >&2
+      exit 1
+    fi
+    case "${SOFTLINE_LUA_CHAT_OUTPUT}" in
+      *"$(printf '\033[')"*)
+        echo "ERROR: non-tty Lua chat emitted terminal control sequences" >&2
+        exit 1
+        ;;
+    esac
     echo "Lua debug facade and examples passed."
     ;;
   simple)

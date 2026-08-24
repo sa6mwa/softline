@@ -19,13 +19,19 @@ The public API is the installed header `include/softline/softline.h`.
   pointers plus an opaque implementation pointer.
 - `sl_create()` creates a handle with default configuration.
 - `sl_create_with_config()` accepts `sl_config_t` for input/output fds, prompt
-  bounds, history length, and line length.
+  bounds, live scroll regions, queueing, themes, status lines, history length,
+  and line length.
 - `sl_config_init()` sets the documented defaults:
   - input fd: `STDIN_FILENO`
   - output fd: `STDOUT_FILENO`
   - unbounded prompt geometry
   - history max length: 100
   - line max length: 4096 bytes
+  - prompt queueing and live scroll regions: disabled
+  - prompt queue capacity and previews when enabled: 64 and 3
+  - prompt theme: ANSI-only `default`
+  - status line and spinner: disabled
+  - status busy state and idle marker: false and `+`
 - `readline()` returns a project-allocated string that must be released with
   `free_string()`.
 - `last_readline_status()` classifies the most recent `readline()` outcome as
@@ -41,6 +47,7 @@ Each handle owns its own:
 - history list
 - terminal raw-mode state
 - rendered prompt cache
+- prompt queue, theme, and status-line state
 - key bindings
 - idle callback
 - last-error text
@@ -59,6 +66,7 @@ The editor supports these built-in behaviors:
 - `Ctrl-E` / End moves to the end of the buffer.
 - `Ctrl-B` / Left and `Ctrl-F` / Right move by common UTF-8 cluster boundaries.
 - Up and Down navigate visual rows first, then history where applicable.
+  `Ctrl-P` and `Ctrl-N` navigate previous and next history entries directly.
 - `Ctrl-R` starts reverse incremental search over the handle's current history.
   Typing updates the query, repeated `Ctrl-R` cycles older matches and wraps,
   Enter accepts the displayed match, and Escape or `Ctrl-G` restores the draft.
@@ -68,7 +76,8 @@ The editor supports these built-in behaviors:
 - Bracketed paste mode is enabled while editing; pasted carriage returns become
   buffer content instead of submitting the prompt.
 - Input is limited by `line_max_len`.
-- Non-tty input falls back to a plain line reader that does not emit prompts.
+- Editing falls back to a plain line reader when either input or output is not
+  a TTY; it does not emit prompts.
 
 UTF-8 is preserved as bytes while rendering uses terminal-cell width for
 combining marks, East Asian wide characters, and common emoji sequences.
@@ -102,6 +111,47 @@ Bounded mode is intended for alternate-screen applications such as chat-style
 interfaces. In that mode, `print_above()` streams output through the area above
 the prompt without overwriting the active input buffer.
 
+### Prompt Queue
+
+Interactive normal and bounded prompts can opt into a prompt queue through
+configuration or `set_prompt_queue()`. Non-TTY input remains a plain line
+reader, so queueing does not alter it. Tab moves a nonempty active editor into
+the queue and clears the editor; Tab on an empty editor does nothing. Alt-E
+removes the most recent queue entry and restores it to the active editor for
+editing.
+
+`next_prompt()` is the dispatch boundary. It removes an existing queue entry in
+FIFO order before opening the editor, reporting `SL_PROMPT_SOURCE_QUEUED`; when
+the queue is empty it acts like `readline()` and reports
+`SL_PROMPT_SOURCE_DIRECT` for submitted text. Existing `readline()` callers
+remain direct-only.
+
+While an editor is active, the renderer owns a queue panel above it. The panel
+shows a total count plus a capped oldest-first preview list, and supports all
+built-in prompt themes, including the ANSI-only `default` theme. The selected
+prompt theme also styles the active editor and optional status line in both
+normal and bounded modes. The panel is not built with `print_above()` because
+queue entries must be removable and must reflow with the active editor.
+Application key bindings retain precedence over the Tab and Alt-E defaults.
+
+### Prompt Themes And Status Lines
+
+The renderer owns prompt presentation so the marker, typed text, queue panel,
+and optional status line always share the active layout. The built-in `default`
+theme uses only standard 16-colour ANSI sequences: a bold bright-white marker,
+normal terminal-colour input, subdued dark-gray queue text and separators,
+standard-colour status elements, and red/green busy markers. `plain` is
+uncoloured; the remaining named themes use their embedded palettes.
+
+Status lines are opt-in rows between queue previews and the editor. A theme has
+eight element colours. `statusline_start_element` selects the first palette
+slot and later elements advance modulo eight. Softline retains at most 32
+elements; a longer bulk update uses the first 31 followed by `...`. Element
+text must be valid UTF-8 without C0/C1 controls or DEL. Idle shows
+a green `+` by default; callers can supply another printable ASCII marker or
+`'\0'` for a blank reserved slot. Busy shows a red `x`, or a red 500ms
+`/-\\|` spinner when both busy and spinner are enabled.
+
 ## Current Extension Points
 
 ### Key Bindings
@@ -134,6 +184,16 @@ general event loop integration API.
 `print_above()` accepts a chunk callback and writes all chunks above the active
 prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `SL_OK` with length `0` to finish.
+
+For an unbounded prompt, output uses normal clear-and-redraw scrollback by
+default. Set `live_scroll_region = 1` in `sl_config_t` or call
+`sl_set_live_scroll_region()` to opt into a cursor-position probe once the
+prompt reaches the terminal bottom. When supported, softline temporarily
+scrolls the full-width region above the retained prompt, avoiding a prompt
+repaint while keeping queue, status, wrapping, and resize reflow aligned to the
+bottom. The terminal scroll region is reset on every completion, cancellation,
+error, and handle teardown. If the terminal does not answer the probe, output
+uses the compatible clear-and-redraw path.
 
 ## Current History Behavior
 

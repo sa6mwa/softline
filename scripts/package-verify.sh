@@ -13,7 +13,7 @@ fi
 
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 CHECKSUM_FILE="${DIST_DIR}/softline-${VERSION}-CHECKSUMS"
-SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-0}"
+SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
 
 if [ ! -f "${CHECKSUM_FILE}" ]; then
   echo "ERROR: missing checksum manifest ${CHECKSUM_FILE}"
