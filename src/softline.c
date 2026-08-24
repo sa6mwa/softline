@@ -3009,20 +3009,13 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   return SL_OK;
 }
 
-static ssize_t sl_read_input_byte(sl_impl_t *impl, char *ch, int timeout_ms) {
+static ssize_t sl_read_terminal_byte(sl_impl_t *impl, char *ch,
+                                     int timeout_ms) {
   fd_set readfds;
   struct timeval tv;
   int ready;
   if (!impl || !ch)
     return -1;
-  if (impl->pending_input_len > 0) {
-    *ch = impl->pending_input[0];
-    if (impl->pending_input_len > 1)
-      memmove(impl->pending_input, impl->pending_input + 1,
-              impl->pending_input_len - 1);
-    impl->pending_input_len--;
-    return 1;
-  }
   if (timeout_ms < 0)
     return read(impl->input_fd, ch, 1);
   FD_ZERO(&readfds);
@@ -3033,6 +3026,20 @@ static ssize_t sl_read_input_byte(sl_impl_t *impl, char *ch, int timeout_ms) {
   if (ready <= 0)
     return ready;
   return read(impl->input_fd, ch, 1);
+}
+
+static ssize_t sl_read_input_byte(sl_impl_t *impl, char *ch, int timeout_ms) {
+  if (!impl || !ch)
+    return -1;
+  if (impl->pending_input_len > 0) {
+    *ch = impl->pending_input[0];
+    if (impl->pending_input_len > 1)
+      memmove(impl->pending_input, impl->pending_input + 1,
+              impl->pending_input_len - 1);
+    impl->pending_input_len--;
+    return 1;
+  }
+  return sl_read_terminal_byte(impl, ch, timeout_ms);
 }
 
 static ssize_t sl_read_escape_byte(sl_impl_t *impl, char *ch) {
@@ -3127,7 +3134,7 @@ static int sl_query_cursor_row(sl_t *self) {
     if (elapsed_ms >= 100L)
       break;
     timeout_ms = 100 - (int)elapsed_ms;
-    n = sl_read_input_byte(impl, &ch, timeout_ms);
+    n = sl_read_terminal_byte(impl, &ch, timeout_ms);
     if (n != 1)
       break;
     if (candidate_len == 0 && ch != '\033') {
