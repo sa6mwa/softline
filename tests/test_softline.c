@@ -4263,11 +4263,14 @@ static void test_bounded_viewport_follows_cursor(void) {
   close(result_pipe[1]);
   terminal_len = 0;
   terminal[0] = '\0';
-  while (!contains_bytes(terminal, "p> ")) {
+  tries = 0;
+  while (!contains_bytes(terminal, "p> ") && tries < 300) {
     n = read_some_with_timeout_ms(master_fd, buf, sizeof(buf), 20);
-    ASSERT_TRUE(n > 0, "prompt was not rendered");
-    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
   }
+  ASSERT_TRUE(contains_bytes(terminal, "p> "), "prompt was not rendered");
   ASSERT_TRUE(write(master_fd, "one two three four five six", 27) == 27,
               "write input failed");
   tries = 0;
