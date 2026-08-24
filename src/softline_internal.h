@@ -20,6 +20,7 @@
 #define SL_ERROR_LEN 160
 #define SL_DEFAULT_PROMPT "> "
 #define SL_MAX_KEY_BINDINGS 64
+#define SL_PENDING_INPUT_MAX 32
 
 typedef struct sl_key_binding {
   sl_key_t key;
@@ -64,6 +65,8 @@ typedef struct sl_impl {
   int screen_width;
   int screen_height;
   int bounded;
+  int auto_scroll_pinned;
+  int cursor_position_probe;
   int dynamic_width;
   int dynamic_height;
   char *buf;
@@ -97,6 +100,8 @@ typedef struct sl_impl {
   int request_cancel;
   int plain_pending;
   char plain_pending_ch;
+  char pending_input[SL_PENDING_INPUT_MAX];
+  size_t pending_input_len;
   sl_readline_status_t last_readline_status;
   sl_idle_callback_t idle_callback;
   void *idle_userdata;

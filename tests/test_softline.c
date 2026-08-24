@@ -1246,6 +1246,10 @@ struct idle_print_state {
   int printed;
 };
 
+struct idle_scroll_region_state {
+  int calls;
+};
+
 struct idle_count_print_state {
   int calls;
   int printed;
@@ -1394,6 +1398,26 @@ static void idle_print_once(sl_t *sl, void *userdata) {
   stream.chunks[0] = "idle-";
   stream.chunks[1] = "output";
   stream.chunks[2] = "\n";
+  stream.chunks[3] = NULL;
+  stream.index = 0;
+  stream.calls = 0;
+  (void)sl->print_above(sl, next_text_chunk, &stream);
+}
+
+static void idle_print_through_scroll_region(sl_t *sl, void *userdata) {
+  struct idle_scroll_region_state *state;
+  struct text_stream_state stream;
+  const char *text;
+  state = (struct idle_scroll_region_state *)userdata;
+  if (!state)
+    return;
+  state->calls++;
+  if (state->calls != 1 && state->calls != 4)
+    return;
+  text = state->calls == 1 ? "first-live\n" : "second-live\n";
+  stream.chunks[0] = text;
+  stream.chunks[1] = NULL;
+  stream.chunks[2] = NULL;
   stream.chunks[3] = NULL;
   stream.index = 0;
   stream.calls = 0;
@@ -5586,6 +5610,124 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   PASS();
 }
 
+static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  char terminal[8192];
+  char result[64];
+  char buf[512];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int replied;
+  int tries;
+  int prompts_after_second;
+
+  TEST("normal prompt pins at bottom for live output");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_scroll_region_state state;
+    close(master_fd);
+    close(result_pipe[0]);
+    state.calls = 0;
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    if (sl->set_idle_callback(sl, idle_print_through_scroll_region, &state) !=
+        SL_OK)
+      _exit(3);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  replied = 0;
+  tries = 0;
+  while (!contains_bytes(terminal, "first-live") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    if (!replied && contains_bytes(terminal, "\033[6n")) {
+      ASSERT_TRUE(write(master_fd, "\033[5;4R", 6) == 6,
+                  "cursor report write failed");
+      replied = 1;
+    }
+    tries++;
+  }
+  ASSERT_TRUE(replied, "normal prompt did not request cursor position");
+  ASSERT_TRUE(contains_bytes(terminal, "first-live"),
+              "first live message missing");
+  ASSERT_TRUE(count_bytes(terminal, "p> ") == 1,
+              "first live message repainted the prompt");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[1;4r"),
+              "bottom prompt did not enter scroll region");
+  ASSERT_TRUE(write(master_fd, "queued\tok", 9) == 9,
+              "queue-and-text write failed");
+  tries = 0;
+  while (!contains_bytes(terminal, "second-live") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. queued"),
+              "queued prompt did not reflow the pinned region");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[1;3r"),
+              "scroll region did not shrink after queue reflow");
+  ASSERT_TRUE(contains_bytes(terminal, "second-live"),
+              "second live message missing");
+  prompts_after_second = count_bytes(terminal, "p> ");
+  n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  ASSERT_TRUE(count_bytes(terminal, "p> ") == prompts_after_second,
+              "live message repainted the reflowed prompt");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "read result failed");
+  result[n] = '\0';
+  do {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  } while (n > 0 && terminal_len < sizeof(terminal) - 1);
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0, "pinned prompt result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[r"),
+              "scroll region was not restored");
+  PASS();
+}
+
 static void test_utf8_input_and_backspace(void) {
   char terminal[4096];
   char result[256];
@@ -5985,6 +6127,11 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
+  TEST("normal prompt pins at bottom for live output");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_utf8_input_and_backspace(void) {
   TEST("UTF-8 input is preserved and backspace is character-wide");
   printf("SKIP\n");
@@ -6098,6 +6245,7 @@ int main(void) {
   test_final_render_failure_reports_error();
   test_narrow_terminal_does_not_submit_before_enter();
   test_idle_callback_prints_above_active_prompt();
+  test_normal_prompt_pins_at_bottom_for_live_output();
   test_utf8_input_and_backspace();
   test_utf8_swedish_input_is_rendered_as_full_sequences();
   test_unicode_width_wraps_japanese_and_emoji();

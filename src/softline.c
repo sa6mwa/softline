@@ -196,6 +196,7 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
 static int sl_render_clear_active(sl_t *self);
+static int sl_try_pin_scroll_region(sl_t *self);
 
 static sl_impl_t *sl_impl(sl_t *self) {
   if (!self)
@@ -449,6 +450,13 @@ static int sl_set_scroll_region(int fd, int top, int bottom) {
 
 static int sl_reset_scroll_region(int fd) { return sl_wstr(fd, "\033[r"); }
 
+static void sl_release_auto_scroll_region(sl_impl_t *impl) {
+  if (!impl || !impl->auto_scroll_pinned)
+    return;
+  (void)sl_reset_scroll_region(impl->output_fd);
+  impl->auto_scroll_pinned = 0;
+}
+
 static int sl_scroll_region_up(sl_impl_t *impl, int top, int bottom, int rows) {
   int i;
   int fd;
@@ -514,6 +522,8 @@ static int sl_terminal_columns(sl_impl_t *impl) {
 
 static int sl_terminal_width(sl_impl_t *impl) {
   int width;
+  if (impl && impl->auto_scroll_pinned)
+    return sl_terminal_columns(impl);
   if (!impl->dynamic_width && impl->screen_width > 0)
     return impl->screen_width;
   width = sl_terminal_columns(impl);
@@ -525,6 +535,11 @@ static int sl_terminal_width(sl_impl_t *impl) {
 static int sl_terminal_height(sl_impl_t *impl) {
   struct winsize ws;
   int height;
+  if (impl && impl->auto_scroll_pinned) {
+    if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+      return (int)ws.ws_row;
+    return 24;
+  }
   if (!impl->dynamic_height && impl->screen_height > 0)
     return impl->screen_height;
   if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
@@ -536,7 +551,17 @@ static int sl_terminal_height(sl_impl_t *impl) {
   return height > 0 ? height : 1;
 }
 
-static int sl_bounded_mode(sl_impl_t *impl) { return impl->bounded; }
+static int sl_bounded_mode(sl_impl_t *impl) {
+  return impl && (impl->bounded || impl->auto_scroll_pinned);
+}
+
+static int sl_box_left(sl_impl_t *impl) {
+  return impl && impl->auto_scroll_pinned ? 0 : impl->screen_x;
+}
+
+static int sl_box_top(sl_impl_t *impl) {
+  return impl && impl->auto_scroll_pinned ? 0 : impl->screen_y;
+}
 
 static int sl_box_width(sl_impl_t *impl) {
   int width;
@@ -545,6 +570,8 @@ static int sl_box_width(sl_impl_t *impl) {
 }
 
 static int sl_bounded_scroll_spans_full_width(sl_impl_t *impl) {
+  if (impl && impl->auto_scroll_pinned)
+    return 1;
   if (!impl || impl->screen_x != 0)
     return 0;
   return sl_box_width(impl) >= sl_terminal_columns(impl);
@@ -577,6 +604,8 @@ static int sl_clear_bounded_row(sl_impl_t *impl) {
 }
 
 static int sl_box_bottom(sl_impl_t *impl) {
+  if (impl && impl->auto_scroll_pinned)
+    return sl_terminal_height(impl) - 1;
   return impl->screen_y + sl_terminal_height(impl) - 1;
 }
 
@@ -589,8 +618,8 @@ static int sl_prompt_top(sl_impl_t *impl, int prompt_rows) {
   if (prompt_rows > height)
     prompt_rows = height;
   top = sl_box_bottom(impl) - prompt_rows + 1;
-  if (top < impl->screen_y)
-    top = impl->screen_y;
+  if (top < sl_box_top(impl))
+    top = sl_box_top(impl);
   return top;
 }
 
@@ -2459,8 +2488,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   width = sl_box_width(impl);
   if (impl->rendered_rows > 0 &&
       (impl->rendered_width != width || impl->rendered_height != height)) {
-    for (i = impl->screen_y; i <= sl_box_bottom(impl); i++) {
-      if (sl_write_cursor_pos(impl->output_fd, i, impl->screen_x) != 0 ||
+    for (i = sl_box_top(impl); i <= sl_box_bottom(impl); i++) {
+      if (sl_write_cursor_pos(impl->output_fd, i, sl_box_left(impl)) != 0 ||
           sl_clear_bounded_row(impl) != 0)
         return -1;
     }
@@ -2492,15 +2521,17 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   rc = 0;
 
   if (old_rows > 0 && old_top != top) {
-    if (top < old_top && sl_scroll_region_up(impl, impl->screen_y, old_top - 1,
-                                             old_top - top) != 0)
-      rc = -1;
-    clear_top = old_top < top ? old_top : top;
-    clear_bottom = sl_box_bottom(impl);
-    for (i = clear_top; rc == 0 && i <= clear_bottom; i++) {
-      if (sl_write_cursor_pos(impl->output_fd, i, impl->screen_x) != 0 ||
-          sl_clear_bounded_row(impl) != 0)
+    if (old_top >= sl_box_top(impl)) {
+      if (top < old_top && sl_scroll_region_up(impl, sl_box_top(impl),
+                                               old_top - 1, old_top - top) != 0)
         rc = -1;
+      clear_top = old_top < top ? old_top : top;
+      clear_bottom = sl_box_bottom(impl);
+      for (i = clear_top; rc == 0 && i <= clear_bottom; i++) {
+        if (sl_write_cursor_pos(impl->output_fd, i, sl_box_left(impl)) != 0 ||
+            sl_clear_bounded_row(impl) != 0)
+          rc = -1;
+      }
     }
     sl_render_store_clear(impl);
     old_rows = 0;
@@ -2529,7 +2560,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
         }
       }
       if (!patch_row) {
-        if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0)
+        if (sl_write_cursor_pos(impl->output_fd, top + i, sl_box_left(impl)) !=
+            0)
           rc = -1;
         if (rc == 0 && render->rows[render_row].len > 0 &&
             sl_write_all(impl->output_fd, render->rows[render_row].text,
@@ -2540,7 +2572,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
       } else {
         if (current_row != i || current_col != prefix_col) {
           if (sl_write_cursor_pos(impl->output_fd, top + i,
-                                  impl->screen_x + prefix_col) != 0)
+                                  sl_box_left(impl) + prefix_col) != 0)
             rc = -1;
         }
         if (rc == 0 && prefix_len < render->rows[render_row].len &&
@@ -2565,7 +2597,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     }
   }
   for (i = visible; rc == 0 && i < old_rows; i++) {
-    if (sl_write_cursor_pos(impl->output_fd, top + i, impl->screen_x) != 0 ||
+    if (sl_write_cursor_pos(impl->output_fd, top + i, sl_box_left(impl)) != 0 ||
         sl_clear_bounded_row(impl) != 0)
       rc = -1;
     current_row = -1;
@@ -2574,7 +2606,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   if (rc == 0 &&
       (current_row != cursor_row || current_col != render->cursor_col) &&
       sl_write_cursor_pos(impl->output_fd, top + cursor_row,
-                          impl->screen_x + render->cursor_col) != 0)
+                          sl_box_left(impl) + render->cursor_col) != 0)
     rc = -1;
   if (rc == 0 && sl_show_cursor(impl) != 0)
     rc = -1;
@@ -2672,6 +2704,28 @@ static int sl_render_finish(sl_t *self, int queue_dispatch) {
   if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN &&
       sl_wstr(impl->output_fd, "\033[0m") != 0)
     return -1;
+  if (impl->auto_scroll_pinned) {
+    if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
+      int top;
+      top = impl->rendered_top_row;
+      if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
+        (void)sl_show_cursor(impl);
+        return -1;
+      }
+      sl_release_auto_scroll_region(impl);
+      if (sl_write_cursor_pos(impl->output_fd, top, 0) != 0 ||
+          sl_show_cursor(impl) != 0)
+        return -1;
+      return 0;
+    }
+    sl_release_auto_scroll_region(impl);
+    if (sl_write_line_break(impl) != 0) {
+      sl_set_error(self, "failed to write final newline");
+      return -1;
+    }
+    sl_render_store_clear(impl);
+    return 0;
+  }
   if (sl_bounded_mode(impl)) {
     if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
       if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
@@ -2711,7 +2765,7 @@ static int sl_render_clear_active(sl_t *self) {
       return -1;
     for (i = 0; i < impl->rendered_rows; i++) {
       if (sl_write_cursor_pos(impl->output_fd, impl->rendered_top_row + i,
-                              impl->screen_x) != 0 ||
+                              sl_box_left(impl)) != 0 ||
           sl_clear_bounded_row(impl) != 0)
         return -1;
     }
@@ -2807,10 +2861,12 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   impl = sl_impl(self);
   if (!impl)
     return SL_ERROR_INVALID;
+  if (!sl_bounded_mode(impl) && impl->active_prompt)
+    (void)sl_try_pin_scroll_region(self);
   if (sl_bounded_mode(impl)) {
     prompt_rows = impl->rendered_rows > 0 ? impl->rendered_rows : 1;
     prompt_top = sl_prompt_top(impl, prompt_rows);
-    content_top = impl->screen_y;
+    content_top = sl_box_top(impl);
     content_bottom = prompt_top - 1;
     if (content_bottom >= content_top) {
       if ((impl->active_prompt || impl->cursor_hidden) &&
@@ -2825,7 +2881,7 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
       if (sl_set_scroll_region(impl->output_fd, content_top, content_bottom) !=
               0 ||
           sl_write_cursor_pos(impl->output_fd, content_bottom,
-                              impl->screen_x) != 0) {
+                              sl_box_left(impl)) != 0) {
         (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
       }
@@ -2838,9 +2894,20 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
         (void)sl_show_cursor(impl);
         return rc;
       }
-      sl_render_store_clear(impl);
-      if (impl->active_prompt &&
-          sl_render_apply(self, impl->active_prompt) != 0) {
+      if (impl->active_prompt && impl->rendered_rows > 0) {
+        if (impl->rendered_top_row < 0) {
+          impl->rendered_top_row = prompt_top;
+          impl->rendered_width = sl_box_width(impl);
+          impl->rendered_height = sl_terminal_height(impl);
+        }
+        if (sl_write_cursor_pos(
+                impl->output_fd,
+                impl->rendered_top_row + impl->rendered_cursor_row,
+                sl_box_left(impl) + impl->rendered_cursor_col) != 0 ||
+            sl_show_cursor(impl) != 0)
+          return SL_ERROR_IO;
+      } else if (impl->active_prompt &&
+                 sl_render_apply(self, impl->active_prompt) != 0) {
         (void)sl_show_cursor(impl);
         return SL_ERROR_IO;
       }
@@ -2864,32 +2931,172 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   return SL_OK;
 }
 
-static ssize_t sl_read_escape_byte(int fd, char *ch) {
+static ssize_t sl_read_input_byte(sl_impl_t *impl, char *ch, int timeout_ms) {
   fd_set readfds;
   struct timeval tv;
   int ready;
+  if (!impl || !ch)
+    return -1;
+  if (impl->pending_input_len > 0) {
+    *ch = impl->pending_input[0];
+    if (impl->pending_input_len > 1)
+      memmove(impl->pending_input, impl->pending_input + 1,
+              impl->pending_input_len - 1);
+    impl->pending_input_len--;
+    return 1;
+  }
+  if (timeout_ms < 0)
+    return read(impl->input_fd, ch, 1);
   FD_ZERO(&readfds);
-  FD_SET(fd, &readfds);
-  tv.tv_sec = 0;
-  tv.tv_usec = 100000;
-  ready = select(fd + 1, &readfds, NULL, NULL, &tv);
+  FD_SET(impl->input_fd, &readfds);
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+  ready = select(impl->input_fd + 1, &readfds, NULL, NULL, &tv);
   if (ready <= 0)
     return ready;
-  return read(fd, ch, 1);
+  return read(impl->input_fd, ch, 1);
 }
 
-static ssize_t sl_read_available_byte(int fd, char *ch) {
-  fd_set readfds;
-  struct timeval tv;
-  int ready;
-  FD_ZERO(&readfds);
-  FD_SET(fd, &readfds);
-  tv.tv_sec = 0;
-  tv.tv_usec = 0;
-  ready = select(fd + 1, &readfds, NULL, NULL, &tv);
-  if (ready <= 0)
-    return ready;
-  return read(fd, ch, 1);
+static ssize_t sl_read_escape_byte(sl_impl_t *impl, char *ch) {
+  return sl_read_input_byte(impl, ch, 100);
+}
+
+static ssize_t sl_read_available_byte(sl_impl_t *impl, char *ch) {
+  return sl_read_input_byte(impl, ch, 0);
+}
+
+static void sl_pending_input_append(sl_impl_t *impl, const char *text,
+                                    size_t len) {
+  size_t room;
+  if (!impl || !text || len == 0 ||
+      impl->pending_input_len >= SL_PENDING_INPUT_MAX)
+    return;
+  room = SL_PENDING_INPUT_MAX - impl->pending_input_len;
+  if (len > room)
+    len = room;
+  memcpy(impl->pending_input + impl->pending_input_len, text, len);
+  impl->pending_input_len += len;
+}
+
+/* Read a Device Status Report cursor-position reply while preserving any user
+ * input that happens to arrive first. A terminal that does not support DSR is
+ * simply left on the normal unbounded rendering path. */
+static int sl_query_cursor_row(sl_t *self) {
+  sl_impl_t *impl;
+  char candidate[SL_PENDING_INPUT_MAX];
+  size_t candidate_len;
+  struct timeval started;
+  int row;
+  int col;
+  int have_row;
+  int have_col;
+  impl = sl_impl(self);
+  if (!impl || impl->cursor_position_probe < 0 || !isatty(impl->input_fd) ||
+      !isatty(impl->output_fd))
+    return -1;
+  if (sl_wstr(impl->output_fd, "\033[6n") != 0) {
+    impl->cursor_position_probe = -1;
+    return -1;
+  }
+  if (gettimeofday(&started, NULL) != 0) {
+    impl->cursor_position_probe = -1;
+    return -1;
+  }
+  candidate_len = 0;
+  for (;;) {
+    struct timeval now;
+    long elapsed_ms;
+    int timeout_ms;
+    char ch;
+    ssize_t n;
+    int valid;
+    size_t i;
+    if (gettimeofday(&now, NULL) != 0)
+      break;
+    elapsed_ms = (long)(now.tv_sec - started.tv_sec) * 1000L +
+                 (long)(now.tv_usec - started.tv_usec) / 1000L;
+    timeout_ms = elapsed_ms >= 100L ? 0 : 100 - (int)elapsed_ms;
+    n = sl_read_input_byte(impl, &ch, timeout_ms);
+    if (n != 1)
+      break;
+    if (candidate_len == 0 && ch != '\033') {
+      sl_pending_input_append(impl, &ch, 1);
+      continue;
+    }
+    if (candidate_len >= sizeof(candidate)) {
+      sl_pending_input_append(impl, candidate, candidate_len);
+      candidate_len = 0;
+      sl_pending_input_append(impl, &ch, 1);
+      continue;
+    }
+    candidate[candidate_len++] = ch;
+    valid = 1;
+    row = 0;
+    col = 0;
+    have_row = 0;
+    have_col = 0;
+    if (candidate[0] != '\033')
+      valid = 0;
+    if (valid && candidate_len > 1 && candidate[1] != '[')
+      valid = 0;
+    i = 2;
+    while (valid && i < candidate_len && candidate[i] >= '0' &&
+           candidate[i] <= '9') {
+      row = row * 10 + (candidate[i] - '0');
+      have_row = 1;
+      i++;
+    }
+    if (valid && i < candidate_len && candidate[i] != ';')
+      valid = 0;
+    if (valid && i < candidate_len) {
+      i++;
+      while (i < candidate_len && candidate[i] >= '0' && candidate[i] <= '9') {
+        col = col * 10 + (candidate[i] - '0');
+        have_col = 1;
+        i++;
+      }
+      if (i < candidate_len && candidate[i] != 'R')
+        valid = 0;
+      else if (i < candidate_len)
+        i++;
+    }
+    if (!valid || i < candidate_len) {
+      sl_pending_input_append(impl, candidate, candidate_len);
+      candidate_len = 0;
+      continue;
+    }
+    if (have_row && have_col && i == candidate_len &&
+        candidate[candidate_len - 1] == 'R') {
+      if (row > 0 && col > 0) {
+        impl->cursor_position_probe = 1;
+        return row;
+      }
+      break;
+    }
+  }
+  sl_pending_input_append(impl, candidate, candidate_len);
+  impl->cursor_position_probe = -1;
+  return -1;
+}
+
+static int sl_try_pin_scroll_region(sl_t *self) {
+  sl_impl_t *impl;
+  int cursor_row;
+  int prompt_top;
+  int prompt_bottom;
+  impl = sl_impl(self);
+  if (!impl || impl->bounded || impl->auto_scroll_pinned ||
+      !impl->active_prompt || impl->rendered_rows < 1)
+    return 0;
+  cursor_row = sl_query_cursor_row(self);
+  if (cursor_row < 1)
+    return 0;
+  prompt_top = cursor_row - 1 - impl->rendered_cursor_row;
+  prompt_bottom = prompt_top + impl->rendered_rows - 1;
+  if (prompt_top < 0 || prompt_bottom < sl_terminal_height(impl) - 1)
+    return 0;
+  impl->auto_scroll_pinned = 1;
+  return 1;
 }
 
 static int sl_read_utf8_input(sl_impl_t *impl, char first, char *buf,
@@ -2915,7 +3122,7 @@ static int sl_read_utf8_input(sl_impl_t *impl, char first, char *buf,
   for (i = 1; i < need; i++) {
     char next;
     ssize_t n;
-    n = sl_read_escape_byte(impl->input_fd, &next);
+    n = sl_read_escape_byte(impl, &next);
     if (n != 1)
       return 0;
     if (((unsigned char)next & 0xc0) != 0x80)
@@ -2930,12 +3137,12 @@ static int sl_read_key(sl_impl_t *impl) {
   char ch;
   ssize_t n;
   errno = 0;
-  n = read(impl->input_fd, &ch, 1);
+  n = sl_read_input_byte(impl, &ch, -1);
   if (n <= 0)
     return SL_KEY_NONE;
   if (ch != '\033')
     return (int)(unsigned char)ch;
-  n = sl_read_escape_byte(impl->input_fd, &ch);
+  n = sl_read_escape_byte(impl, &ch);
   if (n <= 0)
     return SL_KEY_ESCAPE;
   if (ch == 'b')
@@ -2949,7 +3156,7 @@ static int sl_read_key(sl_impl_t *impl) {
       return SL_KEY_ALT_BASE + (unsigned char)ch;
     return SL_KEY_UNKNOWN;
   }
-  n = sl_read_escape_byte(impl->input_fd, &ch);
+  n = sl_read_escape_byte(impl, &ch);
   if (n <= 0)
     return SL_KEY_UNKNOWN;
   switch (ch) {
@@ -2979,11 +3186,11 @@ static int sl_read_key(sl_impl_t *impl) {
     int modifier;
     code = ch - '0';
     modifier = 0;
-    while (sl_read_escape_byte(impl->input_fd, &ch) == 1) {
+    while (sl_read_escape_byte(impl, &ch) == 1) {
       if (ch == '~')
         break;
       if (ch == ';') {
-        while (sl_read_escape_byte(impl->input_fd, &ch) == 1) {
+        while (sl_read_escape_byte(impl, &ch) == 1) {
           if (ch < '0' || ch > '9')
             break;
           modifier = modifier * 10 + (ch - '0');
@@ -3044,7 +3251,7 @@ static int sl_read_paste_input(sl_impl_t *impl, char *buf, size_t *len) {
     return SL_KEY_NONE;
   *len = 0;
   errno = 0;
-  n = read(impl->input_fd, &ch, 1);
+  n = sl_read_input_byte(impl, &ch, -1);
   if (n <= 0)
     return SL_KEY_NONE;
   if (ch == '\r')
@@ -3057,7 +3264,7 @@ static int sl_read_paste_input(sl_impl_t *impl, char *buf, size_t *len) {
     return SL_KEY_UNKNOWN;
   }
   for (i = 1; i < sizeof(paste_end) - 1; i++) {
-    n = sl_read_escape_byte(impl->input_fd, &ch);
+    n = sl_read_escape_byte(impl, &ch);
     if (n != 1)
       return SL_KEY_UNKNOWN;
     buf[i] = ch;
@@ -3105,7 +3312,7 @@ static char *sl_readline_plain(sl_t *self, const char *prompt) {
     got = 1;
     if (ch == '\r') {
       char next;
-      nread = sl_read_available_byte(impl->input_fd, &next);
+      nread = sl_read_available_byte(impl, &next);
       if (nread == 1 && next != '\n') {
         impl->plain_pending = 1;
         impl->plain_pending_ch = next;
@@ -3724,6 +3931,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   if (interrupted) {
     sl_history_search_cleanup(&search);
     sl_render_clear_active(self);
+    sl_release_auto_scroll_region(impl);
+    (void)sl_show_cursor(impl);
     impl->active_prompt = NULL;
     impl->bracketed_paste = 0;
     sl_disable_bracketed_paste(impl);
@@ -3734,6 +3943,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   }
   if (failed) {
     sl_history_search_cleanup(&search);
+    sl_release_auto_scroll_region(impl);
+    (void)sl_show_cursor(impl);
     impl->active_prompt = NULL;
     impl->bracketed_paste = 0;
     sl_disable_bracketed_paste(impl);
@@ -3758,6 +3969,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   impl->bracketed_paste = 0;
   sl_disable_bracketed_paste(impl);
   sl_disable_raw(self);
+  sl_release_auto_scroll_region(impl);
+  (void)sl_show_cursor(impl);
   impl->active_prompt = NULL;
   if (failed) {
     sl_history_search_cleanup(&search);
@@ -3834,6 +4047,7 @@ static void sl_destroy_method(sl_t *self) {
   if (!self)
     return;
   if (impl) {
+    sl_release_auto_scroll_region(impl);
     sl_disable_raw(self);
     (void)sl_show_cursor(impl);
     sl_history_clear(&impl->history);

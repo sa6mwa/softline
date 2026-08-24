@@ -133,6 +133,15 @@ input resumes. During a bounded structural update or transcript dispatch,
 softline hides the hardware cursor and restores it only at the final prompt
 position, preventing visible cursor travel across the prompt area.
 
+For a normal scrollback prompt, streamed output remains ordinary terminal
+output until the active prompt reaches the bottom row. At that point softline
+uses a temporary full-width scroll region above the active prompt, so live
+output scrolls without clearing and repainting the prompt. Queue previews,
+status lines, wrapping, and resize reflow change that region with the prompt.
+Softline resets the region whenever the edit finishes; terminals that do not
+answer the cursor-position report continue with the compatible clear-and-redraw
+path.
+
 For a persistent bottom prompt, use this bounded mode as a full-screen terminal
 UI on the alternate screen. That keeps the main scrollback intact and lets
 softline manage the prompt box and transcript scroll region coherently.
