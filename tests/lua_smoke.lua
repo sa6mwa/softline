@@ -53,6 +53,7 @@ assert(status:set_status_idle_marker("-"))
 assert(status:set_status_idle_marker(nil))
 assert(softline.PROMPT_THEME_DRACULA)
 assert(softline.PROMPT_THEME_SYNTHWAVE)
+assert(softline.PROMPT_THEME_DEFAULT)
 status:close()
 
 print("lua softline smoke passed")

@@ -69,7 +69,7 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
 - `sl:set_prompt_queue(enabled, max_entries, preview_entries)` enables the
   chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
   queued entry into the editor.
-- `sl:set_prompt_theme(theme)` selects one of `PROMPT_THEME_PLAIN`,
+- `sl:set_prompt_theme(theme)` selects one of `PROMPT_THEME_DEFAULT`, `PROMPT_THEME_PLAIN`,
   `PROMPT_THEME_ACCENT`, `PROMPT_THEME_DRACULA`, `PROMPT_THEME_GRUVBOX`,
   `PROMPT_THEME_MONOCHROME`, `PROMPT_THEME_MONOGREEN`, `PROMPT_THEME_OUTRUN`,
   `PROMPT_THEME_RICED`, or `PROMPT_THEME_SYNTHWAVE` for the whole interactive

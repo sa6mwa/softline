@@ -62,8 +62,9 @@ Currently implemented:
   draft, Alt-E recalls the newest queued draft for editing, and
   `next_prompt()` returns queued work before opening a direct editor while
   identifying whether the result was queued or direct. The renderer ships
-  plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun, Riced, and
-  Synthwave prompt themes. Optional status lines use the selected palette.
+  default, plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun,
+  Riced, and Synthwave prompt themes. Optional status lines use the selected
+  palette.
 - UTF-8 input is preserved, common Unicode clusters are kept intact by
   cursor/delete operations, and rendering accounts for combining marks, East
   Asian wide characters, and common emoji widths.
@@ -101,6 +102,7 @@ line-oriented input/output.
 ```sh
 make run-simple
 make run-chat
+make run-chat-default
 make run-chat-plain
 make run-chat-riced
 make run-chat-monogreen
@@ -111,10 +113,9 @@ make run-chat-synthwave
 The chat convenience targets build the C example before launching it.
 `run-chat` uses Gruvbox by default; pass `THEME=...` to override it. Both C
 and Lua examples accept
-`SOFTLINE_PROMPT_THEME=plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
+`SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
-expose that as `THEME=...`. The simple examples default to `plain`; the chat
-example itself defaults to `accent` when launched without a theme, while
+expose that as `THEME=...`. The simple and chat examples default to `default`;
 `make run-chat` supplies Gruvbox.
 
 ## Bounded prompts
@@ -149,7 +150,7 @@ handle configuration or after construction, and read application work through
 sl_prompt_source_t source;
 
 sl->set_prompt_queue(sl, 1, 64, 3);
-sl->set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT);
+sl->set_prompt_theme(sl, SL_PROMPT_THEME_DEFAULT);
 
 for (;;) {
   char *line = sl->next_prompt(sl, NULL, &source);
@@ -166,12 +167,14 @@ current input; Tab on an empty editor is a no-op. The panel uses the themed
 entries exceed the configured preview count. Alt-E removes the newest queued
 entry and restores it to the editor. Explicit key bindings continue to override
 these defaults. Prompt appearance is renderer-owned so it remains safe with
-layout: `plain` is uncoloured; `accent`, Dracula, Gruvbox, monochrome,
-monogreen, Outrun, Riced, and Synthwave use their embedded palettes. The
-selected theme applies to every interactive prompt, including normal readline
-prompts, status lines, and queue panels. Prompt markers reset before typed
-text; monochrome and monogreen additionally colour typed text as defined by
-their palettes.
+layout: `default` uses only standard ANSI colours: a bold bright-white marker,
+normal terminal-colour input, subdued dark-gray queue text and separators,
+standard-colour status elements, and red/green busy markers. `plain` is
+uncoloured; `accent`, Dracula, Gruvbox, monochrome, monogreen, Outrun, Riced,
+and Synthwave use their embedded palettes. The selected theme applies to every
+interactive prompt, including normal readline prompts, status lines, and queue
+panels. Prompt markers reset before typed text; monochrome and monogreen
+additionally colour typed text as defined by their palettes.
 
 ## Status lines
 

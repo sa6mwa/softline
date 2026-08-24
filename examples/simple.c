@@ -11,7 +11,9 @@ static int set_prompt_theme_from_environment(sl_t *sl,
   name = getenv("SOFTLINE_PROMPT_THEME");
   theme = fallback;
   if (name && name[0] != '\0') {
-    if (strcmp(name, "plain") == 0)
+    if (strcmp(name, "default") == 0)
+      theme = SL_PROMPT_THEME_DEFAULT;
+    else if (strcmp(name, "plain") == 0)
       theme = SL_PROMPT_THEME_PLAIN;
     else if (strcmp(name, "accent") == 0)
       theme = SL_PROMPT_THEME_ACCENT;
@@ -31,8 +33,9 @@ static int set_prompt_theme_from_environment(sl_t *sl,
       theme = SL_PROMPT_THEME_SYNTHWAVE;
     else {
       fprintf(stderr,
-              "invalid SOFTLINE_PROMPT_THEME: %s (use plain, accent, dracula, "
-              "gruvbox, monochrome, monogreen, outrun, riced, or synthwave)\n",
+              "invalid SOFTLINE_PROMPT_THEME: %s (use default, plain, accent, "
+              "dracula, gruvbox, monochrome, monogreen, outrun, riced, or "
+              "synthwave)\n",
               name);
       return -1;
     }
@@ -49,7 +52,7 @@ int main(void) {
     fprintf(stderr, "failed to create softline\n");
     return 1;
   }
-  if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_PLAIN) != 0) {
+  if (set_prompt_theme_from_environment(sl, SL_PROMPT_THEME_DEFAULT) != 0) {
     fprintf(stderr, "failed to set prompt theme\n");
     sl->destroy(sl);
     return 1;

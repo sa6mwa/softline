@@ -154,7 +154,7 @@ static void test_config_init(void) {
   ASSERT_TRUE(cfg.prompt_queue_max_entries == 64, "prompt queue max default");
   ASSERT_TRUE(cfg.prompt_queue_preview_entries == 3,
               "prompt queue preview default");
-  ASSERT_TRUE(cfg.prompt_theme == SL_PROMPT_THEME_PLAIN,
+  ASSERT_TRUE(cfg.prompt_theme == SL_PROMPT_THEME_DEFAULT,
               "prompt theme default");
   ASSERT_TRUE(cfg.statusline == 0, "status line default");
   ASSERT_TRUE(cfg.statusline_start_element == 0,
@@ -164,6 +164,13 @@ static void test_config_init(void) {
   ASSERT_TRUE(cfg.status_idle_marker == '+', "status idle marker default");
   PASS();
 }
+
+static void test_plain_config_init(sl_config_t *config) {
+  sl_config_init(config);
+  config->prompt_theme = SL_PROMPT_THEME_PLAIN;
+}
+
+#define sl_config_init test_plain_config_init
 
 static void test_receiver_shell(void) {
   sl_t *sl;
@@ -2117,9 +2124,9 @@ static int set_status_busy_spinner_key(sl_t *sl, sl_key_t key, void *userdata,
   return SL_OK;
 }
 
-static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
-                                   char *result, size_t result_cap,
-                                   int *exit_status) {
+static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
+                                   size_t terminal_cap, char *result,
+                                   size_t result_cap, int *exit_status) {
   static const char *const elements[] = {
       "e0",  "e1",  "e2",  "e3",  "e4",  "e5",  "e6",  "e7",  "e8",
       "e9",  "e10", "e11", "e12", "e13", "e14", "e15", "e16", "e17",
@@ -2133,6 +2140,9 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
   ssize_t n;
   int status;
   int tries;
+  const char *idle_style;
+  const char *busy_style;
+  const char *element_style;
 
   if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
       pipe(result_pipe) != 0)
@@ -2150,7 +2160,7 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     cfg.screen_width = 24;
-    cfg.prompt_theme = SL_PROMPT_THEME_RICED;
+    cfg.prompt_theme = theme;
     cfg.statusline = 1;
     cfg.statusline_start_element = 15;
     cfg.status_spinner = 1;
@@ -2181,6 +2191,13 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
   }
   close(slave_fd);
   close(result_pipe[1]);
+  idle_style = theme == SL_PROMPT_THEME_DEFAULT ? "\033[32m+ "
+                                                : "\033[38;2;57;255;20m+ ";
+  busy_style = theme == SL_PROMPT_THEME_DEFAULT ? "\033[31m- "
+                                                : "\033[38;2;255;51;51m- ";
+  element_style = theme == SL_PROMPT_THEME_DEFAULT
+                      ? "\r  \033[97me0"
+                      : "\r  \033[38;2;172;164;184me0";
   terminal_len = 0;
   terminal[0] = '\0';
   while (!contains_bytes(terminal, "status> ")) {
@@ -2194,7 +2211,7 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
       return -1;
   }
   tries = 0;
-  while (!contains_bytes(terminal, "\033[38;2;57;255;20m+ ") && tries < 20) {
+  while (!contains_bytes(terminal, idle_style) && tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n < 0)
@@ -2207,12 +2224,12 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     }
     tries++;
   }
-  if (!contains_bytes(terminal, "\033[38;2;57;255;20m+ "))
+  if (!contains_bytes(terminal, idle_style))
     return -1;
   if (write(master_fd, "\033p", 2) != 2)
     return -1;
   tries = 0;
-  while (!contains_bytes(terminal, "\033[38;2;255;51;51m- ") && tries < 20) {
+  while (!contains_bytes(terminal, busy_style) && tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n < 0)
@@ -2225,12 +2242,32 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     }
     tries++;
   }
-  if (!contains_bytes(terminal, "\033[38;2;255;51;51m- "))
+  if (!contains_bytes(terminal, busy_style))
     return -1;
   if (write(master_fd, "\033m", 2) != 2)
     return -1;
   tries = 0;
-  while (!contains_bytes(terminal, "\r  \033[38;2;172;164;184me0") &&
+  while (!contains_bytes(terminal, element_style) && tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, element_style))
+    return -1;
+  if (write(master_fd, "\033n", 2) != 2)
+    return -1;
+  tries = 0;
+  while (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
+                                       ? "\033[32m- "
+                                       : "\033[38;2;57;255;20m- ") &&
          tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
@@ -2244,25 +2281,9 @@ static int run_pty_statusline_case(char *terminal, size_t terminal_cap,
     }
     tries++;
   }
-  if (!contains_bytes(terminal, "\r  \033[38;2;172;164;184me0"))
-    return -1;
-  if (write(master_fd, "\033n", 2) != 2)
-    return -1;
-  tries = 0;
-  while (!contains_bytes(terminal, "\033[38;2;57;255;20m- ") && tries < 20) {
-    n = read_some_with_timeout(master_fd, terminal + terminal_len,
-                               terminal_cap - 1 - terminal_len);
-    if (n < 0)
-      return -1;
-    if (n > 0) {
-      terminal_len += (size_t)n;
-      terminal[terminal_len] = '\0';
-      if (terminal_len >= terminal_cap - 1)
-        return -1;
-    }
-    tries++;
-  }
-  if (!contains_bytes(terminal, "\033[38;2;57;255;20m- "))
+  if (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
+                                    ? "\033[32m- "
+                                    : "\033[38;2;57;255;20m- "))
     return -1;
   if (write(master_fd, "ok\r", 3) != 3)
     return -1;
@@ -2941,6 +2962,19 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
           contains_bytes(terminal, "\033[38;2;172;164;184mfirst") &&
           contains_bytes(terminal, "\033[1;38;2;255;255;255mchat> \033[0m"),
       "riced full prompt treatment missing");
+  ASSERT_TRUE(run_pty_prompt_queue_case(
+                  "first\tsecond\r", SL_PROMPT_THEME_DEFAULT, 1, 0, 2, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "default prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "default prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
+              "default prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[90mQ ") &&
+                  contains_bytes(terminal, "\033[90mfirst") &&
+                  contains_bytes(terminal, "\033[1;97mchat> \033[0m") &&
+                  !contains_bytes(terminal, "\033[38;2;"),
+              "default ANSI queue treatment missing");
   for (i = 0; i < sizeof(stash_themes) / sizeof(stash_themes[0]); i++) {
     ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\r", stash_themes[i], 1,
                                           0, 2, terminal, sizeof(terminal),
@@ -3017,11 +3051,13 @@ static void test_prompt_queue_alt_e_recalls_newest(void) {
 
 static void test_prompt_themes_style_normal_readline(void) {
   static const sl_prompt_theme_t themes[] = {
-      SL_PROMPT_THEME_ACCENT,    SL_PROMPT_THEME_DRACULA,
-      SL_PROMPT_THEME_GRUVBOX,   SL_PROMPT_THEME_MONOCHROME,
-      SL_PROMPT_THEME_MONOGREEN, SL_PROMPT_THEME_OUTRUN,
-      SL_PROMPT_THEME_RICED,     SL_PROMPT_THEME_SYNTHWAVE};
-  static const char *const styles[] = {"\033[1;36mnormal> ",
+      SL_PROMPT_THEME_DEFAULT,    SL_PROMPT_THEME_ACCENT,
+      SL_PROMPT_THEME_DRACULA,    SL_PROMPT_THEME_GRUVBOX,
+      SL_PROMPT_THEME_MONOCHROME, SL_PROMPT_THEME_MONOGREEN,
+      SL_PROMPT_THEME_OUTRUN,     SL_PROMPT_THEME_RICED,
+      SL_PROMPT_THEME_SYNTHWAVE};
+  static const char *const styles[] = {"\033[1;97mnormal> ",
+                                       "\033[1;36mnormal> ",
                                        "\033[38;2;98;114;164mnormal> ",
                                        "\033[1;38;2;184;187;38mnormal> ",
                                        "\033[1;38;2;168;118;40mnormal> ",
@@ -3030,6 +3066,7 @@ static void test_prompt_themes_style_normal_readline(void) {
                                        "\033[1;38;2;255;255;255mnormal> ",
                                        "\033[1;38;2;255;126;219mnormal> "};
   static const char *const input_styles[] = {"",
+                                             "",
                                              "",
                                              "",
                                              "\033[38;2;255;224;138mok\033[0m",
@@ -3059,6 +3096,9 @@ static void test_prompt_themes_style_normal_readline(void) {
                    styles[i]);
     ASSERT_TRUE(contains_bytes(terminal, styled_prompt),
                 "themed prompt did not reset before typed input");
+    if (themes[i] == SL_PROMPT_THEME_DEFAULT)
+      ASSERT_TRUE(!contains_bytes(terminal, "\033[38;2;"),
+                  "default prompt used true-colour output");
     if (input_styles[i][0] != '\0')
       ASSERT_TRUE(contains_bytes(terminal, input_styles[i]),
                   "themed input treatment missing");
@@ -3072,8 +3112,9 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
   int status;
 
   TEST("status line offsets colours and truncates after 32 elements");
-  ASSERT_TRUE(run_pty_statusline_case(terminal, sizeof(terminal), result,
-                                      sizeof(result), &status) == 0,
+  ASSERT_TRUE(run_pty_statusline_case(SL_PROMPT_THEME_RICED, terminal,
+                                      sizeof(terminal), result, sizeof(result),
+                                      &status) == 0,
               "status line pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "status line child failed");
@@ -3096,6 +3137,32 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
               "status line did not retain 31 elements plus ellipsis");
   ASSERT_TRUE(contains_after_bytes(terminal, "e7", "\n"),
               "status elements did not wrap between elements");
+  PASS();
+}
+
+static void test_default_statusline_uses_ansi_palette(void) {
+  char terminal[16384];
+  char result[64];
+  int status;
+
+  TEST("default status line uses standard ANSI palette");
+  ASSERT_TRUE(run_pty_statusline_case(SL_PROMPT_THEME_DEFAULT, terminal,
+                                      sizeof(terminal), result, sizeof(result),
+                                      &status) == 0,
+              "default status line pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "default status line child failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0, "default status line result mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[31m/ ") &&
+                  contains_bytes(terminal, "\033[31m- ") &&
+                  contains_bytes(terminal, "\033[32m+ ") &&
+                  contains_bytes(terminal, "\033[32m- "),
+              "default status markers did not use ANSI red and green");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[97me0") &&
+                  contains_bytes(terminal, "\033[36me1") &&
+                  contains_bytes(terminal, "\033[90m : ") &&
+                  !contains_bytes(terminal, "\033[38;2;"),
+              "default status palette did not use ANSI colours");
   PASS();
 }
 
@@ -5722,6 +5789,11 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_default_statusline_uses_ansi_palette(void) {
+  TEST("default status line uses standard ANSI palette");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_key_binding_alt_m_inserts_text(void) {
   TEST("key binding Alt-M inserts text");
   printf("SKIP\n");
@@ -5985,6 +6057,7 @@ int main(void) {
   test_prompt_queue_alt_e_recalls_newest();
   test_prompt_themes_style_normal_readline();
   test_statusline_uses_palette_offset_and_truncation();
+  test_default_statusline_uses_ansi_palette();
   test_key_binding_alt_m_inserts_text();
   test_key_binding_f1_submits();
   test_key_binding_can_edit_buffer_and_submit();

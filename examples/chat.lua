@@ -1,7 +1,8 @@
 local softline = require("softline")
 
-local theme_name = os.getenv("SOFTLINE_PROMPT_THEME") or "accent"
+local theme_name = os.getenv("SOFTLINE_PROMPT_THEME") or "default"
 local themes = {
+  default = softline.PROMPT_THEME_DEFAULT,
   plain = softline.PROMPT_THEME_PLAIN,
   accent = softline.PROMPT_THEME_ACCENT,
   dracula = softline.PROMPT_THEME_DRACULA,

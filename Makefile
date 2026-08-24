@@ -48,12 +48,16 @@ build: ## Build debug target
 build-debug: build ## Build debug target
 
 .PHONY: run-simple
-run-simple: build-debug ## Run C simple example (THEME=plain|accent|riced)
+run-simple: build-debug ## Run C simple example (THEME=default|plain|...)
 	@$(EXAMPLE_THEME_ENV) ./build/debug/examples/example_simple
 
 .PHONY: run-chat
 run-chat: build-debug ## Run C chat example (Gruvbox by default; THEME=... overrides)
 	@SOFTLINE_PROMPT_THEME="$(if $(strip $(THEME)),$(THEME),gruvbox)" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-default
+run-chat-default: build-debug ## Run C chat example with the default ANSI theme
+	@SOFTLINE_PROMPT_THEME="default" ./build/debug/examples/example_chat
 
 .PHONY: run-chat-riced
 run-chat-riced: build-debug ## Run C chat example with the riced theme

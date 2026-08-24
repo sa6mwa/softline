@@ -176,6 +176,21 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {179, 169, 192},
                                                         1,
                                                         {0, 0, 0},
+                                                        0},
+                                                       {{{0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0},
+                                                         {0, 0, 0}},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        {0, 0, 0},
+                                                        0,
+                                                        {0, 0, 0},
                                                         0}};
 
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
@@ -319,7 +334,7 @@ static int sl_statusline_text_valid(const char *text) {
 }
 
 static const sl_theme_palette_t *sl_theme_palette(sl_prompt_theme_t theme) {
-  if (theme < SL_PROMPT_THEME_PLAIN || theme > SL_PROMPT_THEME_SYNTHWAVE)
+  if (theme < SL_PROMPT_THEME_PLAIN || theme > SL_PROMPT_THEME_DEFAULT)
     return NULL;
   return &sl_theme_palettes[(int)theme];
 }
@@ -1876,6 +1891,8 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
 }
 
 static const char *sl_prompt_theme_style(sl_prompt_theme_t theme) {
+  if (theme == SL_PROMPT_THEME_DEFAULT)
+    return "\033[1;97m";
   if (theme == SL_PROMPT_THEME_ACCENT)
     return "\033[1;36m";
   if (theme == SL_PROMPT_THEME_DRACULA)
@@ -2013,9 +2030,13 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   static const char spinner_frames[] = "/-\\|";
   static const sl_rgb_t busy_colour = {255, 51, 51};
   static const sl_rgb_t idle_colour = {57, 255, 20};
+  static const char *const default_element_styles[] = {
+      "\033[36m", "\033[33m", "\033[35m", "\033[34m",
+      "\033[32m", "\033[31m", "\033[37m", "\033[97m"};
   sl_impl_t *impl;
   sl_statusline_t *statusline;
   const sl_theme_palette_t *palette;
+  const char *default_style;
   char marker[3];
   char style[32];
   int col;
@@ -2046,8 +2067,17 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
     marker[2] = '\0';
     marker_width = 2;
   }
-  if ((statusline->busy || statusline->idle_marker != '\0') && palette &&
-      impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+  default_style = NULL;
+  if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT &&
+      (statusline->busy || statusline->idle_marker != '\0')) {
+    default_style = statusline->busy ? "\033[31m" : "\033[32m";
+  }
+  if (default_style) {
+    if (sl_row_append_styled(&render->rows[render->count - 1], marker,
+                             default_style) != 0)
+      return -1;
+  } else if ((statusline->busy || statusline->idle_marker != '\0') && palette &&
+             impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
     sl_rgb_t colour;
     colour = statusline->busy ? busy_colour : idle_colour;
     if (sl_rgb_style(style, sizeof(style), colour, 0) != 0 ||
@@ -2081,7 +2111,11 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
       have_element = 0;
     }
     if (have_element) {
-      if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+      if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
+        if (sl_row_append_styled(&render->rows[render->count - 1], " : ",
+                                 "\033[90m") != 0)
+          return -1;
+      } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
         if (sl_rgb_style(style, sizeof(style), palette->separator, 0) != 0 ||
             sl_row_append_styled(&render->rows[render->count - 1], " : ",
                                  style) != 0)
@@ -2092,7 +2126,13 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
       }
       col += 3;
     }
-    if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+    if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
+      if (sl_statusline_append_wrapped(
+              render, width, &col, element,
+              default_element_styles[(statusline->start_element + i) % 8],
+              indent) != 0)
+        return -1;
+    } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
       if (sl_rgb_style(style, sizeof(style),
                        palette->elements[(statusline->start_element + i) % 8],
                        0) != 0 ||
@@ -2128,7 +2168,10 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   control_style = "";
   text_style = "";
   palette = sl_theme_palette(impl->prompt_theme);
-  if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+  if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
+    control_style = "\033[90m";
+    text_style = "\033[90m";
+  } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
     if (sl_rgb_style(queue_style, sizeof(queue_style), palette->queue, 0) !=
             0 ||
         sl_rgb_style(queue_text_style, sizeof(queue_text_style),
@@ -3845,7 +3888,7 @@ static int sl_set_prompt_theme_method(sl_t *self, sl_prompt_theme_t theme) {
   sl_impl_t *impl;
   impl = sl_impl(self);
   if (!impl || theme < SL_PROMPT_THEME_PLAIN ||
-      theme > SL_PROMPT_THEME_SYNTHWAVE) {
+      theme > SL_PROMPT_THEME_DEFAULT) {
     sl_set_error(self, "invalid prompt theme");
     return SL_ERROR_INVALID;
   }
@@ -4047,7 +4090,7 @@ void sl_config_init(sl_config_t *config) {
   config->prompt_queue = 0;
   config->prompt_queue_max_entries = SL_PROMPT_QUEUE_DEFAULT_MAX;
   config->prompt_queue_preview_entries = SL_PROMPT_QUEUE_DEFAULT_PREVIEWS;
-  config->prompt_theme = SL_PROMPT_THEME_PLAIN;
+  config->prompt_theme = SL_PROMPT_THEME_DEFAULT;
   config->statusline = 0;
   config->statusline_start_element = 0;
   config->status_spinner = 0;
@@ -4069,7 +4112,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
       config->prompt_queue < 0 || config->prompt_queue_max_entries < 1 ||
       config->prompt_queue_preview_entries < 1 ||
       config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
-      config->prompt_theme > SL_PROMPT_THEME_SYNTHWAVE ||
+      config->prompt_theme > SL_PROMPT_THEME_DEFAULT ||
       config->statusline < 0 || config->status_spinner < 0 ||
       config->status_busy < 0 ||
       (config->status_idle_marker != '\0' &&

@@ -218,7 +218,9 @@ typedef enum sl_prompt_theme {
   /** The Riced true-colour palette. */
   SL_PROMPT_THEME_RICED = 7,
   /** The Synthwave true-colour palette. */
-  SL_PROMPT_THEME_SYNTHWAVE = 8
+  SL_PROMPT_THEME_SYNTHWAVE = 8,
+  /** The standard 16-colour ANSI prompt palette. */
+  SL_PROMPT_THEME_DEFAULT = 9
 } sl_prompt_theme_t;
 
 /** Maximum number of retained status-line elements. */

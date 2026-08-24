@@ -709,6 +709,8 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "PROMPT_THEME_RICED");
   lua_pushinteger(L, SL_PROMPT_THEME_SYNTHWAVE);
   lua_setfield(L, -2, "PROMPT_THEME_SYNTHWAVE");
+  lua_pushinteger(L, SL_PROMPT_THEME_DEFAULT);
+  lua_setfield(L, -2, "PROMPT_THEME_DEFAULT");
   lua_pushinteger(L, SL_KEY_CTRL_C);
   lua_setfield(L, -2, "KEY_CTRL_C");
   lua_pushinteger(L, SL_KEY_ACTION_PASS);
