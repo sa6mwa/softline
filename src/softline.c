@@ -1885,6 +1885,7 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
   size_t pos;
   size_t len;
   int cols;
+  int screen_cols;
   int clipped;
   const char *reset;
   if (!row || !text || available < 1)
@@ -1895,20 +1896,46 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
   pos = 0;
   len = strlen(text);
   cols = 0;
+  screen_cols = row->cols;
   clipped = 0;
   while (pos < len && text[pos] != '\n') {
+    unsigned char ch;
     int cells;
     size_t n;
-    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
-    if (n == 0)
-      n = 1;
+    char visible[9];
+    ch = (unsigned char)text[pos];
+    n = 1;
+    if (ch == '\t') {
+      cells = 8 - (screen_cols % 8);
+      memset(visible, ' ', (size_t)cells);
+      visible[cells] = '\0';
+    } else if (ch < 0x20 || ch == 0x7f) {
+      cells = 2;
+      visible[0] = '^';
+      visible[1] = ch == 0x7f ? '?' : (char)(ch + '@');
+      visible[2] = '\0';
+    } else if (ch >= 0x80 && ch <= 0x9f) {
+      cells = 4;
+      (void)snprintf(visible, sizeof(visible), "\\x%02X", ch);
+    } else {
+      n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+      if (n == 0) {
+        n = 1;
+        cells = 1;
+      }
+    }
     if (cells > 0 && cols + cells > available) {
       clipped = 1;
       break;
     }
-    if (sl_row_append_cells(row, text + pos, n, cells) != 0)
+    if (ch == '\t' || ch < 0x20 || ch == 0x7f || (ch >= 0x80 && ch <= 0x9f)) {
+      if (sl_row_append_cells(row, visible, strlen(visible), cells) != 0)
+        return -1;
+    } else if (sl_row_append_cells(row, text + pos, n, cells) != 0) {
       return -1;
+    }
     cols += cells;
+    screen_cols += cells;
     pos += n;
   }
   if (pos < len)
@@ -2499,7 +2526,17 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   width = sl_box_width(impl);
   if (impl->rendered_rows > 0 &&
       (impl->rendered_width != width || impl->rendered_height != height)) {
-    for (i = sl_box_top(impl); i <= sl_box_bottom(impl); i++) {
+    clear_top = sl_box_top(impl);
+    clear_bottom = sl_box_bottom(impl);
+    if (impl->auto_scroll_pinned) {
+      clear_top = impl->rendered_top_row;
+      clear_bottom = clear_top + impl->rendered_rows - 1;
+      if (clear_top < sl_box_top(impl))
+        clear_top = sl_box_top(impl);
+      if (clear_bottom > sl_box_bottom(impl))
+        clear_bottom = sl_box_bottom(impl);
+    }
+    for (i = clear_top; i <= clear_bottom; i++) {
       if (sl_write_cursor_pos(impl->output_fd, i, sl_box_left(impl)) != 0 ||
           sl_clear_bounded_row(impl) != 0)
         return -1;
@@ -2956,6 +2993,12 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
     content_top = sl_box_top(impl);
     content_bottom = prompt_top - 1;
     if (content_bottom >= content_top) {
+      if (impl->auto_scroll_pinned && impl->active_prompt &&
+          impl->rendered_rows > 0 && impl->rendered_top_row < 0) {
+        impl->rendered_top_row = prompt_top;
+        impl->rendered_width = sl_box_width(impl);
+        impl->rendered_height = sl_terminal_height(impl);
+      }
       if ((impl->active_prompt || impl->cursor_hidden) &&
           sl_hide_cursor(impl) != 0)
         return SL_ERROR_IO;
@@ -2980,6 +3023,12 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
         return SL_ERROR_IO;
       }
       if (rc != SL_OK) {
+        if (impl->active_prompt && impl->rendered_rows > 0 &&
+            sl_write_cursor_pos(
+                impl->output_fd,
+                impl->rendered_top_row + impl->rendered_cursor_row,
+                sl_box_left(impl) + impl->rendered_cursor_col) != 0)
+          sl_render_store_clear(impl);
         (void)sl_show_cursor(impl);
         return rc;
       }

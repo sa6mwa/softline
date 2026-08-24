@@ -1263,6 +1263,12 @@ struct idle_scroll_region_state {
   int calls;
 };
 
+struct idle_stream_failure_state {
+  int fd;
+  int attempted;
+  int status;
+};
+
 struct idle_count_print_state {
   int calls;
   int printed;
@@ -1435,6 +1441,18 @@ static void idle_print_through_scroll_region(sl_t *sl, void *userdata) {
   stream.index = 0;
   stream.calls = 0;
   (void)sl->print_above(sl, next_text_chunk, &stream);
+}
+
+static void idle_print_failure_once(sl_t *sl, void *userdata) {
+  struct idle_stream_failure_state *state;
+  char ready;
+  state = (struct idle_stream_failure_state *)userdata;
+  if (!state || state->attempted)
+    return;
+  state->attempted = 1;
+  state->status = sl->print_above(sl, failing_stream, NULL);
+  ready = state->status == SL_ERROR ? 'R' : 'E';
+  (void)write(state->fd, &ready, 1);
 }
 
 static void idle_print_after_two_ticks(sl_t *sl, void *userdata) {
@@ -3098,6 +3116,26 @@ static void test_prompt_queue_clips_control_rows_on_narrow_terminals(void) {
   ASSERT_TRUE(contains_bytes(terminal, "  ..") &&
                   !contains_bytes(terminal, "... 1 more"),
               "queue overflow row exceeded narrow render width");
+  PASS();
+}
+
+static void test_prompt_queue_previews_control_bytes_safely(void) {
+  static const char input[] = "\033[200~a\t\033[31mX\033[201~\tok\r";
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue previews pasted controls without terminal escapes");
+  ASSERT_TRUE(run_pty_prompt_queue_case(input, SL_PROMPT_THEME_PLAIN, 1, 0, 2,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0,
+              "control-byte prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "control-byte prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:ok|2:a\t\033[31mX") == 0,
+              "queued control-byte prompt was changed");
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. a  ^[[31mX"),
+              "queued control-byte preview was not safely rendered");
   PASS();
 }
 
@@ -5806,6 +5844,7 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   int queue_row;
   int prompt_row;
   int i;
+  size_t resize_offset;
 
   TEST("normal prompt pins at bottom for live output");
   memset(&ws, 0, sizeof(ws));
@@ -5885,6 +5924,16 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
               "scroll region did not shrink after queue reflow");
   ASSERT_TRUE(contains_bytes(terminal, "second-live"),
               "second live message missing");
+  resize_offset = terminal_len;
+  ws.ws_row = 6;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "terminal resize failed");
+  ASSERT_TRUE(write(master_fd, "x\177", 2) == 2, "resize reflow input failed");
+  n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+  ASSERT_TRUE(n > 0, "resize did not reflow pinned prompt");
+  append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\033[1;1H\033[2K") &&
+                  !contains_bytes(terminal + resize_offset, "\033[2;1H\033[2K"),
+              "pinned resize cleared transcript rows");
   prompts_after_second = count_bytes(terminal, "p> ");
   n = read_some_with_timeout(master_fd, buf, sizeof(buf));
   if (n > 0)
@@ -5908,7 +5957,7 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   ASSERT_TRUE(strcmp(result, "ok") == 0, "pinned prompt result mismatch");
   ASSERT_TRUE(contains_bytes(terminal, "\033[r"),
               "scroll region was not restored");
-  vt_init(&screen, 5, 20);
+  vt_init(&screen, 6, 20);
   screen.row = 4;
   screen.col = 0;
   vt_apply(&screen, terminal);
@@ -5926,9 +5975,114 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
     if (strstr(screen.cells[i], "p> ok"))
       prompt_row = i;
   }
-  ASSERT_TRUE(first_row >= 0 && second_row == first_row + 1 &&
-                  queue_row == second_row + 1 && prompt_row == queue_row + 1,
+  ASSERT_TRUE(first_row >= 0 && second_row == first_row + 1 && queue_row >= 0 &&
+                  prompt_row == queue_row + 1,
               "live transcript content was overwritten or on the wrong row");
+  PASS();
+}
+
+static void test_pinned_stream_failure_restores_prompt_cursor(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  int ready_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  struct vt_screen screen;
+  char terminal[4096];
+  char result[64];
+  char buf[512];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("pinned stream failure restores prompt cursor before editing");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  ASSERT_TRUE(pipe(ready_pipe) == 0, "ready pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_stream_failure_state state;
+    close(master_fd);
+    close(result_pipe[0]);
+    close(ready_pipe[0]);
+    memset(&state, 0, sizeof(state));
+    state.fd = ready_pipe[1];
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.live_scroll_region = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    if (sl->set_idle_callback(sl, idle_print_failure_once, &state) != SL_OK)
+      _exit(3);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  close(ready_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  tries = 0;
+  while (!contains_bytes(terminal, "\033[6n") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "\033[6n"),
+              "pinned stream did not request cursor position");
+  ASSERT_TRUE(write(master_fd, "\033[5;4R", 6) == 6,
+              "cursor report write failed");
+  n = read_some_with_timeout(ready_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 1 && result[0] == 'R',
+              "failing stream did not report its callback error");
+  ASSERT_TRUE(write(master_fd, "x", 1) == 1, "edit write failed");
+  tries = 0;
+  while (!contains_bytes(terminal, "x") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "x"), "edited prompt was not rendered");
+  vt_init(&screen, 5, 20);
+  screen.row = 4;
+  screen.col = 0;
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(strstr(screen.cells[4], "p> x") != NULL,
+              "edit after failed stream was not placed on the prompt row");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n == 1, "read result failed");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  close(ready_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "pinned stream failure child failed");
+  ASSERT_TRUE(strcmp(result, "x") == 0,
+              "pinned stream failure result mismatch");
   PASS();
 }
 
@@ -6502,6 +6656,7 @@ int main(void) {
   test_prompt_queue_dispatches_fifo_with_themes();
   test_prompt_queue_dispatches_fifo_in_normal_scrollback();
   test_prompt_queue_clips_control_rows_on_narrow_terminals();
+  test_prompt_queue_previews_control_bytes_safely();
   test_prompt_queue_rejects_reduced_capacity();
   test_prompt_queue_alt_e_recalls_newest();
   test_prompt_themes_style_normal_readline();
@@ -6550,6 +6705,7 @@ int main(void) {
   test_narrow_terminal_does_not_submit_before_enter();
   test_idle_callback_prints_above_active_prompt();
   test_normal_prompt_pins_at_bottom_for_live_output();
+  test_pinned_stream_failure_restores_prompt_cursor();
   test_cursor_probe_preserves_concurrent_queue_input();
   test_utf8_input_and_backspace();
   test_utf8_swedish_input_is_rendered_as_full_sequences();
