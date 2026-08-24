@@ -5859,8 +5859,8 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     if (!replied && contains_bytes(terminal, "\033[6n")) {
-      ASSERT_TRUE(write(master_fd, "q\033[5;4R", 7) == 7,
-                  "concurrent input and cursor report write failed");
+      ASSERT_TRUE(write(master_fd, "\033\033[5;4R", 7) == 7,
+                  "nested Escape and cursor report write failed");
       replied = 1;
     }
     tries++;
@@ -5872,7 +5872,8 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
               "first live message repainted the prompt");
   ASSERT_TRUE(contains_bytes(terminal, "\033[1;4r"),
               "bottom prompt did not enter scroll region");
-  ASSERT_TRUE(write(master_fd, "ueued\tok", 8) == 8,
+  usleep(150000);
+  ASSERT_TRUE(write(master_fd, "queued\tok", 9) == 9,
               "queue-and-text write failed");
   tries = 0;
   while (!contains_bytes(terminal, "second-live") && tries < 100) {

@@ -3138,6 +3138,7 @@ static int sl_query_cursor_row(sl_t *self) {
     ssize_t n;
     int valid;
     size_t i;
+    size_t restart;
     if (gettimeofday(&now, NULL) != 0)
       break;
     elapsed_ms = (long)(now.tv_sec - started.tv_sec) * 1000L +
@@ -3198,9 +3199,21 @@ static int sl_query_cursor_row(sl_t *self) {
         i++;
     }
     if (!valid || i < candidate_len) {
-      if (sl_pending_input_append(impl, candidate, candidate_len) != 0)
+      restart = candidate_len;
+      for (i = candidate_len; i > 1; i--) {
+        if (candidate[i - 1] == '\033') {
+          restart = i - 1;
+          break;
+        }
+      }
+      if (sl_pending_input_append(impl, candidate, restart) != 0)
         goto preserve_failed;
-      candidate_len = 0;
+      if (restart < candidate_len) {
+        memmove(candidate, candidate + restart, candidate_len - restart);
+        candidate_len -= restart;
+      } else {
+        candidate_len = 0;
+      }
       continue;
     }
     if (have_row && have_col && i == candidate_len &&
