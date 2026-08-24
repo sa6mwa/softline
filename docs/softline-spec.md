@@ -158,13 +158,14 @@ general event loop integration API.
 prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `SL_OK` with length `0` to finish.
 
-For an unbounded prompt, output initially uses normal scrollback. Once the
-prompt reaches the terminal bottom, softline probes the cursor position and,
-when supported, temporarily scrolls the full-width region above the retained
-prompt. That avoids a prompt repaint for streamed output while keeping queue,
-status, wrapping, and resize reflow aligned to the bottom. The terminal scroll
-region is reset on every completion, cancellation, error, and handle teardown.
-If the terminal does not answer the cursor-position probe, output uses the
+For an unbounded prompt, output uses normal clear-and-redraw scrollback by
+default. Set `live_scroll_region = 1` in `sl_config_t` or call
+`sl_set_live_scroll_region()` to opt into a cursor-position probe once the
+prompt reaches the terminal bottom. When supported, softline temporarily
+scrolls the full-width region above the retained prompt, avoiding a prompt
+repaint while keeping queue, status, wrapping, and resize reflow aligned to the
+bottom. The terminal scroll region is reset on every completion, cancellation, error,
+and handle teardown. If the terminal does not answer the probe, output uses the
 compatible clear-and-redraw path.
 
 ## Current History Behavior

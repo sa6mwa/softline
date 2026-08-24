@@ -166,6 +166,10 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   if (!lua_isnil(L, -1))
     config->bounded = lua_toboolean(L, -1);
   lua_pop(L, 1);
+  lua_getfield(L, index, "live_scroll_region");
+  if (!lua_isnil(L, -1))
+    config->live_scroll_region = lua_toboolean(L, -1);
+  lua_pop(L, 1);
   lua_getfield(L, index, "prompt_queue");
   if (!lua_isnil(L, -1))
     config->prompt_queue = lua_toboolean(L, -1);
@@ -342,6 +346,13 @@ static int softline_lua_set_screen_width(lua_State *L) {
   handle = softline_lua_check(L, 1);
   return softline_lua_status(
       L, sl_set_screen_width(handle->sl, (int)luaL_checkinteger(L, 2)));
+}
+
+static int softline_lua_set_live_scroll_region(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(
+      L, sl_set_live_scroll_region(handle->sl, lua_toboolean(L, 2)));
 }
 
 static int softline_lua_set_prompt_queue(lua_State *L) {
@@ -634,6 +645,7 @@ static const luaL_Reg softline_lua_methods[] = {
     {"history_load", softline_lua_history_load},
     {"set_bounds", softline_lua_set_bounds},
     {"set_screen_width", softline_lua_set_screen_width},
+    {"set_live_scroll_region", softline_lua_set_live_scroll_region},
     {"set_prompt_queue", softline_lua_set_prompt_queue},
     {"set_prompt_theme", softline_lua_set_prompt_theme},
     {"set_statusline", softline_lua_set_statusline},

@@ -2937,7 +2937,7 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   impl = sl_impl(self);
   if (!impl)
     return SL_ERROR_INVALID;
-  if (!sl_bounded_mode(impl) && impl->active_prompt)
+  if (!sl_bounded_mode(impl) && impl->live_scroll_region && impl->active_prompt)
     (void)sl_try_pin_scroll_region(self);
   if (sl_bounded_mode(impl)) {
     prompt_rows = impl->rendered_rows > 0 ? impl->rendered_rows : 1;
@@ -3165,8 +3165,9 @@ static int sl_try_pin_scroll_region(sl_t *self) {
   int prompt_top;
   int prompt_bottom;
   impl = sl_impl(self);
-  if (!impl || impl->bounded || impl->auto_scroll_pinned ||
-      !impl->active_prompt || impl->rendered_rows < 1)
+  if (!impl || !impl->live_scroll_region || impl->bounded ||
+      impl->auto_scroll_pinned || !impl->active_prompt ||
+      impl->rendered_rows < 1)
     return 0;
   cursor_row = sl_query_cursor_row(self);
   if (cursor_row < 1)
@@ -4158,6 +4159,37 @@ static int sl_set_screen_width_method(sl_t *self, int width) {
   return SL_OK;
 }
 
+static int sl_set_live_scroll_region_method(sl_t *self, int enabled) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || enabled < 0) {
+    sl_set_error(self, "invalid live scroll region configuration");
+    return SL_ERROR_INVALID;
+  }
+  if (!enabled && impl->auto_scroll_pinned) {
+    if (sl_render_clear_active(self) != 0) {
+      sl_set_error(self, "failed to leave live scroll region");
+      return SL_ERROR_IO;
+    }
+    sl_release_auto_scroll_region(impl);
+    impl->live_scroll_region = 0;
+    if (impl->active_prompt &&
+        sl_render_apply(self, impl->active_prompt) != 0) {
+      sl_set_error(self,
+                   "failed to redraw prompt after leaving live scroll region");
+      return SL_ERROR_IO;
+    }
+    if (sl_show_cursor(impl) != 0) {
+      sl_set_error(self,
+                   "failed to restore cursor after leaving live scroll region");
+      return SL_ERROR_IO;
+    }
+    return SL_OK;
+  }
+  impl->live_scroll_region = enabled;
+  return SL_OK;
+}
+
 static int sl_set_prompt_queue_method(sl_t *self, int enabled, int max_entries,
                                       int preview_entries) {
   sl_impl_t *impl;
@@ -4379,6 +4411,7 @@ void sl_config_init(sl_config_t *config) {
   config->screen_width = 0;
   config->screen_height = 0;
   config->bounded = 0;
+  config->live_scroll_region = 0;
   config->history_max_len = SL_HISTORY_DEFAULT_MAX;
   config->line_max_len = SL_LINE_DEFAULT_MAX;
   config->prompt_queue = 0;
@@ -4403,7 +4436,8 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   if (config->history_max_len < 0 || config->screen_x < 0 ||
       config->screen_y < 0 || config->screen_width < 0 ||
       config->screen_height < 0 || config->bounded < 0 ||
-      config->prompt_queue < 0 || config->prompt_queue_max_entries < 1 ||
+      config->live_scroll_region < 0 || config->prompt_queue < 0 ||
+      config->prompt_queue_max_entries < 1 ||
       config->prompt_queue_preview_entries < 1 ||
       config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
       config->prompt_theme > SL_PROMPT_THEME_DEFAULT ||
@@ -4430,6 +4464,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->history_load = sl_history_load_impl;
   self->set_bounds = sl_set_bounds_method;
   self->set_screen_width = sl_set_screen_width_method;
+  self->set_live_scroll_region = sl_set_live_scroll_region_method;
   self->set_idle_callback = sl_set_idle_callback_method;
   self->bind_key = sl_bind_key_method;
   self->insert = sl_buf_insert_cstr;
@@ -4462,6 +4497,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->dynamic_width = config->screen_width == 0;
   impl->dynamic_height = config->bounded && config->screen_height == 0;
   impl->bounded = config->bounded || config->screen_height > 0;
+  impl->live_scroll_region = config->live_scroll_region;
   impl->prompt_queue.enabled = config->prompt_queue;
   impl->prompt_queue.max_entries = config->prompt_queue_max_entries;
   impl->prompt_queue.preview_entries = config->prompt_queue_preview_entries;
@@ -4552,6 +4588,12 @@ int sl_set_screen_width(sl_t *self, int width) {
   if (!self || !self->set_screen_width)
     return SL_ERROR_INVALID;
   return self->set_screen_width(self, width);
+}
+
+int sl_set_live_scroll_region(sl_t *self, int enabled) {
+  if (!self || !self->set_live_scroll_region)
+    return SL_ERROR_INVALID;
+  return self->set_live_scroll_region(self, enabled);
 }
 
 int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,

@@ -65,6 +65,7 @@ typedef struct sl_impl {
   int screen_width;
   int screen_height;
   int bounded;
+  int live_scroll_region;
   int auto_scroll_pinned;
   int cursor_position_probe;
   int dynamic_width;

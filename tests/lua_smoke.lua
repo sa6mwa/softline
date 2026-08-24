@@ -43,8 +43,11 @@ local status = assert(softline.new({
   status_spinner = true,
   status_busy = true,
   status_idle_marker = "-",
+  live_scroll_region = true,
 }))
 assert(status:set_statusline(true, 15))
+assert(status:set_live_scroll_region(true))
+assert(status:set_live_scroll_region(false))
 assert(status:set_status_elements({ "model", "context" }))
 assert(status:set_status_element(1, "context 36%"))
 assert(status:set_status_busy(false))

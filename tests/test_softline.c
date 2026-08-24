@@ -148,6 +148,7 @@ static void test_config_init(void) {
   ASSERT_TRUE(cfg.screen_width == 0, "screen width default");
   ASSERT_TRUE(cfg.screen_height == 0, "screen height default");
   ASSERT_TRUE(cfg.bounded == 0, "bounded default");
+  ASSERT_TRUE(cfg.live_scroll_region == 0, "live scroll region default");
   ASSERT_TRUE(cfg.history_max_len == 100, "history max default");
   ASSERT_TRUE(cfg.line_max_len == 4096, "line max default");
   ASSERT_TRUE(cfg.prompt_queue == 0, "prompt queue default");
@@ -189,6 +190,8 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->history_load != NULL, "history_load method missing");
   ASSERT_TRUE(sl->set_bounds != NULL, "set_bounds method missing");
   ASSERT_TRUE(sl->set_screen_width != NULL, "set_screen_width method missing");
+  ASSERT_TRUE(sl->set_live_scroll_region != NULL,
+              "set_live_scroll_region method missing");
   ASSERT_TRUE(sl->set_prompt_queue != NULL, "set_prompt_queue method missing");
   ASSERT_TRUE(sl->set_prompt_theme != NULL, "set_prompt_theme method missing");
   ASSERT_TRUE(sl->set_statusline != NULL, "set_statusline method missing");
@@ -235,6 +238,8 @@ static void test_free_function_wrappers_use_receiver_methods(void) {
   ASSERT_TRUE(sl_set_screen_width(sl, 12) == SL_OK,
               "wrapper screen width failed");
   ASSERT_TRUE(sl_set_bounds(sl, 1, 2, 12, 4) == SL_OK, "wrapper bounds failed");
+  ASSERT_TRUE(sl_set_live_scroll_region(sl, 1) == SL_OK,
+              "wrapper live scroll region failed");
   ASSERT_TRUE(sl_set_prompt_queue(sl, 1, 4, 2) == SL_OK,
               "wrapper prompt queue failed");
   ASSERT_TRUE(sl_set_prompt_theme(sl, SL_PROMPT_THEME_ACCENT) == SL_OK,
@@ -328,6 +333,10 @@ static void test_invalid_config_is_rejected(void) {
   cfg.bounded = -1;
   ASSERT_TRUE(sl_create_with_config(&cfg) == NULL, "negative bounded accepted");
   sl_config_init(&cfg);
+  cfg.live_scroll_region = -1;
+  ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
+              "negative live scroll region accepted");
+  sl_config_init(&cfg);
   cfg.prompt_queue = 1;
   cfg.bounded = 0;
   sl = sl_create_with_config(&cfg);
@@ -353,6 +362,8 @@ static void test_invalid_receiver_arguments(void) {
               "NULL set_bounds accepted");
   ASSERT_TRUE(sl_set_screen_width(NULL, 1) == SL_ERROR_INVALID,
               "NULL set_screen_width accepted");
+  ASSERT_TRUE(sl_set_live_scroll_region(NULL, 1) == SL_ERROR_INVALID,
+              "NULL set_live_scroll_region accepted");
   ASSERT_TRUE(sl_set_idle_callback(NULL, NULL, NULL) == SL_ERROR_INVALID,
               "NULL set_idle_callback accepted");
   ASSERT_TRUE(sl_bind_key(NULL, SL_KEY_TAB, NULL, NULL) == SL_ERROR_INVALID,
@@ -399,6 +410,8 @@ static void test_invalid_receiver_arguments(void) {
               "negative history max accepted");
   ASSERT_TRUE(sl->set_screen_width(sl, -1) == SL_ERROR_INVALID,
               "negative screen width accepted");
+  ASSERT_TRUE(sl->set_live_scroll_region(sl, -1) == SL_ERROR_INVALID,
+              "negative live scroll region accepted");
   ASSERT_TRUE(sl->set_bounds(sl, -1, 0, 1, 1) == SL_ERROR_INVALID,
               "negative bound accepted");
   ASSERT_TRUE(sl->set_prompt_queue(sl, 1, 1, 1) == SL_OK,
@@ -5549,9 +5562,13 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   ssize_t n;
   int status;
   int tries;
+  struct winsize ws;
 
-  TEST("idle callback prints above active prompt");
-  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+  TEST("unbounded prompts clear and redraw live output by default");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 1;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
               "openpty failed");
   ASSERT_TRUE(pipe(result_pipe) == 0, "pipe failed");
   pid = fork();
@@ -5568,7 +5585,6 @@ static void test_idle_callback_prints_above_active_prompt(void) {
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     cfg.screen_width = 20;
-    cfg.screen_height = 5;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
@@ -5597,6 +5613,10 @@ static void test_idle_callback_prints_above_active_prompt(void) {
   ASSERT_TRUE(contains_bytes(terminal, "idle-output"),
               "idle output was not printed");
   ASSERT_TRUE(contains_bytes(terminal, "p> "), "prompt was not redrawn");
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[6n"),
+              "default live output requested a cursor-position probe");
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[1;"),
+              "default live output entered a scroll region");
   ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -5653,6 +5673,7 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     cfg.prompt_queue = 1;
+    cfg.live_scroll_region = 1;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
@@ -5790,6 +5811,7 @@ static void test_cursor_probe_preserves_concurrent_queue_input(void) {
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     cfg.prompt_queue = 1;
+    cfg.live_scroll_region = 1;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);

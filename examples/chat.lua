@@ -70,6 +70,13 @@ end
 local function run()
   assert(themes[theme_name], "invalid SOFTLINE_PROMPT_THEME: " .. theme_name)
   sl = softline.new()
+  local live_scroll_region = os.getenv("SOFTLINE_LIVE_SCROLL_REGION")
+  assert(live_scroll_region == nil or live_scroll_region == "" or
+      live_scroll_region == "0" or live_scroll_region == "1" or
+      live_scroll_region == "false" or live_scroll_region == "true",
+      "invalid SOFTLINE_LIVE_SCROLL_REGION: " .. tostring(live_scroll_region))
+  assert(sl:set_live_scroll_region(
+      live_scroll_region == "1" or live_scroll_region == "true"))
   assert(sl:set_prompt_theme(themes[theme_name]))
   assert(sl:set_prompt_queue(true, 64, 3))
   assert(sl:set_statusline(true, 0))

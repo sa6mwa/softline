@@ -59,6 +59,18 @@ run-chat: build-debug ## Run C chat example (Gruvbox by default; THEME=... overr
 run-chat-default: build-debug ## Run C chat example with the default ANSI theme
 	@SOFTLINE_PROMPT_THEME="default" ./build/debug/examples/example_chat
 
+.PHONY: run-chat-default-sr
+run-chat-default-sr: build-debug ## Run default C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="default" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-accent-sr
+run-chat-accent-sr: build-debug ## Run accent C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="accent" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-dracula-sr
+run-chat-dracula-sr: build-debug ## Run Dracula C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="dracula" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
+
 .PHONY: run-chat-riced
 run-chat-riced: build-debug ## Run C chat example with the riced theme
 	@SOFTLINE_PROMPT_THEME="riced" ./build/debug/examples/example_chat
@@ -66,6 +78,10 @@ run-chat-riced: build-debug ## Run C chat example with the riced theme
 .PHONY: run-chat-plain
 run-chat-plain: build-debug ## Run C chat example with the uncoloured plain theme
 	@SOFTLINE_PROMPT_THEME="plain" ./build/debug/examples/example_chat
+
+.PHONY: run-chat-plain-sr
+run-chat-plain-sr: build-debug ## Run plain C chat with bottom-pinned scroll-region output
+	@SOFTLINE_PROMPT_THEME="plain" SOFTLINE_LIVE_SCROLL_REGION="1" ./build/debug/examples/example_chat
 
 .PHONY: run-chat-monogreen
 run-chat-monogreen: build-debug ## Run C chat example with the monogreen theme

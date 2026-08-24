@@ -31,6 +31,7 @@ config table mirrors `sl_config_t`:
 - `screen_width`
 - `screen_height`
 - `bounded`
+- `live_scroll_region`
 - `prompt_queue`
 - `prompt_queue_max_entries`
 - `prompt_queue_preview_entries`
@@ -62,6 +63,9 @@ Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
   width or height uses dynamic terminal bounds.
 - `sl:set_screen_width(width)` sets normal prompt wrapping width; `0` returns
   to terminal-width probing.
+- `sl:set_live_scroll_region(enabled)` opts an unbounded prompt into
+  bottom-pinned scroll-region output after it reaches the terminal bottom.
+  It is disabled by default.
 - `sl:set_idle_callback(callback)` registers a no-argument Lua callback that
   runs while an interactive editor is idle; pass `nil` to clear it. The
   callback may use methods such as `print_above`, `insert`, `submit`, or

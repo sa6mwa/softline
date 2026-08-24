@@ -103,7 +103,11 @@ line-oriented input/output.
 make run-simple
 make run-chat
 make run-chat-default
+make run-chat-default-sr
+make run-chat-accent-sr
+make run-chat-dracula-sr
 make run-chat-plain
+make run-chat-plain-sr
 make run-chat-riced
 make run-chat-monogreen
 make run-chat-monochrome
@@ -133,14 +137,14 @@ input resumes. During a bounded structural update or transcript dispatch,
 softline hides the hardware cursor and restores it only at the final prompt
 position, preventing visible cursor travel across the prompt area.
 
-For a normal scrollback prompt, streamed output remains ordinary terminal
-output until the active prompt reaches the bottom row. At that point softline
-uses a temporary full-width scroll region above the active prompt, so live
-output scrolls without clearing and repainting the prompt. Queue previews,
-status lines, wrapping, and resize reflow change that region with the prompt.
-Softline resets the region whenever the edit finishes; terminals that do not
-answer the cursor-position report continue with the compatible clear-and-redraw
-path.
+For a normal scrollback prompt, streamed output uses the compatible
+clear-and-redraw path by default. Set `live_scroll_region = 1` in
+`sl_config_t`, or call `sl_set_live_scroll_region(sl, 1)`, to opt into a
+temporary full-width scroll region once the active prompt reaches the bottom
+row. That avoids repainting the live prompt while output streams. Queue
+previews, status lines, wrapping, and resize reflow change that region with the
+prompt. Softline resets the region whenever the edit finishes; terminals that
+do not answer the cursor-position report continue with clear-and-redraw.
 
 For a persistent bottom prompt, use this bounded mode as a full-screen terminal
 UI on the alternate screen. That keeps the main scrollback intact and lets

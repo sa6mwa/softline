@@ -46,6 +46,26 @@ static int set_prompt_theme_from_environment(sl_t *sl,
   return sl_set_prompt_theme(sl, theme) == SL_OK ? 0 : -1;
 }
 
+static int set_live_scroll_region_from_environment(sl_t *sl) {
+  const char *value;
+  int enabled;
+  value = getenv("SOFTLINE_LIVE_SCROLL_REGION");
+  if (!value || value[0] == '\0')
+    return SL_OK;
+  if (strcmp(value, "1") == 0 || strcmp(value, "true") == 0)
+    enabled = 1;
+  else if (strcmp(value, "0") == 0 || strcmp(value, "false") == 0)
+    enabled = 0;
+  else {
+    fprintf(stderr,
+            "invalid SOFTLINE_LIVE_SCROLL_REGION: %s (use 0, 1, false, or "
+            "true)\n",
+            value);
+    return SL_ERROR_INVALID;
+  }
+  return sl_set_live_scroll_region(sl, enabled);
+}
+
 static void keep_chat_on_interrupt(int signo) { (void)signo; }
 
 struct message_stream {
@@ -189,6 +209,11 @@ int main(void) {
   }
   if (sl->set_prompt_queue(sl, 1, 64, 3) != SL_OK) {
     fprintf(stderr, "failed to enable prompt queue\n");
+    sl->destroy(sl);
+    return 1;
+  }
+  if (set_live_scroll_region_from_environment(sl) != SL_OK) {
+    fprintf(stderr, "failed to configure live scroll region\n");
     sl->destroy(sl);
     return 1;
   }

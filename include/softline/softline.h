@@ -248,6 +248,10 @@ typedef struct sl_config {
   int screen_height;
   /** Non-zero enables bounded prompt rendering. */
   int bounded;
+  /** Non-zero lets an unbounded active prompt pin itself at the terminal
+   * bottom and stream output through a temporary scroll region. Disabled by
+   * default, preserving normal clear-and-redraw scrollback behavior. */
+  int live_scroll_region;
   /** Maximum retained history entries; default is 100. */
   int history_max_len;
   /** Maximum editable line length in bytes; default is 4096. */
@@ -311,6 +315,9 @@ struct sl {
   int (*set_bounds)(sl_t *self, int x, int y, int width, int height);
   /** Set normal prompt wrapping width for non-bounded rendering. */
   int (*set_screen_width)(sl_t *self, int width);
+  /** Enable or disable bottom-pinned scroll-region output for unbounded
+   * prompts. The setting applies to subsequent print_above() calls. */
+  int (*set_live_scroll_region)(sl_t *self, int enabled);
   /** Register or clear the per-handle idle callback. */
   int (*set_idle_callback)(sl_t *self, sl_idle_callback_t callback,
                            void *userdata);
@@ -439,6 +446,11 @@ int sl_set_bounds(sl_t *self, int x, int y, int width, int height);
 
 /** Set normal prompt wrapping width; zero returns to terminal-width probing. */
 int sl_set_screen_width(sl_t *self, int width);
+
+/** Enable or disable bottom-pinned scroll-region output for unbounded prompts.
+ * Disabled by default; when enabled softline attempts it only after the active
+ * prompt reaches the terminal bottom. */
+int sl_set_live_scroll_region(sl_t *self, int enabled);
 
 /** Enable/configure Tab queueing; disabling clears the queue. Reducing the
  * capacity below the current queue length returns SL_ERROR_INVALID. */
