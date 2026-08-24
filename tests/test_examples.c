@@ -537,6 +537,10 @@ test_example_chat_keeps_empty_direct_message_separate(const char *path) {
   ASSERT_TRUE(
       contains_bytes(terminal, "\033[?2004l[direct] \r\n[queued] queued\r\n"),
       "empty direct message merged with queued message");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[queued] queued\r\n",
+                                  "\033[?2004h") == 0,
+              "chat prompt did not resume after queued empty submission");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
