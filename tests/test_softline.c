@@ -1732,8 +1732,9 @@ static int run_pty_readline_completion_case(int bounded, int prompt_queue,
 
 static int run_pty_history_case_with_options(
     const char *input, const char **history, int history_len,
-    const char *history_file, int width, int height, char *terminal,
-    size_t terminal_cap, char *result, size_t result_cap, int *exit_status) {
+    const char *history_file, int width, int height, int prompt_queue,
+    char *terminal, size_t terminal_cap, char *result, size_t result_cap,
+    int *exit_status) {
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -1761,6 +1762,7 @@ static int run_pty_history_case_with_options(
     cfg.output_fd = slave_fd;
     cfg.screen_width = width;
     cfg.screen_height = height;
+    cfg.prompt_queue = prompt_queue;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
@@ -1824,8 +1826,8 @@ static int run_pty_history_case_with_file(const char *input,
                                           char *result, size_t result_cap,
                                           int *exit_status) {
   return run_pty_history_case_with_options(
-      input, history, history_len, history_file, 20, 0, terminal, terminal_cap,
-      result, result_cap, exit_status);
+      input, history, history_len, history_file, 20, 0, 0, terminal,
+      terminal_cap, result, result_cap, exit_status);
 }
 
 static int run_pty_history_case(const char *input, const char **history,
@@ -2882,7 +2884,7 @@ static void test_ctrl_r_renders_inside_bounded_prompt(void) {
   history[1] = "bounded target";
   TEST("Ctrl-R renders inside bounded prompt");
   ASSERT_TRUE(run_pty_history_case_with_options(
-                  "\022target\r", history, 2, NULL, 24, 5, terminal,
+                  "\022target\r", history, 2, NULL, 24, 5, 0, terminal,
                   sizeof(terminal), result, sizeof(result), &status) == 0,
               "bounded history search case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -3276,6 +3278,7 @@ static void test_bounded_statusline_clips_marker_to_box_width(void) {
   pid = fork();
   ASSERT_TRUE(pid >= 0, "fork failed");
   if (pid == 0) {
+    static const char *const elements[] = {"\346\227\245"};
     sl_config_t cfg;
     sl_t *sl;
     char *line;
@@ -3286,13 +3289,13 @@ static void test_bounded_statusline_clips_marker_to_box_width(void) {
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     cfg.screen_width = 1;
-    cfg.screen_height = 3;
+    cfg.screen_height = 4;
     cfg.bounded = 1;
     cfg.prompt_theme = SL_PROMPT_THEME_DEFAULT;
     cfg.statusline = 1;
     cfg.status_busy = 1;
     sl = sl_create_with_config(&cfg);
-    if (!sl)
+    if (!sl || sl_set_status_elements(sl, elements, 1) != SL_OK)
       _exit(2);
     line = sl_readline(sl, "p");
     if (!line)
@@ -3319,6 +3322,8 @@ static void test_bounded_statusline_clips_marker_to_box_width(void) {
   }
   ASSERT_TRUE(!contains_bytes(terminal, "\033[31mx \033[0m"),
               "status marker exceeded one-column bounded box");
+  ASSERT_TRUE(!contains_bytes(terminal, "\346\227\245"),
+              "wide status element exceeded one-column bounded box");
   ASSERT_TRUE(write(master_fd, "z\r", 2) == 2, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n == 1, "read result failed");
@@ -3329,6 +3334,24 @@ static void test_bounded_statusline_clips_marker_to_box_width(void) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "z") == 0, "result mismatch");
+  PASS();
+}
+
+static void test_queueing_resets_history_navigation(void) {
+  const char *history[] = {"one", "two"};
+  char terminal[4096];
+  char result[256];
+  int status;
+
+  TEST("queueing a recalled prompt resets history navigation");
+  ASSERT_TRUE(run_pty_history_case_with_options(
+                  "\033[A\t\033[A\r", history, 2, NULL, 20, 0, 1, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "queued history case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued history child failed");
+  ASSERT_TRUE(strcmp(result, "two") == 0,
+              "queueing recalled history skipped newest entry");
   PASS();
 }
 
@@ -6487,6 +6510,7 @@ int main(void) {
   test_statusline_uses_palette_offset_and_truncation();
   test_default_statusline_uses_ansi_palette();
   test_bounded_statusline_clips_marker_to_box_width();
+  test_queueing_resets_history_navigation();
   test_key_binding_alt_m_inserts_text();
   test_key_binding_f1_submits();
   test_key_binding_can_edit_buffer_and_submit();

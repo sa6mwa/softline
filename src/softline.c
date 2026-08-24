@@ -2034,16 +2034,25 @@ static int sl_statusline_append_wrapped(sl_render_t *render, int width,
       n = 1;
       cells = 1;
     }
-    if (*col > indent && cells > width - *col) {
+    if (cells > width - *col && *col > 0) {
       if (sl_row_append(&render->rows[render->count - 1], reset,
                         strlen(reset)) != 0 ||
-          sl_render_new_row_at(render, 0, 0) != 0 ||
-          sl_row_append_cells(&render->rows[render->count - 1], "  ",
-                              (size_t)indent, indent) != 0 ||
-          sl_row_append(&render->rows[render->count - 1], style ? style : "",
+          sl_render_new_row_at(render, 0, 0) != 0)
+        return -1;
+      *col = 0;
+      if (indent > 0 && cells <= width - indent) {
+        if (sl_row_append_cells(&render->rows[render->count - 1], "  ",
+                                (size_t)indent, indent) != 0)
+          return -1;
+        *col = indent;
+      }
+      if (sl_row_append(&render->rows[render->count - 1], style ? style : "",
                         style ? strlen(style) : 0) != 0)
         return -1;
-      *col = indent;
+    }
+    if (cells > width - *col) {
+      pos += n;
+      continue;
     }
     if (sl_row_append_cells(&render->rows[render->count - 1], text + pos, n,
                             cells) != 0)
@@ -3498,6 +3507,14 @@ static void sl_history_nav_start(sl_t *self) {
   }
 }
 
+static void sl_history_nav_reset(sl_impl_t *impl) {
+  if (!impl)
+    return;
+  free(impl->history_edit);
+  impl->history_edit = NULL;
+  impl->history_index = -1;
+}
+
 static void sl_history_nav(sl_t *self, int dir) {
   sl_impl_t *impl;
   int next;
@@ -3950,6 +3967,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
             sl_set_error(self, "failed to clear queued prompt");
             failed = 1;
             done = 1;
+          } else {
+            sl_history_nav_reset(impl);
           }
         }
         break;
@@ -3963,6 +3982,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
             sl_set_error(self, "failed to recall queued prompt");
             failed = 1;
             done = 1;
+          } else {
+            sl_history_nav_reset(impl);
           }
           free(queued);
         }
