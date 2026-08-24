@@ -5755,6 +5755,92 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   PASS();
 }
 
+static void test_cursor_probe_preserves_concurrent_queue_input(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  pid_t pid;
+  struct winsize ws;
+  char terminal[4096];
+  char result[64];
+  char buf[512];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("cursor probe preserves concurrent queue input");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_print_state state;
+    close(master_fd);
+    close(result_pipe[0]);
+    state.printed = 0;
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    if (sl->set_idle_callback(sl, idle_print_once, &state) != SL_OK)
+      _exit(3);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl->free_string(sl, line);
+    sl->destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  tries = 0;
+  while (!contains_bytes(terminal, "\033[6n") && tries < 100) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    tries++;
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "\033[6n"),
+              "cursor-position probe was not requested");
+  ASSERT_TRUE(write(master_fd, "queued\tok\r", 10) == 10,
+              "concurrent queue input write failed");
+  tries = 0;
+  n = 0;
+  while (n == 0 && tries < 50) {
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+    n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+    tries++;
+  }
+  ASSERT_TRUE(n > 0, "concurrent queue input did not complete");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0,
+              "cursor probe did not preserve queued editor input");
+  PASS();
+}
+
 static void test_utf8_input_and_backspace(void) {
   char terminal[4096];
   char result[256];
@@ -6159,6 +6245,11 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_cursor_probe_preserves_concurrent_queue_input(void) {
+  TEST("cursor probe preserves concurrent queue input");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_utf8_input_and_backspace(void) {
   TEST("UTF-8 input is preserved and backspace is character-wide");
   printf("SKIP\n");
@@ -6273,6 +6364,7 @@ int main(void) {
   test_narrow_terminal_does_not_submit_before_enter();
   test_idle_callback_prints_above_active_prompt();
   test_normal_prompt_pins_at_bottom_for_live_output();
+  test_cursor_probe_preserves_concurrent_queue_input();
   test_utf8_input_and_backspace();
   test_utf8_swedish_input_is_rendered_as_full_sequences();
   test_unicode_width_wraps_japanese_and_emoji();

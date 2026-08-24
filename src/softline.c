@@ -3093,7 +3093,9 @@ static int sl_query_cursor_row(sl_t *self) {
       break;
     elapsed_ms = (long)(now.tv_sec - started.tv_sec) * 1000L +
                  (long)(now.tv_usec - started.tv_usec) / 1000L;
-    timeout_ms = elapsed_ms >= 100L ? 0 : 100 - (int)elapsed_ms;
+    if (elapsed_ms >= 100L)
+      break;
+    timeout_ms = 100 - (int)elapsed_ms;
     n = sl_read_input_byte(impl, &ch, timeout_ms);
     if (n != 1)
       break;
