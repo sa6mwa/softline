@@ -3127,7 +3127,7 @@ static void test_prompt_queue_clips_control_rows_on_narrow_terminals(void) {
 }
 
 static void test_prompt_queue_previews_control_bytes_safely(void) {
-  static const char input[] = "\033[200~a\t\033[31mX\033[201~\tok\r";
+  static const char input[] = "\033[200~a\t\033[31m\302\23331mX\033[201~\tok\r";
   char terminal[16384];
   char result[512];
   int status;
@@ -3139,9 +3139,9 @@ static void test_prompt_queue_previews_control_bytes_safely(void) {
               "control-byte prompt queue pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "control-byte prompt queue child failed");
-  ASSERT_TRUE(strcmp(result, "1:ok|2:a\t\033[31mX") == 0,
+  ASSERT_TRUE(strcmp(result, "1:ok|2:a\t\033[31m\302\23331mX") == 0,
               "queued control-byte prompt was changed");
-  ASSERT_TRUE(contains_bytes(terminal, "Q 1. a  ^[[31mX"),
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1. a  ^[[31m\\x9B31mX"),
               "queued control-byte preview was not safely rendered");
   PASS();
 }

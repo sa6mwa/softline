@@ -1909,11 +1909,14 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
   clipped = 0;
   while (pos < len && text[pos] != '\n') {
     unsigned char ch;
+    unsigned long codepoint;
     int cells;
+    int escaped_control;
     size_t n;
     char visible[9];
     ch = (unsigned char)text[pos];
     n = 1;
+    escaped_control = 0;
     if (ch == '\t') {
       cells = 8 - (screen_cols % 8);
       memset(visible, ' ', (size_t)cells);
@@ -1926,18 +1929,29 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
     } else if (ch >= 0x80 && ch <= 0x9f) {
       cells = 4;
       (void)snprintf(visible, sizeof(visible), "\\x%02X", ch);
+      escaped_control = 1;
     } else {
-      n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+      n = sl_utf8_decode(text, len, pos, &codepoint);
       if (n == 0) {
         n = 1;
         cells = 1;
+      } else if (codepoint >= 0x80 && codepoint <= 0x9f) {
+        cells = 4;
+        (void)snprintf(visible, sizeof(visible), "\\x%02lX", codepoint);
+        escaped_control = 1;
+      } else {
+        n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+        if (n == 0) {
+          n = 1;
+          cells = 1;
+        }
       }
     }
     if (cells > 0 && cols + cells > available) {
       clipped = 1;
       break;
     }
-    if (ch == '\t' || ch < 0x20 || ch == 0x7f || (ch >= 0x80 && ch <= 0x9f)) {
+    if (ch == '\t' || ch < 0x20 || ch == 0x7f || escaped_control) {
       if (sl_row_append_cells(row, visible, strlen(visible), cells) != 0)
         return -1;
     } else if (sl_row_append_cells(row, text + pos, n, cells) != 0) {
