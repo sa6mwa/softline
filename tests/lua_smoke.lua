@@ -6,6 +6,19 @@ local function assert_eq(actual, expected, label)
   end
 end
 
+local prompt_methods = {
+  "next_prompt",
+  "set_live_scroll_region",
+  "set_prompt_queue",
+  "set_prompt_theme",
+  "set_statusline",
+  "set_status_elements",
+  "set_status_element",
+  "set_status_busy",
+  "set_status_spinner",
+  "set_status_idle_marker",
+}
+
 local sl = assert(softline.new({ line_max_len = 32 }))
 assert_eq(sl:last_readline_status(), softline.READLINE_NONE, "initial status")
 assert(sl:history_add("history entry"))
@@ -37,6 +50,9 @@ assert_eq(ok, nil, "bounded config should affect print_above")
 bounded:close()
 
 local status = assert(softline.new({
+  prompt_queue = true,
+  prompt_queue_max_entries = 7,
+  prompt_queue_preview_entries = 2,
   prompt_theme = softline.PROMPT_THEME_RICED,
   statusline = true,
   statusline_start_element = 15,
@@ -54,11 +70,29 @@ assert(status:set_status_busy(false))
 assert(status:set_status_spinner(false))
 assert(status:set_status_idle_marker("-"))
 assert(status:set_status_idle_marker(nil))
-assert(softline.PROMPT_THEME_DRACULA)
-assert(softline.PROMPT_THEME_SYNTHWAVE)
-assert(softline.PROMPT_THEME_DEFAULT)
+for _, name in ipairs(prompt_methods) do
+  assert_eq(type(status[name]), "function", "prompt method " .. name)
+end
+assert_eq(softline.PROMPT_SOURCE_NONE, 0, "no prompt source constant")
+assert_eq(softline.PROMPT_SOURCE_DIRECT, 1, "direct prompt source constant")
+assert_eq(softline.PROMPT_SOURCE_QUEUED, 2, "queued prompt source constant")
+assert_eq(softline.PROMPT_THEME_PLAIN, 0, "plain prompt theme constant")
+assert_eq(softline.PROMPT_THEME_ACCENT, 1, "accent prompt theme constant")
+assert_eq(softline.PROMPT_THEME_DRACULA, 2, "dracula prompt theme constant")
+assert_eq(softline.PROMPT_THEME_GRUVBOX, 3, "gruvbox prompt theme constant")
+assert_eq(softline.PROMPT_THEME_MONOCHROME, 4, "monochrome prompt theme constant")
+assert_eq(softline.PROMPT_THEME_MONOGREEN, 5, "monogreen prompt theme constant")
+assert_eq(softline.PROMPT_THEME_OUTRUN, 6, "outrun prompt theme constant")
+assert_eq(softline.PROMPT_THEME_RICED, 7, "riced prompt theme constant")
+assert_eq(softline.PROMPT_THEME_SYNTHWAVE, 8, "synthwave prompt theme constant")
+assert_eq(softline.PROMPT_THEME_DEFAULT, 9, "default prompt theme constant")
+assert_eq(softline.STATUS_MAX_ELEMENTS, 32, "status element limit constant")
+assert_eq(softline.KEY_TAB, 9, "Tab key constant")
 assert_eq(softline.KEY_CTRL_N, 14, "Ctrl-N key constant")
 assert_eq(softline.KEY_CTRL_P, 16, "Ctrl-P key constant")
+assert_eq(softline.KEY_UP, 1000, "Up key constant")
+assert_eq(softline.KEY_DOWN, 1001, "Down key constant")
+assert_eq(softline.KEY_ALT_E, 4096 + string.byte("e"), "Alt-E key constant")
 status:close()
 
 print("lua softline smoke passed")

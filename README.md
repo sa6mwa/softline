@@ -122,7 +122,9 @@ and Lua examples accept
 `SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
 expose that as `THEME=...`. The simple and chat examples default to `default`;
-`make run-chat` supplies Gruvbox.
+`make run-chat` supplies Gruvbox. Set `SOFTLINE_LIVE_SCROLL_REGION=1` for
+either chat example, or use a `-sr` convenience target, to demonstrate the
+opt-in scroll-region behavior.
 
 ## Bounded prompts
 
@@ -134,8 +136,8 @@ Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
 bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
 in softline. Bounded rendering keeps a retained view of the visible editor
 rows: ordinary edits patch only changed cells, structural changes redraw the
-affected rows, and `SIGWINCH` triggers a full reflow of the bounded box before
-input resumes. During a bounded structural update or transcript dispatch,
+affected rows, and terminal geometry changes reflow the bounded box while
+editing. During a bounded structural update or transcript dispatch,
 softline hides the hardware cursor and restores it only at the final prompt
 position, preventing visible cursor travel across the prompt area.
 
