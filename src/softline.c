@@ -195,6 +195,8 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
 
 static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
+static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
+                             unsigned long *codepoint);
 static int sl_render_clear_active(sl_t *self);
 static int sl_try_pin_scroll_region(sl_t *self);
 
@@ -322,14 +324,21 @@ static void sl_statusline_clear(sl_statusline_t *statusline) {
 }
 
 static int sl_statusline_text_valid(const char *text) {
-  const unsigned char *p;
+  size_t len;
+  size_t pos;
   if (!text)
     return 1;
-  p = (const unsigned char *)text;
-  while (*p) {
-    if (*p < 32 || *p == 127)
+  len = strlen(text);
+  pos = 0;
+  while (pos < len) {
+    unsigned long codepoint;
+    size_t n;
+    n = sl_utf8_decode(text, len, pos, &codepoint);
+    if (n == 0 || ((unsigned char)text[pos] >= 0x80 && n == 1) ||
+        codepoint < 32 || codepoint == 127 ||
+        (codepoint >= 0x80 && codepoint <= 0x9f))
       return 0;
-    p++;
+    pos += n;
   }
   return 1;
 }

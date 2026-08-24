@@ -198,7 +198,8 @@ additionally colour typed text as defined by their palettes.
 
 Status lines are opt-in renderer-owned live rows between queue previews and the
 editor. Set their elements in bulk or update an individual element from an idle
-or key callback. Every colour theme has eight element colours. Element zero is
+or key callback. Element text must be valid UTF-8 without C0/C1 controls or
+DEL. Every colour theme has eight element colours. Element zero is
 the first application element (typically the model name), and the selected
 starting index wraps modulo eight: an offset of 15 therefore uses slot 7 for
 the first element and slot 0 for the second.

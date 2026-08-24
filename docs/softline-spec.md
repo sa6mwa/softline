@@ -146,7 +146,8 @@ uncoloured; the remaining named themes use their embedded palettes.
 Status lines are opt-in rows between queue previews and the editor. A theme has
 eight element colours. `statusline_start_element` selects the first palette
 slot and later elements advance modulo eight. Softline retains at most 32
-elements; a longer bulk update uses the first 31 followed by `...`. Idle shows
+elements; a longer bulk update uses the first 31 followed by `...`. Element
+text must be valid UTF-8 without C0/C1 controls or DEL. Idle shows
 a green `+` by default; callers can supply another printable ASCII marker or
 `'\0'` for a blank reserved slot. Busy shows a red `x`, or a red 500ms
 `/-\\|` spinner when both busy and spinner are enabled.

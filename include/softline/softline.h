@@ -491,12 +491,14 @@ int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
 int sl_set_statusline(sl_t *self, int enabled, size_t starting_element);
 
 /** Replace all status-line elements. At most 32 elements are retained; longer
- * input is represented by the first 31 elements followed by `...`. */
+ * input is represented by the first 31 elements followed by `...`. Elements
+ * must be valid UTF-8 without C0/C1 controls or DEL. */
 int sl_set_status_elements(sl_t *self, const char *const *elements,
                            size_t count);
 
 /** Set, replace, or clear one status-line element. index must be below
- * SL_STATUS_MAX_ELEMENTS. */
+ * SL_STATUS_MAX_ELEMENTS; non-NULL text must be valid UTF-8 without C0/C1
+ * controls or DEL. */
 int sl_set_status_element(sl_t *self, size_t index, const char *element);
 
 /** Set the status-line busy state. With the spinner disabled, busy renders x;

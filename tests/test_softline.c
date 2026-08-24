@@ -428,6 +428,13 @@ static void test_invalid_receiver_arguments(void) {
               "out-of-range status element accepted");
   ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\ntext") == SL_ERROR_INVALID,
               "status control text accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\23331m") == SL_ERROR_INVALID,
+              "status raw C1 control accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\302\23331m") ==
+                  SL_ERROR_INVALID,
+              "status UTF-8 C1 control accepted");
+  ASSERT_TRUE(sl->set_status_element(sl, 0, "bad\302text") == SL_ERROR_INVALID,
+              "status invalid UTF-8 accepted");
   ASSERT_TRUE(sl->set_status_busy(sl, -1) == SL_ERROR_INVALID,
               "negative status busy accepted");
   ASSERT_TRUE(sl->set_status_spinner(sl, -1) == SL_ERROR_INVALID,
@@ -5924,6 +5931,12 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
               "scroll region did not shrink after queue reflow");
   ASSERT_TRUE(contains_bytes(terminal, "second-live"),
               "second live message missing");
+  prompts_after_second = count_bytes(terminal, "p> ");
+  n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  ASSERT_TRUE(count_bytes(terminal, "p> ") == prompts_after_second,
+              "live message repainted the reflowed prompt");
   resize_offset = terminal_len;
   ws.ws_row = 6;
   ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "terminal resize failed");
@@ -5934,12 +5947,6 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\033[1;1H\033[2K") &&
                   !contains_bytes(terminal + resize_offset, "\033[2;1H\033[2K"),
               "pinned resize cleared transcript rows");
-  prompts_after_second = count_bytes(terminal, "p> ");
-  n = read_some_with_timeout(master_fd, buf, sizeof(buf));
-  if (n > 0)
-    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
-  ASSERT_TRUE(count_bytes(terminal, "p> ") == prompts_after_second,
-              "live message repainted the reflowed prompt");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");

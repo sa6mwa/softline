@@ -92,7 +92,8 @@ live scroll regions, status lines, and spinners are off; the theme is
   eight element colours, and subsequent elements cycle through those colours.
 - `sl:set_status_elements(elements)` replaces all status elements. At most 32
   are retained; longer input uses the first 31 followed by `...`. The limit is
-  exported as `STATUS_MAX_ELEMENTS`.
+  exported as `STATUS_MAX_ELEMENTS`. Elements must be valid UTF-8 and cannot
+  contain C0/C1 controls or DEL.
 - `sl:set_status_element(index, value)` updates one zero-based element; pass
   `nil` as `value` to clear it.
 - `sl:set_status_busy(busy)` selects the red busy `x` or spinner marker.
