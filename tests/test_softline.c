@@ -1921,11 +1921,11 @@ static int run_pty_key_binding_case(const char *input, sl_key_t key,
   return 0;
 }
 
-static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
-                                     int bounded, int reduced_max_entries,
-                                     int expected_prompts, char *terminal,
-                                     size_t terminal_cap, char *result,
-                                     size_t result_cap, int *exit_status) {
+static int run_pty_prompt_queue_case_with_width(
+    const char *input, sl_prompt_theme_t theme, int bounded,
+    int reduced_max_entries, int expected_prompts, int width,
+    const char *prompt, char *terminal, size_t terminal_cap, char *result,
+    size_t result_cap, int *exit_status) {
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -1936,7 +1936,7 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
   int status;
 
   memset(&ws, 0, sizeof(ws));
-  ws.ws_col = 40;
+  ws.ws_col = (unsigned short)width;
   ws.ws_row = 8;
   if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0 ||
       pipe(result_pipe) != 0)
@@ -1959,7 +1959,7 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     if (bounded) {
-      cfg.screen_width = 40;
+      cfg.screen_width = width;
       cfg.screen_height = 8;
       cfg.bounded = 1;
     }
@@ -1985,7 +1985,7 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
       sl_prompt_source_t source;
       int written;
       source = SL_PROMPT_SOURCE_NONE;
-      line = sl_next_prompt(sl, "chat> ", &source);
+      line = sl_next_prompt(sl, prompt, &source);
       if (!line)
         _exit(3);
       written = snprintf(output + used, sizeof(output) - used, "%s%d:%s",
@@ -2017,7 +2017,7 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
   close(result_pipe[1]);
   terminal_len = 0;
   terminal[0] = '\0';
-  while (!contains_bytes(terminal, "chat> ")) {
+  while (!contains_bytes(terminal, prompt)) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n <= 0)
@@ -2047,6 +2047,16 @@ static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
     return -1;
   *exit_status = status;
   return 0;
+}
+
+static int run_pty_prompt_queue_case(const char *input, sl_prompt_theme_t theme,
+                                     int bounded, int reduced_max_entries,
+                                     int expected_prompts, char *terminal,
+                                     size_t terminal_cap, char *result,
+                                     size_t result_cap, int *exit_status) {
+  return run_pty_prompt_queue_case_with_width(
+      input, theme, bounded, reduced_max_entries, expected_prompts, 40,
+      "chat> ", terminal, terminal_cap, result, result_cap, exit_status);
 }
 
 static int run_pty_themed_readline_case(sl_prompt_theme_t theme, char *terminal,
@@ -3062,6 +3072,30 @@ static void test_prompt_queue_dispatches_fifo_in_normal_scrollback(void) {
   ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;6;182;212mQ ") &&
                   contains_bytes(terminal, "\033[1;36mchat> \033[0m"),
               "normal prompt queue preview missing");
+  PASS();
+}
+
+static void test_prompt_queue_clips_control_rows_on_narrow_terminals(void) {
+  char terminal[16384];
+  char result[512];
+  int status;
+
+  TEST("prompt queue clips control rows on narrow terminals");
+  ASSERT_TRUE(run_pty_prompt_queue_case_with_width(
+                  "first\tsecond\tthird\r", SL_PROMPT_THEME_PLAIN, 0, 0, 3, 4,
+                  "p> ", terminal, sizeof(terminal), result, sizeof(result),
+                  &status) == 0,
+              "narrow prompt queue pty case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "narrow prompt queue child failed");
+  ASSERT_TRUE(strcmp(result, "1:third|2:first|2:second") == 0,
+              "narrow prompt queue dispatch mismatch");
+  ASSERT_TRUE(contains_bytes(terminal, "Q 1.") &&
+                  !contains_bytes(terminal, "Q 1. "),
+              "queue prefix exceeded narrow render width");
+  ASSERT_TRUE(contains_bytes(terminal, "  ..") &&
+                  !contains_bytes(terminal, "... 1 more"),
+              "queue overflow row exceeded narrow render width");
   PASS();
 }
 
@@ -6368,6 +6402,7 @@ int main(void) {
   test_key_binding_tab_inserts_text();
   test_prompt_queue_dispatches_fifo_with_themes();
   test_prompt_queue_dispatches_fifo_in_normal_scrollback();
+  test_prompt_queue_clips_control_rows_on_narrow_terminals();
   test_prompt_queue_rejects_reduced_capacity();
   test_prompt_queue_alt_e_recalls_newest();
   test_prompt_themes_style_normal_readline();

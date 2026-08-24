@@ -4,11 +4,13 @@
 #include <lua.h>
 #include <lualib.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define SOFTLINE_LUA_HANDLE "softline.handle"
 #define SOFTLINE_LUA_MAX_KEY_BINDINGS 64
+#define SOFTLINE_LUA_IDLE_ERROR_LEN 256
 
 typedef struct softline_lua_handle {
   sl_t *sl;
@@ -18,6 +20,9 @@ typedef struct softline_lua_handle {
     int ref;
   } key_bindings[SOFTLINE_LUA_MAX_KEY_BINDINGS];
   int idle_callback_ref;
+  int idle_callback_active;
+  int idle_callback_failed;
+  char idle_callback_error[SOFTLINE_LUA_IDLE_ERROR_LEN];
 } softline_lua_handle_t;
 
 typedef struct softline_lua_stream {
@@ -111,6 +116,24 @@ static int softline_lua_key_callback(sl_t *sl, sl_key_t key, void *userdata,
   }
 }
 
+static void softline_lua_clear_idle_error(softline_lua_handle_t *handle) {
+  if (!handle)
+    return;
+  handle->idle_callback_failed = 0;
+  handle->idle_callback_error[0] = '\0';
+}
+
+static void softline_lua_set_idle_error(softline_lua_handle_t *handle,
+                                        const char *message) {
+  if (!handle)
+    return;
+  (void)snprintf(handle->idle_callback_error,
+                 sizeof(handle->idle_callback_error),
+                 "idle callback failed: %s",
+                 message && message[0] != '\0' ? message : "Lua error");
+  handle->idle_callback_failed = 1;
+}
+
 static void softline_lua_idle_callback(sl_t *sl, void *userdata) {
   softline_lua_handle_t *handle;
   lua_State *L;
@@ -119,10 +142,13 @@ static void softline_lua_idle_callback(sl_t *sl, void *userdata) {
     return;
   L = handle->L;
   lua_rawgeti(L, LUA_REGISTRYINDEX, handle->idle_callback_ref);
+  handle->idle_callback_active = 1;
   if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    softline_lua_set_idle_error(handle, lua_tostring(L, -1));
     lua_pop(L, 1);
     (void)sl_cancel(sl);
   }
+  handle->idle_callback_active = 0;
 }
 
 static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
@@ -235,6 +261,8 @@ static int softline_lua_new(lua_State *L) {
     handle->key_bindings[i].ref = LUA_NOREF;
   }
   handle->idle_callback_ref = LUA_NOREF;
+  handle->idle_callback_active = 0;
+  softline_lua_clear_idle_error(handle);
   handle->sl = sl_create_with_config(&config);
   if (!handle->sl)
     return luaL_error(L, "failed to create softline handle");
@@ -247,6 +275,8 @@ static int softline_lua_gc(lua_State *L) {
   softline_lua_handle_t *handle;
   int i;
   handle = (softline_lua_handle_t *)luaL_checkudata(L, 1, SOFTLINE_LUA_HANDLE);
+  if (handle->idle_callback_active)
+    return 0;
   for (i = 0; i < SOFTLINE_LUA_MAX_KEY_BINDINGS; i++) {
     if (handle->key_bindings[i].ref != LUA_NOREF) {
       luaL_unref(L, LUA_REGISTRYINDEX, handle->key_bindings[i].ref);
@@ -264,7 +294,13 @@ static int softline_lua_gc(lua_State *L) {
   return 0;
 }
 
-static int softline_lua_close(lua_State *L) { return softline_lua_gc(L); }
+static int softline_lua_close(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = (softline_lua_handle_t *)luaL_checkudata(L, 1, SOFTLINE_LUA_HANDLE);
+  if (handle->idle_callback_active)
+    return luaL_error(L, "cannot close softline handle from its idle callback");
+  return softline_lua_gc(L);
+}
 
 static int softline_lua_readline(lua_State *L) {
   softline_lua_handle_t *handle;
@@ -272,7 +308,15 @@ static int softline_lua_readline(lua_State *L) {
   char *line;
   handle = softline_lua_check(L, 1);
   prompt = luaL_optstring(L, 2, NULL);
+  softline_lua_clear_idle_error(handle);
   line = sl_readline(handle->sl, prompt);
+  if (handle->idle_callback_failed) {
+    if (line)
+      sl_free_string(handle->sl, line);
+    lua_pushnil(L);
+    lua_pushinteger(L, SL_READLINE_ERROR);
+    return 2;
+  }
   if (!line) {
     lua_pushnil(L);
     lua_pushinteger(L, sl_last_readline_status(handle->sl));
@@ -290,8 +334,16 @@ static int softline_lua_next_prompt(lua_State *L) {
   sl_prompt_source_t source;
   handle = softline_lua_check(L, 1);
   prompt = luaL_optstring(L, 2, NULL);
+  softline_lua_clear_idle_error(handle);
   source = SL_PROMPT_SOURCE_NONE;
   line = sl_next_prompt(handle->sl, prompt, &source);
+  if (handle->idle_callback_failed) {
+    if (line)
+      sl_free_string(handle->sl, line);
+    lua_pushnil(L);
+    lua_pushinteger(L, SL_READLINE_ERROR);
+    return 2;
+  }
   if (!line) {
     lua_pushnil(L);
     lua_pushinteger(L, sl_last_readline_status(handle->sl));
@@ -551,6 +603,10 @@ static int softline_lua_set_idle_callback(lua_State *L) {
 static int softline_lua_last_readline_status(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
+  if (handle->idle_callback_failed) {
+    lua_pushinteger(L, SL_READLINE_ERROR);
+    return 1;
+  }
   lua_pushinteger(L, sl_last_readline_status(handle->sl));
   return 1;
 }
@@ -559,6 +615,10 @@ static int softline_lua_last_error(lua_State *L) {
   softline_lua_handle_t *handle;
   const char *error;
   handle = softline_lua_check(L, 1);
+  if (handle->idle_callback_failed) {
+    lua_pushstring(L, handle->idle_callback_error);
+    return 1;
+  }
   error = sl_last_error(handle->sl);
   if (!error) {
     lua_pushnil(L);

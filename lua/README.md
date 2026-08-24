@@ -74,7 +74,9 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:set_idle_callback(callback)` registers a no-argument Lua callback that
   runs while an interactive editor is idle; pass `nil` to clear it. The
   callback may use methods such as `print_above`, `insert`, `submit`, or
-  `cancel`.
+  `cancel`. Closing that handle from its own idle callback is rejected. A Lua
+  callback error ends the active `readline()` or `next_prompt()` with
+  `READLINE_ERROR`; `sl:last_error()` returns the captured Lua error text.
 - `sl:set_prompt_queue(enabled, max_entries, preview_entries)` enables the
   chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
   queued entry into the editor. Disabling the queue clears it; reducing

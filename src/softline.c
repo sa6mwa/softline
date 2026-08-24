@@ -2213,6 +2213,7 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   if (shown > queue->len)
     shown = queue->len;
   for (i = 0; i < shown; i++) {
+    char prefix[32];
     char number[24];
     const char *entry_prefix;
     int prefix_width;
@@ -2222,22 +2223,20 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
     row = &render->rows[render->count - 1];
     (void)snprintf(number, sizeof(number), "%d. ", i + 1);
     entry_prefix = i == 0 ? "Q " : "  ";
-    prefix_width = sl_text_width(entry_prefix, strlen(entry_prefix)) +
-                   sl_text_width(number, strlen(number));
-    if (sl_row_append_styled(row, entry_prefix, control_style) != 0 ||
-        sl_row_append_styled(row, number, control_style) != 0 ||
-        sl_queue_row_append_preview(row, queue->items[i], width - prefix_width,
+    (void)snprintf(prefix, sizeof(prefix), "%s%s", entry_prefix, number);
+    if (sl_queue_row_append_preview(row, prefix, width, control_style) != 0)
+      return -1;
+    prefix_width = row->cols;
+    if (sl_queue_row_append_preview(row, queue->items[i], width - prefix_width,
                                     text_style) != 0)
       return -1;
   }
   if (shown < queue->len) {
     char more[64];
-    (void)snprintf(more, sizeof(more), "... %d more", queue->len - shown);
+    (void)snprintf(more, sizeof(more), "  ... %d more", queue->len - shown);
     if (sl_render_new_row_at(render, 0, 0) != 0 ||
-        sl_row_append_cells(&render->rows[render->count - 1], "  ", 2, 2) !=
-            0 ||
-        sl_row_append_styled(&render->rows[render->count - 1], more,
-                             control_style) != 0)
+        sl_queue_row_append_preview(&render->rows[render->count - 1], more,
+                                    width, control_style) != 0)
       return -1;
   }
   return 0;
