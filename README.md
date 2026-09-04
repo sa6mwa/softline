@@ -57,17 +57,25 @@ Currently implemented:
 - Keys such as TAB, Enter, function keys, and Alt-letter combinations can be
   bound per handle. A binding may handle the key, pass through to the built-in
   behavior, submit, cancel, interrupt, or mutate the active buffer.
-  `SL_KEY_CTRL_ENTER` is available when the terminal sends a distinguishable
-  Ctrl-Enter sequence.
-- Chat-like prompts can opt into a FIFO prompt queue. Tab queues a nonempty
-  draft, Alt-E recalls the newest queued draft for editing, and
-  `next_prompt()` returns queued work before opening a direct editor while
-  identifying whether the result was queued or direct. The renderer ships
+  `SL_KEY_ALT_ENTER` represents the broadly supported Escape-plus-Return
+  sequence. `SL_KEY_CTRL_ENTER` remains available when the terminal sends a
+  distinguishable Ctrl-Enter sequence.
+- Chat-like prompts can opt into a bounded FIFO prompt queue with public C and
+  Lua inspection/mutation APIs. The default profile keeps Tab queueing and
+  Alt-E edit-newest behavior, while the queued-turns profile binds
+  Enter-to-queue and FIFO release to Softline's busy lifecycle. `next_prompt()`
+  can auto-deliver FIFO work or the default profile can leave it local for
+  explicit host delivery. The renderer ships
   default, plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun,
   Riced, and Synthwave prompt themes. Optional status lines use the selected
   palette. The chat examples add sent nonempty prompts to their history, so
   `Up`/`Down` and `Ctrl-P`/`Ctrl-N` recall sent prompts while Alt-E remains
   reserved for unsent queued drafts.
+- Interactive handles can watch application-owned file descriptors. Softline
+  waits for terminal and watch readiness together, then invokes the watch
+  callback on the editor owner thread so streamed output can redraw above a
+  live draft without cross-thread handle access. Ready watches are visited
+  round-robin in bounded batches so terminal input remains responsive.
 - UTF-8 input is preserved, common Unicode clusters are kept intact by
   cursor/delete operations, and rendering accounts for combining marks, East
   Asian wide characters, and common emoji widths.
@@ -81,7 +89,6 @@ Not currently implemented:
 - full Unicode Text Segmentation, locale-specific ambiguous-width handling, or
   normalization
 - terminfo/termcap capability lookup
-- nonblocking/event-loop session API
 - Windows console backend
 - Readline-compatible headers, globals, `.inputrc`, or ABI
 
@@ -90,15 +97,21 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` stays in ordinary terminal scrollback. It posts dispatched text
-with a `[direct]` or `[queued]` source prefix while preserving the submitted
-text, shows a palette-driven status line, and emits a random simulated peer
-message every two seconds while the
-editor is active. Its status demo advances every five seconds through spinner
-and static busy phases. It alternates complete 40-second cycles between green
-idle `+` and blank reserved marker slots.
-Ctrl-C cancels the active editor and keeps the chat open.
-The queue UI, status line, and simulated peer activate only when both standard
+`example_chat` stays in ordinary terminal scrollback and simulates a generic
+turn processor. While available, Enter dispatches a turn; while its operation
+is running, Enter queues a follow-up locally. The worker process wakes the
+editor through a pipe, and the owner-thread watch callback prints progress
+above the active draft. Alt-Enter
+always dispatches a nonempty draft, and Alt-Enter on an empty editor promotes
+the newest queued entry for immediate host delivery. Alt-E edits the newest
+queued draft. On completion, queued FIFO work automatically dispatches. The
+examples print `[turn]`, `[promoted]`, or `[queued]` source labels and use the
+status spinner only as a presentation of their application-owned busy state.
+Escape or Ctrl-C returns cancellation to the application; the chat examples
+use it to stop the active simulated operation, retain its queue, and keep the
+chat open. Automatic FIFO release stays stopped until the user submits a new
+turn or manually promotes a queued one.
+The queue UI, status line, and simulated operation stream activate only when both standard
 input and standard output are terminals, so piped use remains plain
 line-oriented input/output.
 
@@ -194,6 +207,56 @@ interactive prompt, including normal readline prompts, status lines, and queue
 panels. Prompt markers reset before typed text; monochrome and monogreen
 additionally colour typed text as defined by their palettes.
 
+### Queue control API
+
+The queue remains renderer-owned, but an embedding application can inspect and
+mutate it without synthetic terminal input or a parallel queue. Queue indexes
+are oldest-first and returned strings are released with `sl_free_string()`.
+
+```c
+sl->set_prompt_queue(sl, 1, 64, 3);
+sl->set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS);
+
+/* An operation starts: Enter now queues nonempty drafts. */
+sl->set_status_busy(sl, 1);
+
+/* An owner-thread completion callback returns to idle. If the editor is
+ * empty, the active next_prompt() immediately receives one oldest queued
+ * turn; starting that turn sets busy again, so later entries remain queued. */
+sl->set_status_busy(sl, 0);
+```
+
+`SL_PROMPT_QUEUE_PROFILE_DEFAULT` preserves Tab, Alt-E, and automatic FIFO
+delivery by default. `SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS` is the native
+turn lifecycle preset: while `set_status_busy(sl, 1)` is active, Enter queues
+a nonempty draft; when it returns idle, Softline delivers exactly one oldest
+queued turn. Starting that turn sets busy again, so the remaining FIFO entries
+stay visibly queued until its completion. In idle mode, Enter submits normally
+and an empty Enter is ignored. Alt-Enter always submits a nonempty draft; on
+an empty draft it promotes the newest queued entry regardless of busy state.
+Both are returned to the application immediately, even while busy: a nonempty
+draft has `SL_PROMPT_SOURCE_DIRECT` and a promotion has
+`SL_PROMPT_SOURCE_PROMOTED`. Use `sl_set_prompt_queue_delivery()` only with
+the default profile for an explicit host-controlled delivery policy. Explicit
+`sl_bind_key()` bindings always take precedence over these built-ins.
+Cancelling a queued-turns editor keeps queued drafts visible but stops automatic
+FIFO release; a subsequent direct submission or manual promotion resumes it.
+
+## External events while editing
+
+Register an application-owned nonblocking wake FD before entering an
+interactive `readline()` or `next_prompt()` call. Softline never reads, closes,
+or changes that FD. Its callback runs on the same thread that owns the editor,
+where it drains bounded application work and may call `print_above()`, update
+status, or complete a queued-turn operation safely.
+
+```c
+sl_watch_id_t watch;
+
+sl->watch_add(sl, wake_fd, SL_WATCH_READ | SL_WATCH_HANGUP,
+              on_application_wake, app, &watch);
+```
+
 ## Status lines
 
 Status lines are opt-in renderer-owned live rows between queue previews and the
@@ -263,7 +326,10 @@ make prerelease
 The core library is compiled as C89 with POSIX terminal APIs. Shared builds use
 the separate CMake `SOFTLINE_ABI_VERSION`, currently `1`, for SONAME/SOVERSION.
 That ABI version is bumped only for shared-library ABI breaks, not for every
-project release-version bump.
+project release-version bump. The v0.3.0 receiver-shell architecture is
+withdrawn as an architectural miss and is not a supported shared-library
+upgrade baseline; the current event-driven architecture replaces it while
+retaining ABI version `1`.
 
 On supported Linux development hosts, ordinary debug, sanitizer, Valgrind,
 package-consumer, and release package builds use the pinned native GNU Bootlin

@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,57 @@ static int tests_passed = 0;
 static volatile sig_atomic_t signal_seen = 0;
 static volatile sig_atomic_t winch_seen = 0;
 static int signal_ack_fd = -1;
+
+/*
+ * The v0.3.0 receiver shell is the prefix shared-library clients compiled
+ * against. New receiver methods must be appended after it: moving a member
+ * within this prefix changes function-pointer offsets for those clients.
+ */
+typedef struct sl_v030_receiver {
+  char *(*readline)(sl_t *self, const char *prompt);
+  void (*destroy)(sl_t *self);
+  void (*free_string)(sl_t *self, char *ptr);
+  int (*history_add)(sl_t *self, const char *line);
+  int (*history_set_max_len)(sl_t *self, int max_len);
+  int (*history_save)(sl_t *self, const char *filename);
+  int (*history_load)(sl_t *self, const char *filename);
+  int (*set_bounds)(sl_t *self, int x, int y, int width, int height);
+  int (*set_screen_width)(sl_t *self, int width);
+  int (*set_live_scroll_region)(sl_t *self, int enabled);
+  int (*set_idle_callback)(sl_t *self, sl_idle_callback_t callback,
+                           void *userdata);
+  int (*bind_key)(sl_t *self, sl_key_t key, sl_key_callback_t callback,
+                  void *userdata);
+  int (*insert)(sl_t *self, const char *text);
+  int (*set_buffer)(sl_t *self, const char *text);
+  const char *(*buffer)(const sl_t *self);
+  size_t (*cursor)(const sl_t *self);
+  int (*set_cursor)(sl_t *self, size_t cursor);
+  int (*submit)(sl_t *self);
+  int (*cancel)(sl_t *self);
+  int (*print_above)(sl_t *self, sl_stream_callback_t callback, void *userdata);
+  sl_readline_status_t (*last_readline_status)(const sl_t *self);
+  const char *(*last_error)(const sl_t *self);
+  void *impl;
+  char *(*next_prompt)(sl_t *self, const char *prompt,
+                       sl_prompt_source_t *source);
+  int (*set_prompt_queue)(sl_t *self, int enabled, int max_entries,
+                          int preview_entries);
+  int (*set_prompt_theme)(sl_t *self, sl_prompt_theme_t theme);
+  int (*set_statusline)(sl_t *self, int enabled, size_t starting_element);
+  int (*set_status_elements)(sl_t *self, const char *const *elements,
+                             size_t count);
+  int (*set_status_element)(sl_t *self, size_t index, const char *element);
+  int (*set_status_busy)(sl_t *self, int busy);
+  int (*set_status_spinner)(sl_t *self, int enabled);
+  int (*set_status_idle_marker)(sl_t *self, char marker);
+} sl_v030_receiver_t;
+
+typedef char sl_v030_bind_key_offset_must_not_change
+    [offsetof(sl_t, bind_key) == offsetof(sl_v030_receiver_t, bind_key) ? 1
+                                                                        : -1];
+typedef char sl_v030_receiver_prefix_must_not_change
+    [offsetof(sl_t, prompt_queue_count) == sizeof(sl_v030_receiver_t) ? 1 : -1];
 
 static void remember_signal(int signo) {
   unsigned char byte;
@@ -204,8 +256,42 @@ static void test_receiver_shell(void) {
               "set_status_spinner method missing");
   ASSERT_TRUE(sl->set_status_idle_marker != NULL,
               "set_status_idle_marker method missing");
+  ASSERT_TRUE(sl->prompt_queue_count != NULL,
+              "prompt_queue_count method missing");
+  ASSERT_TRUE(sl->prompt_queue_capacity != NULL,
+              "prompt_queue_capacity method missing");
+  ASSERT_TRUE(sl->prompt_queue_peek != NULL,
+              "prompt_queue_peek method missing");
+  ASSERT_TRUE(sl->prompt_queue_insert != NULL,
+              "prompt_queue_insert method missing");
+  ASSERT_TRUE(sl->prompt_queue_append != NULL,
+              "prompt_queue_append method missing");
+  ASSERT_TRUE(sl->prompt_queue_replace != NULL,
+              "prompt_queue_replace method missing");
+  ASSERT_TRUE(sl->prompt_queue_take != NULL,
+              "prompt_queue_take method missing");
+  ASSERT_TRUE(sl->prompt_queue_clear != NULL,
+              "prompt_queue_clear method missing");
+  ASSERT_TRUE(sl->prompt_queue_enqueue_draft != NULL,
+              "prompt_queue_enqueue_draft method missing");
+  ASSERT_TRUE(sl->set_prompt_queue_delivery != NULL,
+              "set_prompt_queue_delivery method missing");
+  ASSERT_TRUE(sl->get_prompt_queue_delivery != NULL,
+              "get_prompt_queue_delivery method missing");
+  ASSERT_TRUE(sl->set_prompt_queue_profile != NULL,
+              "set_prompt_queue_profile method missing");
+  ASSERT_TRUE(sl->get_prompt_queue_profile != NULL,
+              "get_prompt_queue_profile method missing");
+  ASSERT_TRUE(sl->set_prompt_queue_keys != NULL,
+              "set_prompt_queue_keys method missing");
+  ASSERT_TRUE(sl->get_prompt_queue_keys != NULL,
+              "get_prompt_queue_keys method missing");
   ASSERT_TRUE(sl->set_idle_callback != NULL,
               "set_idle_callback method missing");
+  ASSERT_TRUE(sl->watch_add != NULL, "watch_add method missing");
+  ASSERT_TRUE(sl->watch_modify != NULL, "watch_modify method missing");
+  ASSERT_TRUE(sl->watch_remove != NULL, "watch_remove method missing");
+  ASSERT_TRUE(sl->watch_clear != NULL, "watch_clear method missing");
   ASSERT_TRUE(sl->bind_key != NULL, "bind_key method missing");
   ASSERT_TRUE(sl->insert != NULL, "insert method missing");
   ASSERT_TRUE(sl->set_buffer != NULL, "set_buffer method missing");
@@ -265,6 +351,93 @@ static void test_free_function_wrappers_use_receiver_methods(void) {
   ASSERT_TRUE(sl_last_readline_status(sl) == SL_READLINE_NONE,
               "wrapper initial readline status mismatch");
   ASSERT_TRUE(sl_last_error(sl) == NULL, "wrapper last_error mismatch");
+  sl_destroy(sl);
+  PASS();
+}
+
+static void test_prompt_queue_control_api(void) {
+  sl_prompt_queue_delivery_t delivery;
+  sl_prompt_queue_keys_t keys;
+  sl_prompt_queue_profile_t profile;
+  char *text;
+  sl_t *sl;
+
+  TEST("prompt queue control API manages bounded FIFO state");
+  sl = sl_create();
+  ASSERT_TRUE(sl != NULL, "create failed");
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "disabled") == SL_ERROR_INVALID,
+              "disabled queue accepted mutation");
+  ASSERT_TRUE(sl_set_prompt_queue(sl, 1, 3, 2) == SL_OK, "queue enable failed");
+  ASSERT_TRUE(sl_prompt_queue_count(sl) == 0, "initial queue count mismatch");
+  ASSERT_TRUE(sl_prompt_queue_capacity(sl) == 3, "queue capacity mismatch");
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "one") == SL_OK, "append one failed");
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "three") == SL_OK,
+              "append three failed");
+  ASSERT_TRUE(sl_prompt_queue_insert(sl, 1, "two") == SL_OK,
+              "insert two failed");
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "full") == SL_ERROR_FULL,
+              "full queue did not report SL_ERROR_FULL");
+  text = NULL;
+  ASSERT_TRUE(sl_prompt_queue_peek(sl, 1, &text) == SL_OK, "peek two failed");
+  ASSERT_TRUE(strcmp(text, "two") == 0, "peek returned wrong entry");
+  sl_free_string(sl, text);
+  ASSERT_TRUE(sl_prompt_queue_replace(sl, 1, "second") == SL_OK,
+              "replace failed");
+  text = NULL;
+  ASSERT_TRUE(sl_prompt_queue_take(sl, 0, &text) == SL_OK, "take failed");
+  ASSERT_TRUE(strcmp(text, "one") == 0, "take FIFO entry mismatch");
+  sl_free_string(sl, text);
+  ASSERT_TRUE(sl_prompt_queue_count(sl) == 2, "take count mismatch");
+  ASSERT_TRUE(sl_prompt_queue_insert(sl, 9, "bad") == SL_ERROR_INVALID,
+              "invalid insertion index accepted");
+  ASSERT_TRUE(sl_prompt_queue_replace(sl, 0, "") == SL_ERROR_INVALID,
+              "empty replacement accepted");
+  ASSERT_TRUE(sl_prompt_queue_enqueue_draft(sl) == SL_ERROR_INVALID,
+              "inactive draft enqueue accepted");
+  ASSERT_TRUE(sl_set_prompt_queue_delivery(
+                  sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_OK,
+              "manual delivery configuration failed");
+  delivery = SL_PROMPT_QUEUE_DELIVERY_AUTO;
+  ASSERT_TRUE(sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL,
+              "manual delivery readback mismatch");
+  ASSERT_TRUE(sl_set_prompt_queue_profile(
+                  sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) == SL_OK,
+              "queued-turns profile configuration failed");
+  profile = SL_PROMPT_QUEUE_PROFILE_DEFAULT;
+  ASSERT_TRUE(sl_get_prompt_queue_profile(sl, &profile) == SL_OK &&
+                  profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS,
+              "queued-turns profile readback mismatch");
+  ASSERT_TRUE(sl_get_prompt_queue_keys(sl, &keys) == SL_OK,
+              "queued-turns keys readback failed");
+  ASSERT_TRUE(keys.enqueue_draft == SL_KEY_ENTER &&
+                  keys.edit_newest == SL_KEY_ALT_E &&
+                  keys.submit_or_promote_newest == SL_KEY_ALT_ENTER,
+              "queued-turns key defaults mismatch");
+  ASSERT_TRUE(sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO,
+              "idle queued-turns delivery must be automatic");
+  ASSERT_TRUE(sl_set_status_busy(sl, 1) == SL_OK,
+              "queued-turns busy transition failed");
+  ASSERT_TRUE(sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL,
+              "busy queued-turns delivery must retain turns");
+  ASSERT_TRUE(sl_set_status_busy(sl, 0) == SL_OK,
+              "queued-turns idle transition failed");
+  ASSERT_TRUE(sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO,
+              "idle queued-turns delivery must release turns");
+  ASSERT_TRUE(sl_set_prompt_queue_delivery(
+                  sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_ERROR_INVALID,
+              "queued-turns accepted a host delivery override");
+  keys.enqueue_draft = SL_KEY_NONE;
+  ASSERT_TRUE(sl_set_prompt_queue_keys(sl, &keys) == SL_OK,
+              "available-state queue key configuration failed");
+  keys.edit_newest = SL_KEY_ALT_ENTER;
+  ASSERT_TRUE(sl_set_prompt_queue_keys(sl, &keys) == SL_ERROR_INVALID,
+              "duplicate queue keys accepted");
+  ASSERT_TRUE(sl_prompt_queue_clear(sl) == SL_OK, "queue clear failed");
+  ASSERT_TRUE(sl_prompt_queue_count(sl) == 0, "queue clear count mismatch");
   sl_destroy(sl);
   PASS();
 }
@@ -366,6 +539,14 @@ static void test_invalid_receiver_arguments(void) {
               "NULL set_live_scroll_region accepted");
   ASSERT_TRUE(sl_set_idle_callback(NULL, NULL, NULL) == SL_ERROR_INVALID,
               "NULL set_idle_callback accepted");
+  ASSERT_TRUE(sl_watch_add(NULL, -1, 0, NULL, NULL, NULL) == SL_ERROR_INVALID,
+              "NULL watch_add accepted");
+  ASSERT_TRUE(sl_watch_modify(NULL, 1, SL_WATCH_READ) == SL_ERROR_INVALID,
+              "NULL watch_modify accepted");
+  ASSERT_TRUE(sl_watch_remove(NULL, 1) == SL_ERROR_INVALID,
+              "NULL watch_remove accepted");
+  ASSERT_TRUE(sl_watch_clear(NULL) == SL_ERROR_INVALID,
+              "NULL watch_clear accepted");
   ASSERT_TRUE(sl_bind_key(NULL, SL_KEY_TAB, NULL, NULL) == SL_ERROR_INVALID,
               "NULL bind_key accepted");
   ASSERT_TRUE(sl_insert(NULL, "x") == SL_ERROR_INVALID, "NULL insert accepted");
@@ -490,6 +671,41 @@ static void test_plain_readline(void) {
   out[n] = '\0';
   close(out_pipe[0]);
   ASSERT_TRUE(strcmp(out, "") == 0, "non-tty readline emitted prompt output");
+  PASS();
+}
+
+static void test_plain_next_prompt_is_direct(void) {
+  int in_pipe[2];
+  int out_pipe[2];
+  sl_config_t cfg;
+  sl_prompt_source_t source;
+  sl_t *sl;
+  char *line;
+
+  TEST("non-tty next_prompt reports direct source");
+  ASSERT_TRUE(pipe(in_pipe) == 0, "input pipe failed");
+  ASSERT_TRUE(pipe(out_pipe) == 0, "output pipe failed");
+  ASSERT_TRUE(write(in_pipe[1], "hello\n", 6) == 6, "write input failed");
+  close(in_pipe[1]);
+
+  sl_config_init(&cfg);
+  cfg.input_fd = in_pipe[0];
+  cfg.output_fd = out_pipe[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL, "create failed");
+  source = SL_PROMPT_SOURCE_NONE;
+  line = sl_next_prompt(sl, "p> ", &source);
+  ASSERT_TRUE(line != NULL, "next_prompt returned NULL");
+  ASSERT_TRUE(strcmp(line, "hello") == 0, "next_prompt line mismatch");
+  ASSERT_TRUE(source == SL_PROMPT_SOURCE_DIRECT,
+              "non-tty next_prompt source was not direct");
+  ASSERT_TRUE(sl_last_readline_status(sl) == SL_READLINE_SUBMITTED,
+              "non-tty next_prompt status mismatch");
+  sl_free_string(sl, line);
+  sl_destroy(sl);
+  close(in_pipe[0]);
+  close(out_pipe[0]);
+  close(out_pipe[1]);
   PASS();
 }
 
@@ -1496,6 +1712,14 @@ static void idle_finish_after_two_ticks(sl_t *sl, void *userdata) {
   if (state->text)
     (void)sl->insert(sl, state->text);
   (void)sl->submit(sl);
+}
+
+static int idle_quiet_watch_callback(sl_t *sl, const sl_watch_event_t *event,
+                                     void *userdata) {
+  (void)sl;
+  (void)event;
+  (void)userdata;
+  return SL_OK;
 }
 
 static void idle_signal_ready_once(sl_t *sl, void *userdata) {
@@ -3501,6 +3725,123 @@ static void test_key_binding_ctrl_enter_can_call_submit(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "draft") == 0,
               "Ctrl-Enter submit result mismatch");
+  PASS();
+}
+
+static void test_next_prompt_retains_raw_input_between_turns(void) {
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int release_pipe[2];
+  int result_pipe[2];
+  int status;
+  pid_t pid;
+  char terminal[4096];
+  char result[128];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("next_prompt preserves Ctrl-Enter between turn results");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(ready_pipe) == 0 && pipe(release_pipe) == 0 &&
+                  pipe(result_pipe) == 0,
+              "handoff pipe setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_prompt_source_t source;
+    sl_t *sl;
+    char *first;
+    char *second;
+    char output[128];
+    struct termios before;
+    struct termios after;
+    int restored;
+    int written;
+    char release;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(release_pipe[1]);
+    close(result_pipe[0]);
+    if (tcgetattr(slave_fd, &before) != 0)
+      _exit(2);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_bind_key(sl, SL_KEY_CTRL_ENTER, submit_method_key, NULL) != SL_OK)
+      _exit(3);
+    source = SL_PROMPT_SOURCE_NONE;
+    first = sl_next_prompt(sl, "first> ", &source);
+    if (!first || source != SL_PROMPT_SOURCE_DIRECT)
+      _exit(4);
+    if (write(ready_pipe[1], "r", 1) != 1)
+      _exit(5);
+    if (read(release_pipe[0], &release, 1) != 1)
+      _exit(6);
+    source = SL_PROMPT_SOURCE_NONE;
+    second = sl_next_prompt(sl, "second> ", &source);
+    if (!second || source != SL_PROMPT_SOURCE_DIRECT)
+      _exit(7);
+    written = snprintf(output, sizeof(output), "%s|%s", first, second);
+    sl_free_string(sl, first);
+    sl_free_string(sl, second);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(8);
+    sl_destroy(sl);
+    restored = tcgetattr(slave_fd, &after) == 0 &&
+               termios_same_observable(&before, &after);
+    written += snprintf(output + written, sizeof(output) - (size_t)written,
+                        "|%s", restored ? "RESTORED" : "RAW");
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(9);
+    (void)write(result_pipe[1], output, (size_t)written);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(release_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(release_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "first> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "first handoff prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(master_fd, "first\r", strlen("first\r")) ==
+                  (ssize_t)strlen("first\r"),
+              "first handoff input failed");
+  n = read_some_with_timeout(ready_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 1 && result[0] == 'r', "host handoff was not reached");
+  /* next_prompt retains raw terminal ownership while the host handles a turn.
+   */
+  ASSERT_TRUE(
+      write(master_fd, "second\033[13;5u", strlen("second\033[13;5u")) ==
+          (ssize_t)strlen("second\033[13;5u"),
+      "immediate Ctrl-Enter input failed");
+  ASSERT_TRUE(write(release_pipe[1], "g", 1) == 1, "handoff release failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "immediate Ctrl-Enter result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(release_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "handoff child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "handoff child failed");
+  ASSERT_TRUE(strcmp(result, "first|second|RESTORED") == 0,
+              "next_prompt did not preserve input or restore on destruction");
   PASS();
 }
 
@@ -5521,6 +5862,174 @@ static void test_idle_callback_can_submit_without_input(void) {
   PASS();
 }
 
+static void test_idle_callback_runs_with_quiet_watch(void) {
+  int master_fd;
+  int slave_fd;
+  int quiet_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char result[128];
+  ssize_t n;
+  int status;
+
+  TEST("idle callback runs while an external watch is quiet");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(quiet_pipe) == 0, "quiet pipe failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    char *line;
+    struct idle_finish_state state;
+
+    close(master_fd);
+    close(quiet_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    state.calls = 0;
+    state.text = "idle-watch-result";
+    state.cancel = 0;
+    if (sl->set_idle_callback(sl, idle_finish_after_two_ticks, &state) != SL_OK)
+      _exit(3);
+    watch_id = 0;
+    if (sl->watch_add(sl, quiet_pipe[0], SL_WATCH_READ,
+                      idle_quiet_watch_callback, NULL, &watch_id) != SL_OK ||
+        watch_id == 0)
+      _exit(4);
+    line = sl->readline(sl, "p> ");
+    if (!line)
+      (void)write(result_pipe[1], "<NULL>", 6);
+    else {
+      (void)write(result_pipe[1], line, strlen(line));
+      sl->free_string(sl, line);
+    }
+    sl->destroy(sl);
+    close(slave_fd);
+    close(quiet_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(quiet_pipe[0]);
+  close(result_pipe[1]);
+  n = read_some_with_timeout_ms(result_pipe[0], result, sizeof(result) - 1,
+                                1000);
+  ASSERT_TRUE(n > 0, "idle callback was blocked by quiet watch");
+  result[n] = '\0';
+  close(master_fd);
+  close(quiet_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "child editor failed");
+  ASSERT_TRUE(strcmp(result, "idle-watch-result") == 0,
+              "idle callback result mismatch with quiet watch");
+  PASS();
+}
+
+static void test_busy_spinner_ticks_with_quiet_watch(void) {
+  int master_fd;
+  int slave_fd;
+  int quiet_pipe[2];
+  int result_pipe[2];
+  int status;
+  int spinner_advanced;
+  int tries;
+  pid_t pid;
+  char result[128];
+  char terminal[8192];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("busy spinner ticks while an external watch is quiet");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(quiet_pipe) == 0, "quiet pipe failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    char *line;
+    close(master_fd);
+    close(quiet_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.statusline = 1;
+    cfg.status_spinner = 1;
+    cfg.status_busy = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    watch_id = 0;
+    if (sl_watch_add(sl, quiet_pipe[0], SL_WATCH_READ,
+                     idle_quiet_watch_callback, NULL, &watch_id) != SL_OK ||
+        watch_id == 0)
+      _exit(3);
+    line = sl_readline(sl, "spin> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(quiet_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(quiet_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "spin> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "spinner prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  spinner_advanced = 0;
+  for (tries = 0; tries < 10; tries++) {
+    n = read_some_with_timeout_ms(master_fd, terminal + terminal_len,
+                                  sizeof(terminal) - 1 - terminal_len, 100);
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+    if (contains_bytes(terminal, "- ")) {
+      spinner_advanced = 1;
+      break;
+    }
+  }
+  ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "spinner submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "spinner result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(quiet_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "spinner child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "spinner child failed");
+  ASSERT_TRUE(strcmp(result, "ok") == 0, "spinner result mismatch");
+  ASSERT_TRUE(spinner_advanced, "quiet watch froze the busy spinner");
+  PASS();
+}
+
 static void test_idle_callback_can_cancel_without_input(void) {
   int master_fd;
   int slave_fd;
@@ -6099,7 +6608,7 @@ static void test_pinned_stream_failure_restores_prompt_cursor(void) {
 static void test_cursor_probe_preserves_concurrent_queue_input(void) {
   static const char input[] =
       "\033[9999999999;9999999999R"
-      "queued-012345678901234567890123456789012345\tok\r";
+      "queued-012345678901234567890123456789012345\tok\033[13;5u";
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -6113,7 +6622,7 @@ static void test_cursor_probe_preserves_concurrent_queue_input(void) {
   int status;
   int tries;
 
-  TEST("cursor probe preserves concurrent queue input");
+  TEST("cursor probe preserves queued input and Ctrl-Enter");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 20;
   ws.ws_row = 5;
@@ -6138,11 +6647,13 @@ static void test_cursor_probe_preserves_concurrent_queue_input(void) {
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
-    if (sl->set_idle_callback(sl, idle_print_once, &state) != SL_OK)
+    if (sl->bind_key(sl, SL_KEY_CTRL_ENTER, submit_method_key, NULL) != SL_OK)
       _exit(3);
+    if (sl->set_idle_callback(sl, idle_print_once, &state) != SL_OK)
+      _exit(4);
     line = sl->readline(sl, "p> ");
     if (!line)
-      _exit(4);
+      _exit(5);
     (void)write(result_pipe[1], line, strlen(line));
     sl->free_string(sl, line);
     sl->destroy(sl);
@@ -6184,7 +6695,7 @@ static void test_cursor_probe_preserves_concurrent_queue_input(void) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "ok") == 0,
-              "cursor probe did not preserve queued editor input");
+              "cursor probe did not preserve queued Ctrl-Enter input");
   PASS();
 }
 
@@ -6274,7 +6785,1414 @@ static void test_unicode_backspace_deletes_clusters(void) {
   ASSERT_TRUE(strcmp(result, "z") == 0, "emoji cluster was split");
   PASS();
 }
+
+static void test_queued_turns_profile_promotes_manually(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  int status;
+  pid_t pid;
+  char result[128];
+  char terminal[8192];
+  char *editor_closed;
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("queued-turns profile immediately submits and promotes with Alt-Enter");
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
+      pipe(result_pipe) != 0) {
+    FAIL("pty setup failed");
+  }
+  pid = fork();
+  if (pid < 0)
+    FAIL("fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_prompt_source_t source;
+    sl_t *sl;
+    char *line;
+    char output[128];
+    int written;
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
+            SL_OK ||
+        sl_set_status_busy(sl, 1) != SL_OK)
+      _exit(2);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (!line)
+      _exit(3);
+    written = snprintf(output, sizeof(output), "%d:%s", (int)source, line);
+    sl_free_string(sl, line);
+    if (written < 0 || written >= (int)sizeof(output))
+      _exit(4);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (!line)
+      _exit(5);
+    written += snprintf(output + written, sizeof(output) - (size_t)written,
+                        "|%d:%s", (int)source, line);
+    sl_free_string(sl, line);
+    if (written < 0 || written >= (int)sizeof(output))
+      _exit(6);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "turn> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    if (n <= 0)
+      FAIL("initial queued-turns prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(
+      write(master_fd, "queued\rsteer\033\r", strlen("queued\rsteer\033\r")) ==
+          (ssize_t)strlen("queued\rsteer\033\r"),
+      "queued-turns input write failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  editor_closed = NULL;
+  while (!editor_closed || !strstr(editor_closed + 8, "\033[?2004h")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    if (n <= 0)
+      FAIL("queued-turns editor did not resume after submission");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+    editor_closed = strstr(terminal, "\033[?2004l");
+  }
+  ASSERT_TRUE(write(master_fd, "\033\r", strlen("\033\r")) ==
+                  (ssize_t)strlen("\033\r"),
+              "queued-turns promotion write failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "queued-turns result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "queued-turns wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued-turns child failed");
+  ASSERT_TRUE(strcmp(result, "1:steer|3:queued") == 0,
+              "queued-turns source or ordering mismatch");
+  PASS();
+}
+
+static void test_queued_turns_cancellation_pauses_auto_delivery(void) {
+  int master_fd;
+  int slave_fd;
+  int result_pipe[2];
+  int status;
+  pid_t pid;
+  char result[128];
+  char terminal[8192];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("queued-turns cancellation pauses delivery until direct submit");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_prompt_source_t source;
+    sl_t *sl;
+    char *line;
+    char output[128];
+    int written;
+    struct idle_finish_state idle_state;
+
+    close(master_fd);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
+            SL_OK ||
+        sl_set_status_busy(sl, 1) != SL_OK ||
+        sl_prompt_queue_append(sl, "queued") != SL_OK)
+      _exit(2);
+    idle_state.calls = 0;
+    idle_state.text = NULL;
+    idle_state.cancel = 1;
+    if (sl_set_idle_callback(sl, idle_finish_after_two_ticks, &idle_state) !=
+        SL_OK)
+      _exit(3);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (line || sl_last_readline_status(sl) != SL_READLINE_CANCELLED)
+      _exit(4);
+    if (sl_set_idle_callback(sl, NULL, NULL) != SL_OK ||
+        sl_set_status_busy(sl, 0) != SL_OK)
+      _exit(5);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (!line)
+      _exit(6);
+    written = snprintf(output, sizeof(output), "%d:%s", (int)source, line);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(7);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (!line)
+      _exit(8);
+    written += snprintf(output + written, sizeof(output) - (size_t)written,
+                        "|%d:%s", (int)source, line);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(9);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "turn> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "initial queued-turns prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "turn> ") ||
+         !contains_bytes(terminal, "Q 1. queued")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "cancelled queue was not retained for direct input");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(master_fd, "direct\r", 7) == 7,
+              "direct post-cancellation turn write failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "queued-turn cancellation result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid,
+              "queued-turn cancellation child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued-turn cancellation child failed");
+  ASSERT_TRUE(strcmp(result, "1:direct|2:queued") == 0,
+              "cancellation did not pause then resume FIFO delivery");
+  PASS();
+}
+
+struct watch_print_state {
+  int fd;
+  int calls;
+  pid_t callback_pid;
+};
+
+static int watch_print_callback(sl_t *sl, const sl_watch_event_t *event,
+                                void *userdata) {
+  struct watch_print_state *state;
+  struct one_chunk_once stream;
+  char drain[16];
+  state = (struct watch_print_state *)userdata;
+  if (!state || !event || (event->events & SL_WATCH_READ) == 0)
+    return SL_ERROR_INVALID;
+  if (read(state->fd, drain, sizeof(drain)) <= 0)
+    return SL_ERROR_IO;
+  state->calls++;
+  state->callback_pid = getpid();
+  if (sl_set_status_element(sl, 0, "streaming") != SL_OK)
+    return SL_ERROR;
+  stream.text = "[watch] streamed update\n";
+  stream.sent = 0;
+  return sl_print_above(sl, one_chunk_once_stream, &stream);
+}
+
+static void test_watch_prints_while_editing(void) {
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int result_pipe[2];
+  int flags;
+  int status;
+  pid_t pid;
+  char result[128];
+  char terminal[16384];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("external watch preserves UTF-8 draft, queue, and bounded status");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0, "wake pipe failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  flags = fcntl(wake_pipe[0], F_GETFL);
+  ASSERT_TRUE(flags >= 0 &&
+                  fcntl(wake_pipe[0], F_SETFL, flags | O_NONBLOCK) == 0,
+              "wake pipe is not nonblocking");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct watch_print_state state;
+    char *line;
+    char output[128];
+    int written;
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_set_bounds(sl, 0, 0, 40, 6) != SL_OK ||
+        sl_set_statusline(sl, 1, 0) != SL_OK ||
+        sl_set_status_element(sl, 0, "waiting") != SL_OK ||
+        sl_prompt_queue_append(sl, "queued") != SL_OK)
+      _exit(2);
+    state.fd = wake_pipe[0];
+    state.calls = 0;
+    state.callback_pid = 0;
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ, watch_print_callback,
+                     &state, &watch_id) != SL_OK ||
+        watch_id == 0)
+      _exit(3);
+    line = sl_readline(sl, "watch> ");
+    if (!line)
+      _exit(4);
+    written = snprintf(output, sizeof(output), "%s|%d|%ld", line, state.calls,
+                       (long)state.callback_pid);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(5);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "watch> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "watch prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "queued"),
+              "queued preview was not rendered");
+  ASSERT_TRUE(contains_bytes(terminal, "waiting"),
+              "initial status was not rendered");
+  ASSERT_TRUE(write(master_fd, "\303\245", 2) == 2,
+              "partial UTF-8 draft write failed");
+  while (!contains_bytes(terminal, "\303\245")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "partial UTF-8 draft was not rendered");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(wake_pipe[1], "w", 1) == 1, "wake write failed");
+  while (!contains_bytes(terminal, "[watch] streamed update")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "watch output was not rendered");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  while (!contains_bytes(terminal, "streaming")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "watch status update was not rendered");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(master_fd, "lo\r", 3) == 3, "final draft write failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "watch result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(wake_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "watch child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "watch child failed");
+  {
+    char expected[128];
+    int written;
+    written =
+        snprintf(expected, sizeof(expected), "\303\245lo|1|%ld", (long)pid);
+    ASSERT_TRUE(written > 0 && written < (int)sizeof(expected),
+                "expected watch result overflowed");
+    ASSERT_TRUE(strcmp(result, expected) == 0,
+                "watch output did not preserve the active draft");
+  }
+  PASS();
+}
+
+struct watch_sequence_state {
+  int fd;
+  int ack_fd;
+  int calls;
+};
+
+static int watch_sequence_callback(sl_t *sl, const sl_watch_event_t *event,
+                                   void *userdata) {
+  struct watch_sequence_state *state;
+  char drain[16];
+  state = (struct watch_sequence_state *)userdata;
+  (void)sl;
+  if (!state || !event || (event->events & SL_WATCH_READ) == 0)
+    return SL_ERROR_INVALID;
+  if (read(state->fd, drain, sizeof(drain)) <= 0)
+    return SL_ERROR_IO;
+  state->calls++;
+  if (write(state->ack_fd, "W", 1) != 1)
+    return SL_ERROR_IO;
+  return SL_OK;
+}
+
+static void test_watch_preserves_escape_continuation_timeout(void) {
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int ack_pipe[2];
+  int result_pipe[2];
+  int status;
+  pid_t pid;
+  char ack;
+  char result[128];
+  char terminal[4096];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("external watch preserves an active escape continuation");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0 && pipe(ack_pipe) == 0 &&
+                  pipe(result_pipe) == 0,
+              "watch sequence pipe setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct watch_sequence_state state;
+    char *line;
+    char output[128];
+    int written;
+
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(ack_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_history_add(sl, "prior") != SL_OK)
+      _exit(2);
+    state.fd = wake_pipe[0];
+    state.ack_fd = ack_pipe[1];
+    state.calls = 0;
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ, watch_sequence_callback,
+                     &state, &watch_id) != SL_OK ||
+        watch_id == 0)
+      _exit(3);
+    line = sl_readline(sl, "sequence> ");
+    if (!line)
+      _exit(4);
+    written = snprintf(output, sizeof(output), "%s|%d", line, state.calls);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(5);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(ack_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(ack_pipe[1]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "sequence> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "sequence prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(master_fd, "\033", 1) == 1,
+              "escape sequence prefix write failed");
+  usleep(25000);
+  ASSERT_TRUE(write(wake_pipe[1], "w", 1) == 1, "watch wake write failed");
+  n = read_some_with_timeout(ack_pipe[0], &ack, 1);
+  ASSERT_TRUE(n == 1 && ack == 'W', "watch callback did not acknowledge");
+  usleep(25000);
+  ASSERT_TRUE(write(master_fd, "[A\r", 3) == 3,
+              "escape sequence continuation write failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "escape sequence result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(wake_pipe[1]);
+  close(ack_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "sequence child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "sequence child failed");
+  ASSERT_TRUE(strcmp(result, "prior|1") == 0,
+              "watch wake split the escape sequence");
+  PASS();
+}
+
+static int watch_complete_queued_turn(sl_t *sl, const sl_watch_event_t *event,
+                                      void *userdata) {
+  int fd;
+  char drain[16];
+  if (!event || (event->events & SL_WATCH_READ) == 0 || !userdata)
+    return SL_ERROR_INVALID;
+  fd = *(int *)userdata;
+  if (read(fd, drain, sizeof(drain)) <= 0)
+    return SL_ERROR_IO;
+  return sl_set_status_busy(sl, 0);
+}
+
+struct watch_completion_race_state {
+  int wake_fd;
+  int entered_fd;
+  int release_fd;
+};
+
+struct watch_prompt_completion_race_state {
+  int wake_fd;
+  int entered_fd;
+  int release_fd;
+  int cancel;
+};
+
+static int watch_complete_queued_turn_after_input_race(
+    sl_t *sl, const sl_watch_event_t *event, void *userdata) {
+  struct watch_completion_race_state *state;
+  char byte;
+  char drain[16];
+  state = (struct watch_completion_race_state *)userdata;
+  if (!state || !event || (event->events & SL_WATCH_READ) == 0)
+    return SL_ERROR_INVALID;
+  if (read(state->wake_fd, drain, sizeof(drain)) <= 0)
+    return SL_ERROR_IO;
+  byte = 'W';
+  if (write(state->entered_fd, &byte, 1) != 1)
+    return SL_ERROR_IO;
+  if (read(state->release_fd, &byte, 1) != 1)
+    return SL_ERROR_IO;
+  return sl_set_status_busy(sl, 0);
+}
+
+static int watch_complete_prompt_after_input_race(sl_t *sl,
+                                                  const sl_watch_event_t *event,
+                                                  void *userdata) {
+  struct watch_prompt_completion_race_state *state;
+  char byte;
+  char drain[16];
+  int rc;
+  state = (struct watch_prompt_completion_race_state *)userdata;
+  if (!state || !event || (event->events & SL_WATCH_READ) == 0)
+    return SL_ERROR_INVALID;
+  if (read(state->wake_fd, drain, sizeof(drain)) <= 0)
+    return SL_ERROR_IO;
+  rc = state->cancel ? sl_cancel(sl) : sl_submit(sl);
+  if (rc != SL_OK)
+    return rc;
+  byte = 'W';
+  if (write(state->entered_fd, &byte, 1) != 1)
+    return SL_ERROR_IO;
+  if (read(state->release_fd, &byte, 1) != 1)
+    return SL_ERROR_IO;
+  return SL_OK;
+}
+
+static void test_queued_turns_auto_dispatches_on_watch(void) {
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int result_pipe[2];
+  int flags;
+  int status;
+  pid_t pid;
+  char result[128];
+  char terminal[8192];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("queued-turns completion releases FIFO work from a watch callback");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0, "wake pipe failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  flags = fcntl(wake_pipe[0], F_GETFL);
+  ASSERT_TRUE(flags >= 0 &&
+                  fcntl(wake_pipe[0], F_SETFL, flags | O_NONBLOCK) == 0,
+              "wake pipe is not nonblocking");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_prompt_source_t source;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    char *line;
+    char output[128];
+    int written;
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
+            SL_OK ||
+        sl_set_status_busy(sl, 1) != SL_OK ||
+        sl_prompt_queue_append(sl, "queued") != SL_OK)
+      _exit(2);
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ,
+                     watch_complete_queued_turn, &wake_pipe[0],
+                     &watch_id) != SL_OK ||
+        watch_id == 0)
+      _exit(3);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (!line)
+      _exit(4);
+    written = snprintf(output, sizeof(output), "%d:%s", (int)source, line);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(5);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "turn> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "queued-turns watch prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(wake_pipe[1], "w", 1) == 1, "wake write failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "queued-turns watch result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(wake_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid,
+              "queued-turns watch child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued-turns watch child failed");
+  ASSERT_TRUE(strcmp(result, "2:queued") == 0,
+              "queued-turns watch delivery source mismatch");
+  PASS();
+}
+
+static void test_queued_turns_preserve_alt_enter_during_completion(void) {
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int result_pipe[2];
+  int flags;
+  int status;
+  pid_t pid;
+  char result[128];
+  char terminal[8192];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("queued-turns preserves Alt-Enter during completion dispatch");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0, "wake pipe failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  flags = fcntl(wake_pipe[0], F_GETFL);
+  ASSERT_TRUE(flags >= 0 &&
+                  fcntl(wake_pipe[0], F_SETFL, flags | O_NONBLOCK) == 0,
+              "wake pipe is not nonblocking");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_prompt_source_t source;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    char *line;
+    char output[128];
+    int written;
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
+            SL_OK ||
+        sl_set_status_busy(sl, 1) != SL_OK ||
+        sl_prompt_queue_append(sl, "queued") != SL_OK)
+      _exit(2);
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ,
+                     watch_complete_queued_turn, &wake_pipe[0],
+                     &watch_id) != SL_OK ||
+        watch_id == 0)
+      _exit(3);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (!line)
+      _exit(4);
+    written = snprintf(output, sizeof(output), "%d:%s", (int)source, line);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(5);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "turn> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "queued-turns Alt-Enter prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(master_fd, "steer\033", strlen("steer\033")) ==
+                  (ssize_t)strlen("steer\033"),
+              "Alt-Enter prefix write failed");
+  usleep(25000);
+  ASSERT_TRUE(write(wake_pipe[1], "w", 1) == 1, "completion wake write failed");
+  usleep(25000);
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1,
+              "Alt-Enter continuation write failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "queued-turns Alt-Enter result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(wake_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid,
+              "queued-turns Alt-Enter child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued-turns Alt-Enter child failed");
+  ASSERT_TRUE(strcmp(result, "1:steer") == 0,
+              "completion dispatch preempted Alt-Enter immediate turn");
+  PASS();
+}
+
+static void
+test_queued_turns_prioritize_input_arriving_during_completion(void) {
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int entered_pipe[2];
+  int release_pipe[2];
+  int result_pipe[2];
+  int flags;
+  int status;
+  pid_t pid;
+  char entered;
+  char result[128];
+  char terminal[8192];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("queued-turns prioritize input arriving during completion");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0, "wake pipe failed");
+  ASSERT_TRUE(pipe(entered_pipe) == 0, "callback-entered pipe failed");
+  ASSERT_TRUE(pipe(release_pipe) == 0, "callback-release pipe failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  flags = fcntl(wake_pipe[0], F_GETFL);
+  ASSERT_TRUE(flags >= 0 &&
+                  fcntl(wake_pipe[0], F_SETFL, flags | O_NONBLOCK) == 0,
+              "wake pipe is not nonblocking");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_prompt_source_t source;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct watch_completion_race_state race_state;
+    char *line;
+    char output[128];
+    int written;
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(entered_pipe[0]);
+    close(release_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.prompt_queue = 1;
+    sl = sl_create_with_config(&cfg);
+    if (!sl ||
+        sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
+            SL_OK ||
+        sl_set_status_busy(sl, 1) != SL_OK ||
+        sl_prompt_queue_append(sl, "queued") != SL_OK)
+      _exit(2);
+    race_state.wake_fd = wake_pipe[0];
+    race_state.entered_fd = entered_pipe[1];
+    race_state.release_fd = release_pipe[0];
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ,
+                     watch_complete_queued_turn_after_input_race, &race_state,
+                     &watch_id) != SL_OK ||
+        watch_id == 0)
+      _exit(3);
+    source = SL_PROMPT_SOURCE_NONE;
+    line = sl_next_prompt(sl, "turn> ", &source);
+    if (!line)
+      _exit(4);
+    written = snprintf(output, sizeof(output), "%d:%s", (int)source, line);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(5);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(entered_pipe[1]);
+    close(release_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(entered_pipe[1]);
+  close(release_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "turn> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "queued-turns completion-race prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(wake_pipe[1], "w", 1) == 1, "completion wake write failed");
+  n = read_some_with_timeout(entered_pipe[0], &entered, 1);
+  ASSERT_TRUE(n == 1 && entered == 'W', "completion callback did not start");
+  ASSERT_TRUE(write(master_fd, "steer\033\r", strlen("steer\033\r")) ==
+                  (ssize_t)strlen("steer\033\r"),
+              "Alt-Enter immediate input write failed");
+  ASSERT_TRUE(write(release_pipe[1], "r", 1) == 1,
+              "completion callback release failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "queued-turns completion-race result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(wake_pipe[1]);
+  close(entered_pipe[0]);
+  close(release_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid,
+              "queued-turns completion-race child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "queued-turns completion-race child failed");
+  ASSERT_TRUE(strcmp(result, "1:steer") == 0,
+              "completion dispatch preempted newly arrived Alt-Enter input");
+  PASS();
+}
+
+static void test_watch_completion_preserves_input_for_next_prompt(void) {
+  int cancel;
+
+  TEST("watch submit and cancel preserve input for the next prompt");
+  for (cancel = 0; cancel < 2; cancel++) {
+    int master_fd;
+    int slave_fd;
+    int wake_pipe[2];
+    int entered_pipe[2];
+    int release_pipe[2];
+    int result_pipe[2];
+    int flags;
+    int status;
+    pid_t pid;
+    char entered;
+    char result[128];
+    char terminal[8192];
+    size_t terminal_len;
+    ssize_t n;
+
+    ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+                "openpty failed");
+    ASSERT_TRUE(pipe(wake_pipe) == 0, "wake pipe failed");
+    ASSERT_TRUE(pipe(entered_pipe) == 0, "callback-entered pipe failed");
+    ASSERT_TRUE(pipe(release_pipe) == 0, "callback-release pipe failed");
+    ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+    flags = fcntl(wake_pipe[0], F_GETFL);
+    ASSERT_TRUE(flags >= 0 &&
+                    fcntl(wake_pipe[0], F_SETFL, flags | O_NONBLOCK) == 0,
+                "wake pipe is not nonblocking");
+    pid = fork();
+    ASSERT_TRUE(pid >= 0, "fork failed");
+    if (pid == 0) {
+      sl_config_t cfg;
+      sl_prompt_source_t source;
+      sl_t *sl;
+      sl_watch_id_t watch_id;
+      struct watch_prompt_completion_race_state race_state;
+      char *line;
+      char output[128];
+      int written;
+      close(master_fd);
+      close(wake_pipe[1]);
+      close(entered_pipe[0]);
+      close(release_pipe[1]);
+      close(result_pipe[0]);
+      sl_config_init(&cfg);
+      cfg.input_fd = slave_fd;
+      cfg.output_fd = slave_fd;
+      cfg.prompt_queue = 1;
+      sl = sl_create_with_config(&cfg);
+      if (!sl)
+        _exit(2);
+      race_state.wake_fd = wake_pipe[0];
+      race_state.entered_fd = entered_pipe[1];
+      race_state.release_fd = release_pipe[0];
+      race_state.cancel = cancel;
+      watch_id = 0;
+      if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ,
+                       watch_complete_prompt_after_input_race, &race_state,
+                       &watch_id) != SL_OK ||
+          watch_id == 0)
+        _exit(3);
+      source = SL_PROMPT_SOURCE_NONE;
+      line = sl_next_prompt(sl, "first> ", &source);
+      if (cancel) {
+        if (line || sl_last_readline_status(sl) != SL_READLINE_CANCELLED)
+          _exit(4);
+      } else {
+        if (!line || strcmp(line, "") != 0 || source != SL_PROMPT_SOURCE_DIRECT)
+          _exit(4);
+        sl_free_string(sl, line);
+      }
+      source = SL_PROMPT_SOURCE_NONE;
+      line = sl_next_prompt(sl, "next> ", &source);
+      if (!line)
+        _exit(5);
+      written = snprintf(output, sizeof(output), "%d:%s", (int)source, line);
+      sl_free_string(sl, line);
+      if (written <= 0 || written >= (int)sizeof(output))
+        _exit(6);
+      (void)write(result_pipe[1], output, (size_t)written);
+      sl_destroy(sl);
+      close(slave_fd);
+      close(wake_pipe[0]);
+      close(entered_pipe[1]);
+      close(release_pipe[0]);
+      close(result_pipe[1]);
+      _exit(0);
+    }
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(entered_pipe[1]);
+    close(release_pipe[0]);
+    close(result_pipe[1]);
+    terminal_len = 0;
+    terminal[0] = '\0';
+    while (!contains_bytes(terminal, "first> ")) {
+      n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                                 sizeof(terminal) - 1 - terminal_len);
+      ASSERT_TRUE(n > 0, "watch-completion first prompt missing");
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+    }
+    ASSERT_TRUE(write(wake_pipe[1], "w", 1) == 1,
+                "completion wake write failed");
+    n = read_some_with_timeout(entered_pipe[0], &entered, 1);
+    ASSERT_TRUE(n == 1 && entered == 'W', "completion callback did not start");
+    ASSERT_TRUE(write(master_fd, "next\r", strlen("next\r")) ==
+                    (ssize_t)strlen("next\r"),
+                "next-prompt input write failed");
+    ASSERT_TRUE(write(release_pipe[1], "r", 1) == 1,
+                "completion callback release failed");
+    n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+    ASSERT_TRUE(n > 0, "watch-completion result missing");
+    result[n] = '\0';
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(entered_pipe[0]);
+    close(release_pipe[1]);
+    close(result_pipe[0]);
+    ASSERT_TRUE(waitpid(pid, &status, 0) == pid,
+                "watch-completion child wait failed");
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "watch-completion child failed");
+    ASSERT_TRUE(strcmp(result, "1:next") == 0,
+                "watch completion discarded input for the next prompt");
+  }
+  PASS();
+}
+
+struct watch_fairness_state {
+  int fds[9];
+  int calls[9];
+};
+
+static int watch_fairness_callback(sl_t *sl, const sl_watch_event_t *event,
+                                   void *userdata) {
+  struct watch_fairness_state *state;
+  int index;
+  (void)sl;
+  state = (struct watch_fairness_state *)userdata;
+  if (!state || !event || (event->events & SL_WATCH_READ) == 0)
+    return SL_ERROR_INVALID;
+  for (index = 0; index < 9; index++) {
+    if (state->fds[index] == event->fd)
+      break;
+  }
+  if (index == 9)
+    return SL_ERROR_INVALID;
+  state->calls[index]++;
+  /* Deliberately retain readiness to model a level-triggered output flood. */
+  return SL_OK;
+}
+
+static void test_watch_fairness_rotates_ready_flood(void) {
+  int master_fd;
+  int slave_fd;
+  int wake_pipes[9][2];
+  int result_pipe[2];
+  int i;
+  int status;
+  pid_t pid;
+  char terminal[4096];
+  char result[128];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("external watch flood rotates past the dispatch budget");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  for (i = 0; i < 9; i++)
+    ASSERT_TRUE(pipe(wake_pipes[i]) == 0, "wake pipe failed");
+  ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct watch_fairness_state state;
+    char *line;
+    char output[128];
+    int written;
+    close(master_fd);
+    close(result_pipe[0]);
+    memset(&state, 0, sizeof(state));
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    for (i = 0; i < 9; i++) {
+      close(wake_pipes[i][1]);
+      state.fds[i] = wake_pipes[i][0];
+      watch_id = 0;
+      if (sl_watch_add(sl, wake_pipes[i][0], SL_WATCH_READ,
+                       watch_fairness_callback, &state, &watch_id) != SL_OK ||
+          watch_id == 0)
+        _exit(3);
+    }
+    line = sl_readline(sl, "fair> ");
+    if (!line)
+      _exit(4);
+    written = snprintf(output, sizeof(output), "%s|%d", line, state.calls[8]);
+    sl_free_string(sl, line);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(5);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    for (i = 0; i < 9; i++)
+      close(wake_pipes[i][0]);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(result_pipe[1]);
+  for (i = 0; i < 9; i++)
+    close(wake_pipes[i][0]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "fair> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "fairness prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  for (i = 0; i < 9; i++)
+    ASSERT_TRUE(write(wake_pipes[i][1], "w", 1) == 1, "wake write failed");
+  ASSERT_TRUE(write(master_fd, "x\r", 2) == 2, "fairness input write failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "fairness result missing");
+  result[n] = '\0';
+  close(master_fd);
+  for (i = 0; i < 9; i++)
+    close(wake_pipes[i][1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "fairness wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "fairness child failed");
+  ASSERT_TRUE(strcmp(result, "x|0") != 0,
+              "ready watch beyond dispatch budget starved");
+  PASS();
+}
+
+struct watch_lifecycle_state {
+  int removed_calls;
+  int error_calls;
+  int hangup_calls;
+  int destroy_rejected;
+  unsigned int error_events;
+  unsigned int hangup_events;
+};
+
+static int watch_lifecycle_removed_callback(sl_t *sl,
+                                            const sl_watch_event_t *event,
+                                            void *userdata) {
+  struct watch_lifecycle_state *state;
+  (void)sl;
+  (void)event;
+  state = (struct watch_lifecycle_state *)userdata;
+  if (!state)
+    return SL_ERROR_INVALID;
+  state->removed_calls++;
+  return SL_OK;
+}
+
+static int watch_lifecycle_error_callback(sl_t *sl,
+                                          const sl_watch_event_t *event,
+                                          void *userdata) {
+  struct watch_lifecycle_state *state;
+  (void)sl;
+  state = (struct watch_lifecycle_state *)userdata;
+  if (!state || !event)
+    return SL_ERROR_INVALID;
+  sl_destroy(sl);
+  state->destroy_rejected =
+      strcmp(sl_last_error(sl),
+             "cannot destroy softline handle from a watch callback") == 0;
+  state->error_calls++;
+  state->error_events = event->events;
+  return sl_watch_remove(sl, event->id);
+}
+
+static int watch_lifecycle_hangup_callback(sl_t *sl,
+                                           const sl_watch_event_t *event,
+                                           void *userdata) {
+  struct watch_lifecycle_state *state;
+  (void)sl;
+  state = (struct watch_lifecycle_state *)userdata;
+  if (!state || !event)
+    return SL_ERROR_INVALID;
+  state->hangup_calls++;
+  state->hangup_events = event->events;
+  return sl_watch_remove(sl, event->id);
+}
+
+static int watch_lifecycle_failure_callback(sl_t *sl,
+                                            const sl_watch_event_t *event,
+                                            void *userdata) {
+  (void)sl;
+  (void)event;
+  (void)userdata;
+  return SL_ERROR_INVALID;
+}
+
+static void test_watch_lifecycle_reports_terminal_events(void) {
+  int master_fd;
+  int slave_fd;
+  int removed_pipe[2];
+  int error_pipe[2];
+  int hangup_pipe[2];
+  int fail_pipe[2];
+  int result_pipe[2];
+  int status;
+  pid_t pid;
+  char terminal[8192];
+  char result[128];
+  size_t terminal_len;
+  ssize_t n;
+
+  TEST("external watch lifecycle reports error, hangup, and failure");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(removed_pipe) == 0 && pipe(error_pipe) == 0 &&
+                  pipe(hangup_pipe) == 0 && pipe(fail_pipe) == 0 &&
+                  pipe(result_pipe) == 0,
+              "watch lifecycle pipe setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct watch_lifecycle_state state;
+    char *line;
+    char output[128];
+    int written;
+
+    close(master_fd);
+    close(removed_pipe[1]);
+    close(error_pipe[1]);
+    close(hangup_pipe[1]);
+    close(fail_pipe[1]);
+    close(result_pipe[0]);
+    memset(&state, 0, sizeof(state));
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+
+    watch_id = 0;
+    if (sl_watch_add(sl, removed_pipe[0], SL_WATCH_READ,
+                     watch_lifecycle_removed_callback, &state,
+                     &watch_id) != SL_OK ||
+        sl_watch_modify(sl, watch_id, SL_WATCH_HANGUP) != SL_OK ||
+        sl_watch_remove(sl, watch_id) != SL_OK)
+      _exit(3);
+    watch_id = 0;
+    if (sl_watch_add(sl, removed_pipe[0], SL_WATCH_READ,
+                     watch_lifecycle_removed_callback, &state,
+                     &watch_id) != SL_OK ||
+        sl_watch_clear(sl) != SL_OK)
+      _exit(4);
+    line = sl_readline(sl, "remove> ");
+    if (!line)
+      _exit(5);
+    sl_free_string(sl, line);
+
+    watch_id = 0;
+    if (sl_watch_add(sl, error_pipe[0], SL_WATCH_READ | SL_WATCH_ERROR,
+                     watch_lifecycle_error_callback, &state,
+                     &watch_id) != SL_OK)
+      _exit(6);
+    close(error_pipe[0]);
+    line = sl_readline(sl, "error> ");
+    if (!line)
+      _exit(7);
+    sl_free_string(sl, line);
+
+    watch_id = 0;
+    if (sl_watch_add(sl, hangup_pipe[0], SL_WATCH_HANGUP,
+                     watch_lifecycle_hangup_callback, &state,
+                     &watch_id) != SL_OK)
+      _exit(8);
+    line = sl_readline(sl, "hangup> ");
+    if (!line)
+      _exit(9);
+    sl_free_string(sl, line);
+
+    watch_id = 0;
+    if (sl_watch_add(sl, fail_pipe[0], SL_WATCH_READ,
+                     watch_lifecycle_failure_callback, NULL,
+                     &watch_id) != SL_OK)
+      _exit(10);
+    line = sl_readline(sl, "fail> ");
+    if (line) {
+      sl_free_string(sl, line);
+      _exit(11);
+    }
+    written =
+        snprintf(output, sizeof(output), "%d|%d|%u|%d|%u|%d|%d",
+                 state.removed_calls, state.error_calls, state.error_events,
+                 state.hangup_calls, state.hangup_events,
+                 (int)sl_last_readline_status(sl), state.destroy_rejected);
+    if (written <= 0 || written >= (int)sizeof(output))
+      _exit(12);
+    (void)write(result_pipe[1], output, (size_t)written);
+    sl_destroy(sl);
+    close(removed_pipe[0]);
+    close(hangup_pipe[0]);
+    close(fail_pipe[0]);
+    close(slave_fd);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(removed_pipe[0]);
+  close(error_pipe[0]);
+  close(hangup_pipe[0]);
+  close(fail_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "remove> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "remove prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(removed_pipe[1], "r", 1) == 1,
+              "removed watch signal failed");
+  ASSERT_TRUE(write(master_fd, "remove\r", 7) == 7,
+              "removed watch input failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "error> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "error prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(master_fd, "error\r", 6) == 6, "error input failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "hangup> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "hangup prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  close(hangup_pipe[1]);
+  ASSERT_TRUE(write(master_fd, "hangup\r", 7) == 7, "hangup input failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  while (!contains_bytes(terminal, "fail> ")) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               sizeof(terminal) - 1 - terminal_len);
+    ASSERT_TRUE(n > 0, "failure prompt missing");
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
+  ASSERT_TRUE(write(fail_pipe[1], "f", 1) == 1, "failure signal failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "watch lifecycle result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(removed_pipe[1]);
+  close(error_pipe[1]);
+  close(fail_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "watch lifecycle wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "watch lifecycle child failed");
+  ASSERT_TRUE(strcmp(result, "0|1|4|1|8|5|1") == 0,
+              "watch lifecycle did not preserve event semantics");
+  PASS();
+}
 #else
+static void test_queued_turns_profile_promotes_manually(void) {
+  TEST("queued-turns profile submits and promotes under manual delivery");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_queued_turns_cancellation_pauses_auto_delivery(void) {
+  TEST("queued-turns cancellation pauses automatic delivery");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_watch_prints_while_editing(void) {
+  TEST("external watch prints above a partial active draft");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_watch_preserves_escape_continuation_timeout(void) {
+  TEST("external watch preserves an active escape continuation");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_queued_turns_auto_dispatches_on_watch(void) {
+  TEST("queued-turns auto-delivers FIFO work from a watch callback");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_queued_turns_preserve_alt_enter_during_completion(void) {
+  TEST("queued-turns preserves Alt-Enter during completion dispatch");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_watch_fairness_rotates_ready_flood(void) {
+  TEST("external watch flood rotates past the dispatch budget");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_watch_lifecycle_reports_terminal_events(void) {
+  TEST("external watch lifecycle reports error, hangup, and failure");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_pty_enter_and_ctrl_j(void) {
   TEST("pty readline is non-destructive and Ctrl-J inserts newline");
   printf("SKIP\n");
@@ -6426,6 +8344,11 @@ static void test_key_binding_ctrl_enter_can_call_submit(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_next_prompt_retains_raw_input_between_turns(void) {
+  TEST("next_prompt preserves immediate Ctrl-Enter between turns");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_key_binding_ctrl_r_overrides_history_search(void) {
   TEST("key binding Ctrl-R overrides history search");
   printf("SKIP\n");
@@ -6572,6 +8495,11 @@ static void test_idle_callback_can_submit_without_input(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_idle_callback_runs_with_quiet_watch(void) {
+  TEST("idle callback runs while an external watch is quiet");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_idle_callback_can_cancel_without_input(void) {
   TEST("idle callback can cancel without input");
   printf("SKIP\n");
@@ -6626,11 +8554,13 @@ int main(void) {
   test_config_init();
   test_receiver_shell();
   test_free_function_wrappers_use_receiver_methods();
+  test_prompt_queue_control_api();
   test_set_cursor_clamps_to_utf8_cluster_boundary();
   test_destroy_null();
   test_invalid_config_is_rejected();
   test_invalid_receiver_arguments();
   test_plain_readline();
+  test_plain_next_prompt_is_direct();
   test_plain_readline_uses_default_prompt();
   test_plain_readline_consumes_crlf_once();
   test_plain_readline_empty_eof_returns_null();
@@ -6680,6 +8610,9 @@ int main(void) {
   test_key_binding_can_cancel();
   test_key_binding_enter_can_pass_to_default();
   test_key_binding_ctrl_enter_can_call_submit();
+  test_next_prompt_retains_raw_input_between_turns();
+  test_queued_turns_profile_promotes_manually();
+  test_queued_turns_cancellation_pauses_auto_delivery();
   test_key_binding_ctrl_r_overrides_history_search();
   test_terminal_mode_is_restored();
   test_non_ctrl_c_signal_does_not_interrupt_readline();
@@ -6710,7 +8643,17 @@ int main(void) {
   test_ctrl_c_interrupts_child();
   test_ctrl_c_signal_is_not_delivered_twice();
   test_idle_callback_can_submit_without_input();
+  test_idle_callback_runs_with_quiet_watch();
+  test_busy_spinner_ticks_with_quiet_watch();
   test_idle_callback_can_cancel_without_input();
+  test_watch_prints_while_editing();
+  test_watch_preserves_escape_continuation_timeout();
+  test_queued_turns_auto_dispatches_on_watch();
+  test_queued_turns_preserve_alt_enter_during_completion();
+  test_queued_turns_prioritize_input_arriving_during_completion();
+  test_watch_completion_preserves_input_for_next_prompt();
+  test_watch_fairness_rotates_ready_flood();
+  test_watch_lifecycle_reports_terminal_events();
   test_final_render_failure_reports_error();
   test_narrow_terminal_does_not_submit_before_enter();
   test_idle_callback_prints_above_active_prompt();

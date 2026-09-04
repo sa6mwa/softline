@@ -20,6 +20,7 @@
 #define SL_ERROR_LEN 160
 #define SL_DEFAULT_PROMPT "> "
 #define SL_MAX_KEY_BINDINGS 64
+#define SL_MAX_WATCHES 32
 #define SL_PENDING_INPUT_MAX 32
 
 typedef struct sl_key_binding {
@@ -41,6 +42,12 @@ typedef struct sl_prompt_queue {
   int max_entries;
   int preview_entries;
   int enabled;
+  /* A queued-turns cancellation retains drafts but stops automatic FIFO
+   * release until the user intentionally submits or promotes a turn. */
+  int stopped;
+  sl_prompt_queue_delivery_t delivery;
+  sl_prompt_queue_profile_t profile;
+  sl_prompt_queue_keys_t keys;
 } sl_prompt_queue_t;
 
 typedef struct sl_statusline {
@@ -56,6 +63,14 @@ typedef struct sl_statusline {
   int spinner_time_valid;
   struct timeval spinner_time;
 } sl_statusline_t;
+
+typedef struct sl_watch {
+  sl_watch_id_t id;
+  int fd;
+  unsigned int events;
+  sl_watch_callback_t callback;
+  void *userdata;
+} sl_watch_t;
 
 typedef struct sl_impl {
   int input_fd;
@@ -99,6 +114,7 @@ typedef struct sl_impl {
   int active_readline;
   int request_submit;
   int request_cancel;
+  int request_queue_dispatch;
   int plain_pending;
   char plain_pending_ch;
   char *pending_input;
@@ -107,6 +123,12 @@ typedef struct sl_impl {
   sl_readline_status_t last_readline_status;
   sl_idle_callback_t idle_callback;
   void *idle_userdata;
+  sl_watch_t watches[SL_MAX_WATCHES];
+  sl_watch_id_t next_watch_id;
+  /* Next registry slot considered first when dispatching ready watches. */
+  unsigned int watch_dispatch_cursor;
+  /* Nonzero while one or more watch callbacks are using this handle. */
+  unsigned int watch_callback_depth;
   sl_key_binding_t key_bindings[SL_MAX_KEY_BINDINGS];
   char error[SL_ERROR_LEN];
 } sl_impl_t;

@@ -21,16 +21,18 @@ end
 
 local interactive = is_interactive_terminal()
 local sl
-local next_peer_message_at
-local status_started_at
-local status_phase
-local status_marker_cycle
-local peer_messages = {
-  "I found a calm corner of the conversation.",
-  "The kettle is on; take your time.",
-  "A small detail can change the whole picture.",
-  "I am following along from the other side of the room.",
-}
+local busy = false
+local worker
+local worker_pid
+local watch_id
+
+local function operation_step_seconds()
+  local value = tonumber(os.getenv("SOFTLINE_CHAT_OPERATION_STEP_MS"))
+  if value and value >= 0 and value <= 60000 then
+    return value / 1000
+  end
+  return 1
+end
 
 local function print_message(parts)
   local ok, status = sl:print_above(parts)
@@ -39,32 +41,76 @@ local function print_message(parts)
   end
 end
 
-local function update_status_presentation(now)
-  local phase = math.floor((now - status_started_at) / 5) % 8
-  local marker_cycle = math.floor((now - status_started_at) / 40) % 2
-  local spinner = phase == 1 or phase == 3
-  if phase == status_phase and marker_cycle == status_marker_cycle then
-    return
-  end
-  if marker_cycle == 1 then
-    assert(sl:set_status_idle_marker(nil))
-  else
-    assert(sl:set_status_idle_marker("+"))
-  end
-  assert(sl:set_status_spinner(spinner))
-  assert(sl:set_status_busy(spinner or phase == 4 or phase == 6))
-  status_phase = phase
-  status_marker_cycle = marker_cycle
+local function set_chat_busy(value)
+  assert(sl:set_status_spinner(value))
+  assert(sl:set_status_busy(value))
+  busy = value
 end
 
-local function print_peer_message()
-  local now = os.time()
-  update_status_presentation(now)
-  if now < next_peer_message_at then
+local function consume_active_operation_input(line)
+  print_message({ "[active operation] consumed: ", line, "\n" })
+end
+
+local function finish_operation()
+  if watch_id then
+    assert(sl:watch_remove(watch_id))
+    watch_id = nil
+  end
+  if worker then
+    assert(worker:close())
+    worker = nil
+  end
+  worker_pid = nil
+  set_chat_busy(false)
+end
+
+-- Escape and Ctrl-C arrive here as READLINE_CANCELLED. The worker belongs to
+-- the example application, so cancellation stops it instead of only clearing
+-- the editor.
+local function cancel_operation()
+  if watch_id then
+    assert(sl:watch_remove(watch_id))
+    watch_id = nil
+  end
+  if worker_pid then
+    os.execute("kill -TERM " .. worker_pid .. " >/dev/null 2>&1")
+  end
+  if worker then
+    worker:close()
+    worker = nil
+  end
+  worker_pid = nil
+  set_chat_busy(false)
+end
+
+local function start_operation()
+  if busy then
     return
   end
-  next_peer_message_at = now + 2
-  print_message({ "[peer] ", peer_messages[math.random(#peer_messages)], "\n" })
+  local delay = string.format("%.3f", operation_step_seconds())
+  worker = assert(io.popen("exec sh -c 'echo $$; printf P; sleep " .. delay ..
+      "; printf L; sleep " .. delay .. "; printf W; sleep " .. delay ..
+      "; printf C; sleep " .. delay .. "; printf R'", "r"))
+  worker_pid = assert(tonumber(worker:read("*l")), "operation PID missing")
+  set_chat_busy(true)
+  watch_id = assert(sl:watch_add(worker,
+      softline.WATCH_READ | softline.WATCH_HANGUP | softline.WATCH_ERROR,
+      function()
+        local event = worker:read(1)
+        if event == "P" then
+          print_message({ "[operation] processing input.\n" })
+        elseif event == "L" then
+          print_message({ "[operation] planning next steps.\n" })
+        elseif event == "W" then
+          print_message({ "[operation] running work.\n" })
+        elseif event == "C" then
+          print_message({ "[operation] checking result.\n" })
+        elseif event == "R" then
+          print_message({ "[operation] produced a result.\n" })
+        elseif event == nil then
+          finish_operation()
+        end
+      end))
 end
 
 local function run()
@@ -80,26 +126,24 @@ local function run()
         live_scroll_region == "1" or live_scroll_region == "true"))
     assert(sl:set_prompt_theme(themes[theme_name]))
     assert(sl:set_prompt_queue(true, 64, 3))
+    assert(sl:set_queue_profile("queued_turns"))
     assert(sl:set_statusline(true, 0))
     assert(sl:set_status_elements({
       "gpt-5.6-terra high",
       "ctx 36%",
       "~/g/softline",
       "weekly 56%",
-      "feat/prompt-queue",
-      "pursuing chat",
+      "queue demo",
+      "turn processor",
     }))
     assert(sl:bind_key(softline.KEY_CTRL_C, function()
       return softline.KEY_ACTION_CANCEL
     end))
-    math.randomseed(os.time())
-    next_peer_message_at = os.time() + 2
-    status_started_at = os.time()
-    status_phase = nil
-    status_marker_cycle = nil
-    update_status_presentation(status_started_at)
-    assert(sl:set_idle_callback(print_peer_message))
-    print_message({ "softline Lua chat example. Tab queues; Alt-E recalls the newest queued prompt. Status alternates 40-second green + and blank-slot cycles.\n" })
+    assert(sl:bind_key(softline.KEY_ESCAPE, function()
+      return softline.KEY_ACTION_CANCEL
+    end))
+    set_chat_busy(false)
+    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter sends immediate input to the running operation; empty Alt-Enter promotes the newest queued turn; Alt-E edits it. Escape or Ctrl-C stops the operation.\n" })
   end
 
   while true do
@@ -108,15 +152,28 @@ local function run()
       if line == "exit" then
         break
       end
-      if line ~= "" then
+      if line == "" then
+        print_message({ "[empty turn ignored]\n" })
+      else
         assert(sl:history_add(line))
+        local prefix = source_or_status == softline.PROMPT_SOURCE_PROMOTED
+            and "[promoted] " or source_or_status == softline.PROMPT_SOURCE_QUEUED
+            and "[queued] " or "[turn] "
+        print_message({ prefix, line, "\n" })
+        if interactive and busy then
+          consume_active_operation_input(line)
+        elseif interactive then
+          start_operation()
+        end
       end
-      local prefix = source_or_status == softline.PROMPT_SOURCE_QUEUED
-          and "[queued] " or "[direct] "
-      print_message({ prefix, line, "\n" })
     elseif source_or_status == softline.READLINE_CANCELLED or source_or_status == softline.READLINE_INTERRUPTED then
       if interactive then
-        print_message({ "[cancelled]\n" })
+        if busy then
+          cancel_operation()
+          print_message({ "[operation] cancelled\n" })
+        else
+          print_message({ "[cancelled]\n" })
+        end
       end
     elseif source_or_status == softline.READLINE_EOF then
       break
@@ -128,6 +185,9 @@ end
 
 local ok, err = pcall(run)
 if sl then
+  if worker then
+    pcall(finish_operation)
+  end
   sl:close()
 end
 if not ok then

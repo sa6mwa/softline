@@ -20,6 +20,7 @@ cp "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${STAGE_ROOT}/scripts/"
 cp "${ROOT_DIR}/include/softline/softline.h" "${STAGE_ROOT}/include/softline/"
 cp "${ROOT_DIR}/tests/lua_smoke.lua" "${STAGE_ROOT}/tests/"
 cp "${ROOT_DIR}/tests/lua_readline.lua" "${STAGE_ROOT}/tests/"
+cp "${ROOT_DIR}/tests/lua_watch_file_gc.lua" "${STAGE_ROOT}/tests/"
 cp "${ROOT_DIR}/examples/simple.lua" "${STAGE_ROOT}/examples/"
 cp "${ROOT_DIR}/examples/chat.lua" "${STAGE_ROOT}/examples/"
 
@@ -34,6 +35,7 @@ scripts/render_lua_rockspec.sh
 include/softline/softline.h
 tests/lua_smoke.lua
 tests/lua_readline.lua
+tests/lua_watch_file_gc.lua
 examples/simple.lua
 examples/chat.lua
 VERSION

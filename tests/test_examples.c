@@ -54,6 +54,40 @@ static int contains_bytes(const char *haystack, const char *needle) {
   return strstr(haystack, needle) != NULL;
 }
 
+static const char *skip_ansi_sequence(const char *text) {
+  if (!text || text[0] != '\033' || text[1] != '[')
+    return text;
+  text += 2;
+  while (*text && (*text < '@' || *text > '~'))
+    text++;
+  return *text ? text + 1 : text;
+}
+
+static int contains_visible_bytes(const char *haystack, const char *needle) {
+  const char *start;
+  if (!haystack || !needle || needle[0] == '\0')
+    return 0;
+  for (start = haystack; *start; start++) {
+    const char *text;
+    const char *match;
+    text = start;
+    match = needle;
+    while (*match) {
+      if (text[0] == '\033' && text[1] == '[') {
+        text = skip_ansi_sequence(text);
+        continue;
+      }
+      if (*text != *match)
+        break;
+      text++;
+      match++;
+    }
+    if (*match == '\0')
+      return 1;
+  }
+  return 0;
+}
+
 static int contains_after_bytes(const char *haystack, const char *first,
                                 const char *second) {
   const char *p;
@@ -278,6 +312,26 @@ static int wait_for_text(int fd, char *terminal, size_t *terminal_len,
   return contains_bytes(terminal, needle) ? 0 : -1;
 }
 
+static int wait_for_visible_text(int fd, char *terminal, size_t *terminal_len,
+                                 size_t terminal_cap, const char *needle) {
+  char buf[512];
+  ssize_t n;
+  int tries;
+  tries = 0;
+  while (!contains_visible_bytes(terminal, needle) && tries < 300) {
+    n = read_some_with_timeout(fd, buf, sizeof(buf));
+    if (n < 0)
+      return contains_visible_bytes(terminal, needle) ? 0 : -1;
+    if (n == 0) {
+      tries++;
+      continue;
+    }
+    append_terminal_bytes(terminal, terminal_len, terminal_cap, buf, n);
+    tries++;
+  }
+  return contains_visible_bytes(terminal, needle) ? 0 : -1;
+}
+
 static int wait_for_text_after(int fd, char *terminal, size_t *terminal_len,
                                size_t terminal_cap, const char *first,
                                const char *second) {
@@ -432,24 +486,26 @@ static void test_example_chat_uses_normal_scrollback(const char *path) {
               "write first message failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
                                   sizeof(terminal), "\033[?2004l",
-                                  "[direct] hello\r\n") == 0,
-              "direct chat message missing");
+                                  "[turn] hello\r\n") == 0,
+              "turn chat message missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[direct] hello\r\n",
+                                  sizeof(terminal), "[turn] hello\r\n",
                                   "> ") == 0,
               "next chat prompt did not follow output");
-  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(write(master_fd, "exit\033\r", strlen("exit\033\r")) ==
+                  (ssize_t)strlen("exit\033\r"),
+              "write forced exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
 }
 
-static void test_example_chat_dispatches_queued_prompts(const char *path) {
+static void test_example_chat_queues_and_promotes_turns(const char *path) {
   int master_fd;
   pid_t pid;
   char terminal[16384];
   size_t terminal_len;
 
-  TEST("example_chat posts direct and queued messages FIFO");
+  TEST("example_chat queues while busy and promotes on Alt-Enter");
   pid = spawn_example(path, &master_fd, 40, 8);
   ASSERT_TRUE(pid > 0, "spawn failed");
   terminal_len = 0;
@@ -457,23 +513,119 @@ static void test_example_chat_dispatches_queued_prompts(const char *path) {
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
                             sizeof(terminal), "> ") == 0,
               "initial prompt missing");
-  ASSERT_TRUE(write(master_fd, "queued\tcurrent\r", 15) == 15,
-              "write queue input failed");
+  ASSERT_TRUE(write(master_fd, "start\r", 6) == 6, "write initial turn failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
                                   sizeof(terminal), "\033[?2004l",
-                                  "[direct] current\r\n[queued] queued\r\n") ==
-                  0,
-              "queue dispatch output missing or out of order");
+                                  "[turn] start\r\n") == 0,
+              "initial turn output missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[queued] queued\r\n",
+                                  sizeof(terminal), "[turn] start\r\n",
                                   "\033[?2004h") == 0,
-              "chat prompt did not resume after queued dispatch");
+              "busy chat prompt did not resume");
+  ASSERT_TRUE(
+      write(master_fd, "queued\rsteer\033\r", strlen("queued\rsteer\033\r")) ==
+          (ssize_t)strlen("queued\rsteer\033\r"),
+      "write queued turn and forced send failed");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "\033[?2004l",
+                                  "[turn] steer\r\n") == 0,
+              "forced busy send missing");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[turn] steer\r\n",
+                                  "[active operation] consumed: steer\r\n") ==
+                  0,
+              "forced busy send was not consumed by the active operation");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[turn] steer\r\n",
+                                  "\033[?2004h") == 0,
+              "chat prompt did not resume after forced send");
+  ASSERT_TRUE(write(master_fd, "\033\r", strlen("\033\r")) ==
+                  (ssize_t)strlen("\033\r"),
+              "write queued promotion failed");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "\033[?2004l",
+                                  "[promoted] queued\r\n") == 0,
+              "promoted queued turn missing");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[promoted] queued\r\n",
+                                  "[active operation] consumed: queued\r\n") ==
+                  0,
+              "promoted turn was not consumed by the active operation");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[?1049h"),
               "chat entered the alternate screen");
   ASSERT_TRUE(!contains_bytes(terminal, "\r\r\n"),
               "chat emitted a doubled terminal carriage return");
-  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(write(master_fd, "exit\033\r", strlen("exit\033\r")) ==
+                  (ssize_t)strlen("exit\033\r"),
+              "write forced exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  PASS();
+}
+
+static void test_example_chat_processes_queued_turns_fifo(const char *path) {
+  int master_fd;
+  pid_t pid;
+  char terminal[16384];
+  size_t terminal_len;
+
+  TEST("example_chat visibly processes queued turns one FIFO turn at a time");
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_OPERATION_STEP_MS", "200", 1) == 0,
+              "failed to lengthen staged operation");
+  pid = spawn_example(path, &master_fd, 40, 8);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "> ") == 0,
+              "initial prompt missing");
+  ASSERT_TRUE(write(master_fd, "start\r", strlen("start\r")) ==
+                  (ssize_t)strlen("start\r"),
+              "write initial turn failed");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[turn] start\r\n",
+                                  "\033[?2004h") == 0,
+              "busy prompt did not resume");
+  ASSERT_TRUE(write(master_fd, "first\rsecond\r", strlen("first\rsecond\r")) ==
+                  (ssize_t)strlen("first\rsecond\r"),
+              "write queued turns failed");
+  ASSERT_TRUE(wait_for_visible_text(master_fd, terminal, &terminal_len,
+                                    sizeof(terminal), "Q 1. first") == 0,
+              "first queued turn was not rendered by softline");
+  ASSERT_TRUE(wait_for_visible_text(master_fd, terminal, &terminal_len,
+                                    sizeof(terminal), "  2. second") == 0,
+              "second queued turn was not rendered by softline");
+  ASSERT_TRUE(!contains_bytes(terminal, "[queued] first\r\n"),
+              "queued turn was delivered before the operation completed");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal),
+                            "[operation] produced a result.") == 0,
+              "initial operation did not complete");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[queued] first\r\n") == 0,
+              "oldest queued turn was not automatically dispatched");
+  ASSERT_TRUE(wait_for_visible_text(master_fd, terminal, &terminal_len,
+                                    sizeof(terminal), "Q 1. second") == 0,
+              "remaining queued turn was not retained in softline");
+  ASSERT_TRUE(!contains_after_bytes(terminal, "[queued] first\r\n",
+                                    "[queued] second\r\n"),
+              "softline dispatched more than one queued turn at completion");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[queued] first\r\n",
+                                  "[operation] produced a result.") == 0,
+              "first queued operation did not complete");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[queued] second\r\n") == 0,
+              "second queued turn was not dispatched after its predecessor");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[queued] second\r\n",
+                                  "[operation] produced a result.") == 0,
+              "second queued operation did not complete");
+  ASSERT_TRUE(write(master_fd, "exit\r", strlen("exit\r")) ==
+                  (ssize_t)strlen("exit\r"),
+              "write exit failed");
+  ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_OPERATION_STEP_MS", "25", 1) == 0,
+              "failed to restore staged operation timing");
   PASS();
 }
 
@@ -495,32 +647,33 @@ static void test_example_chat_recalls_sent_history(const char *path) {
               "write history source failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
                                   sizeof(terminal), "\033[?2004l",
-                                  "[direct] remember\r\n") == 0,
+                                  "[turn] remember\r\n") == 0,
               "history source message missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[direct] remember\r\n",
+                                  sizeof(terminal), "[turn] remember\r\n",
                                   "\033[?2004h") == 0,
               "prompt did not resume after history source message");
-  terminal_len = 0;
-  terminal[0] = '\0';
-  ASSERT_TRUE(write(master_fd, "\033[A\r", 4) == 4,
+  ASSERT_TRUE(write(master_fd, "\033[A\033\r", strlen("\033[A\033\r")) ==
+                  (ssize_t)strlen("\033[A\033\r"),
               "write history recall failed");
-  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "[direct] remember\r\n") == 0,
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[turn] remember\r\n",
+                                  "[turn] remember\r\n") == 0,
               "Up did not recall sent history");
-  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(write(master_fd, "exit\033\r", strlen("exit\033\r")) ==
+                  (ssize_t)strlen("exit\033\r"),
+              "write forced exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
 }
 
-static void
-test_example_chat_keeps_empty_direct_message_separate(const char *path) {
+static void test_example_chat_ignores_empty_turns(const char *path) {
   int master_fd;
   pid_t pid;
   char terminal[16384];
   size_t terminal_len;
 
-  TEST("example_chat separates empty direct and queued replies");
+  TEST("example_chat ignores an empty available turn");
   pid = spawn_example(path, &master_fd, 40, 8);
   ASSERT_TRUE(pid > 0, "spawn failed");
   terminal_len = 0;
@@ -528,21 +681,12 @@ test_example_chat_keeps_empty_direct_message_separate(const char *path) {
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
                             sizeof(terminal), "> ") == 0,
               "initial prompt missing");
-  ASSERT_TRUE(write(master_fd, "queued\t\r", 8) == 8,
-              "write queue-and-empty-submit input failed");
-  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal),
-                            "\033[?2004l[direct] \r\n[queued] queued\r\n") == 0,
-              "queued message missing");
-  ASSERT_TRUE(
-      contains_bytes(terminal, "\033[?2004l[direct] \r\n[queued] queued\r\n"),
-      "empty direct message merged with queued message");
-  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[queued] queued\r\n",
-                                  "\033[?2004h") == 0,
-              "chat prompt did not resume after queued empty submission");
-  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(write(master_fd, "\rexit\033\r", strlen("\rexit\033\r")) ==
+                  (ssize_t)strlen("\rexit\033\r"),
+              "write empty turn and forced exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  ASSERT_TRUE(!contains_bytes(terminal, "[turn] \r\n"),
+              "empty turn was dispatched");
   PASS();
 }
 
@@ -552,7 +696,7 @@ static void test_example_chat_receives_peer_messages(const char *path) {
   char terminal[8192];
   size_t terminal_len;
 
-  TEST("example_chat receives timed peer messages");
+  TEST("example_chat receives streamed operation updates");
   pid = spawn_example(path, &master_fd, 40, 8);
   ASSERT_TRUE(pid > 0, "spawn failed");
   terminal_len = 0;
@@ -560,10 +704,29 @@ static void test_example_chat_receives_peer_messages(const char *path) {
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
                             sizeof(terminal), "> ") == 0,
               "initial prompt missing");
+  ASSERT_TRUE(write(master_fd, "work\r", 5) == 5, "write work turn failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "[peer] ") == 0,
-              "timed peer message missing");
-  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+                            sizeof(terminal),
+                            "[operation] processing input.") == 0,
+              "streamed operation update missing");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal),
+                            "[operation] planning next steps.") == 0,
+              "operation planning update missing");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[operation] running work.") == 0,
+              "operation work update missing");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal),
+                            "[operation] checking result.") == 0,
+              "operation checking update missing");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal),
+                            "[operation] produced a result.") == 0,
+              "streamed operation result missing");
+  ASSERT_TRUE(write(master_fd, "exit\033\r", strlen("exit\033\r")) ==
+                  (ssize_t)strlen("exit\033\r"),
+              "write forced exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
 }
@@ -607,24 +770,29 @@ test_example_chat_updates_editor_in_normal_scrollback(const char *path) {
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
                             sizeof(terminal),
-                            "\033[?2004l[direct] hello\r\n") == 0,
+                            "\033[?2004l[turn] hello\r\n") == 0,
               "submitted message missing");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[direct] hello\r\n",
+                                  sizeof(terminal), "[turn] hello\r\n",
                                   "\033[?2004h") == 0,
               "next prompt did not start");
-  ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
+  ASSERT_TRUE(write(master_fd, "exit\033\r", strlen("exit\033\r")) ==
+                  (ssize_t)strlen("exit\033\r"),
+              "write forced exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
   PASS();
 }
 
-static void test_example_chat_ctrl_c_cancels_and_continues(const char *path) {
+static void
+test_example_chat_escape_and_ctrl_c_cancel_operation(const char *path) {
   int master_fd;
   pid_t pid;
   char terminal[8192];
   size_t terminal_len;
 
-  TEST("example_chat Ctrl-C cancels and continues");
+  TEST("example_chat Escape and Ctrl-C cancel the active operation");
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_OPERATION_STEP_MS", "200", 1) == 0,
+              "failed to lengthen staged operation");
   pid = spawn_example(path, &master_fd, 40, 6);
   ASSERT_TRUE(pid > 0, "spawn failed");
   terminal_len = 0;
@@ -632,16 +800,51 @@ static void test_example_chat_ctrl_c_cancels_and_continues(const char *path) {
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
                             sizeof(terminal), "> ") == 0,
               "initial prompt missing");
-  ASSERT_TRUE(write(master_fd, "\003", 1) == 1, "write Ctrl-C failed");
+  ASSERT_TRUE(write(master_fd, "work\r", 5) == 5, "write work turn failed");
   ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
-                            sizeof(terminal), "[cancelled]") == 0,
-              "cancel acknowledgement missing");
+                            sizeof(terminal),
+                            "[operation] processing input.") == 0,
+              "operation did not start before Ctrl-C");
+  ASSERT_TRUE(write(master_fd, "queued\r", 7) == 7, "write queued turn failed");
+  ASSERT_TRUE(wait_for_visible_text(master_fd, terminal, &terminal_len,
+                                    sizeof(terminal), "Q 1. queued") == 0,
+              "queued turn was not retained before cancellation");
+  ASSERT_TRUE(write(master_fd, "\003", 1) == 1, "write Ctrl-C failed");
   ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
-                                  sizeof(terminal), "[cancelled]",
+                                  sizeof(terminal),
+                                  "[operation] processing input.",
+                                  "[operation] cancelled") == 0,
+              "Ctrl-C did not cancel the operation");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[operation] cancelled",
                                   "\033[?2004h") == 0,
-              "chat prompt did not resume after Ctrl-C");
+              "chat prompt did not resume after Ctrl-C cancellation");
+  ASSERT_TRUE(!contains_after_bytes(terminal, "[operation] cancelled",
+                                    "[queued] queued\r\n"),
+              "cancellation automatically dispatched a queued turn");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  ASSERT_TRUE(write(master_fd, "\033\r", 2) == 2,
+              "write manual queued promotion failed");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[promoted] queued\r\n") == 0,
+              "manual promotion did not restart a queued turn");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[promoted] queued\r\n",
+                                  "[operation] processing input.") == 0,
+              "operation did not restart before Escape");
+  ASSERT_TRUE(write(master_fd, "\033", 1) == 1, "write Escape failed");
+  ASSERT_TRUE(wait_for_text(master_fd, terminal, &terminal_len,
+                            sizeof(terminal), "[operation] cancelled") == 0,
+              "Escape did not cancel the operation");
+  ASSERT_TRUE(wait_for_text_after(master_fd, terminal, &terminal_len,
+                                  sizeof(terminal), "[operation] cancelled",
+                                  "\033[?2004h") == 0,
+              "chat prompt did not resume after Escape cancellation");
   ASSERT_TRUE(write(master_fd, "exit\r", 5) == 5, "write exit failed");
   ASSERT_TRUE(finish_child(pid, master_fd) == 0, "child failed");
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_OPERATION_STEP_MS", "25", 1) == 0,
+              "failed to restore staged operation timing");
   PASS();
 }
 
@@ -693,7 +896,7 @@ static void test_example_chat_is_plain_without_tty(const char *path) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "non-tty chat child failed");
-  ASSERT_TRUE(strcmp(output, "[direct] hello\n") == 0,
+  ASSERT_TRUE(strcmp(output, "[turn] hello\n") == 0,
               "non-tty chat output mismatch");
   ASSERT_TRUE(!contains_bytes(output, "\033["),
               "non-tty chat emitted terminal control sequences");
@@ -758,7 +961,7 @@ test_example_chat_is_plain_with_redirected_stdout(const char *path) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "mixed-tty chat child failed");
-  ASSERT_TRUE(strcmp(output, "[direct] hello\n") == 0,
+  ASSERT_TRUE(strcmp(output, "[turn] hello\n") == 0,
               "mixed-tty chat output mismatch");
   ASSERT_TRUE(!contains_bytes(output, "\033["),
               "mixed-tty chat emitted terminal control sequences");
@@ -771,18 +974,23 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: %s EXAMPLE_SIMPLE EXAMPLE_CHAT\n", argv[0]);
     return 2;
   }
+  if (setenv("SOFTLINE_CHAT_OPERATION_STEP_MS", "25", 1) != 0) {
+    fprintf(stderr, "failed to shorten staged chat operation for tests\n");
+    return 1;
+  }
 
   printf("softline example integration tests\n");
   printf("==================================\n\n");
 
   test_example_simple_wraps_near_bottom(argv[1]);
   test_example_chat_uses_normal_scrollback(argv[2]);
-  test_example_chat_dispatches_queued_prompts(argv[2]);
+  test_example_chat_queues_and_promotes_turns(argv[2]);
+  test_example_chat_processes_queued_turns_fifo(argv[2]);
   test_example_chat_recalls_sent_history(argv[2]);
-  test_example_chat_keeps_empty_direct_message_separate(argv[2]);
+  test_example_chat_ignores_empty_turns(argv[2]);
   test_example_chat_receives_peer_messages(argv[2]);
   test_example_chat_updates_editor_in_normal_scrollback(argv[2]);
-  test_example_chat_ctrl_c_cancels_and_continues(argv[2]);
+  test_example_chat_escape_and_ctrl_c_cancel_operation(argv[2]);
   test_example_chat_is_plain_without_tty(argv[2]);
   test_example_chat_is_plain_with_redirected_stdout(argv[2]);
 

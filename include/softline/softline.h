@@ -10,6 +10,41 @@ extern "C" {
 /** Opaque receiver handle for one independent softline editor instance. */
 typedef struct sl sl_t;
 
+/** Opaque per-handle identifier for an external event watch. */
+typedef unsigned long sl_watch_id_t;
+
+/** Readiness conditions reported for an application-owned watch descriptor. */
+typedef enum sl_watch_events {
+  /** The descriptor can be read without blocking. */
+  SL_WATCH_READ = 1u << 0,
+  /** The descriptor can be written without blocking. */
+  SL_WATCH_WRITE = 1u << 1,
+  /** The descriptor reported an I/O error. */
+  SL_WATCH_ERROR = 1u << 2,
+  /** The descriptor reported peer closure. */
+  SL_WATCH_HANGUP = 1u << 3
+} sl_watch_events_t;
+
+/** One owner-thread readiness notification for an external watch. */
+typedef struct sl_watch_event {
+  /** Registration identifier. */
+  sl_watch_id_t id;
+  /** Application-owned descriptor that became ready. */
+  int fd;
+  /** Bitwise OR of sl_watch_events_t readiness conditions. */
+  unsigned int events;
+} sl_watch_event_t;
+
+/**
+ * Handle a ready application-owned descriptor on the thread driving
+ * readline()/next_prompt(). The callback owns draining the descriptor and may
+ * use editor methods, but must not recursively enter readline()/next_prompt()
+ * or destroy self. A destroy() or sl_destroy() call during this callback is
+ * ignored and records a diagnostic on the handle.
+ */
+typedef int (*sl_watch_callback_t)(sl_t *self, const sl_watch_event_t *event,
+                                   void *userdata);
+
 /**
  * Idle hook invoked while sl_readline() is active and no input byte is ready.
  *
@@ -120,8 +155,12 @@ typedef enum sl_key {
   SL_KEY_F10 = 1021,
   /** Ctrl-Enter when a terminal sends a distinguishable sequence. */
   SL_KEY_CTRL_ENTER = 1022,
+  /** Alt-Enter, normally emitted as Escape followed by carriage return. */
+  SL_KEY_ALT_ENTER = 1023,
   /** Base value for Alt-letter bindings not listed as dedicated constants. */
   SL_KEY_ALT_BASE = 4096,
+  /** Alt-E, edit the newest queued draft by default. */
+  SL_KEY_ALT_E = SL_KEY_ALT_BASE + 'e',
   /** Alt-M key. */
   SL_KEY_ALT_M = 4205
 } sl_key_t;
@@ -173,7 +212,9 @@ typedef enum sl_status {
   /** Memory allocation failed. */
   SL_ERROR_NOMEM = -3,
   /** Terminal, file, or descriptor I/O failed. */
-  SL_ERROR_IO = -4
+  SL_ERROR_IO = -4,
+  /** A bounded prompt queue has no room for another entry. */
+  SL_ERROR_FULL = -5
 } sl_status_t;
 
 /** Classification of the most recent sl_readline() result. */
@@ -197,11 +238,46 @@ typedef enum sl_readline_status {
 typedef enum sl_prompt_source {
   /** No prompt text was returned. */
   SL_PROMPT_SOURCE_NONE = 0,
-  /** The user submitted the active editor with Enter. */
+  /** The user submitted the active editor with Enter or a mapped submit key. */
   SL_PROMPT_SOURCE_DIRECT = 1,
   /** The user previously queued the text with Tab. */
-  SL_PROMPT_SOURCE_QUEUED = 2
+  SL_PROMPT_SOURCE_QUEUED = 2,
+  /** The user promoted the newest queued entry for immediate host delivery. */
+  SL_PROMPT_SOURCE_PROMOTED = 3
 } sl_prompt_source_t;
+
+/** Controls when sl_next_prompt() automatically delivers queued entries. */
+typedef enum sl_prompt_queue_delivery {
+  /** Preserve legacy FIFO delivery before opening a direct editor. */
+  SL_PROMPT_QUEUE_DELIVERY_AUTO = 0,
+  /** Keep queued entries local until the host explicitly takes or promotes one.
+   */
+  SL_PROMPT_QUEUE_DELIVERY_MANUAL = 1
+} sl_prompt_queue_delivery_t;
+
+/** Built-in prompt queue interaction mappings. */
+typedef enum sl_prompt_queue_profile {
+  /** Tab enqueues and Alt-E edits the newest queued entry. */
+  SL_PROMPT_QUEUE_PROFILE_DEFAULT = 0,
+  /**
+   * Turn-oriented queueing. While status is busy, Enter enqueues nonempty
+   * drafts. When status returns idle, next_prompt() delivers one oldest queued
+   * turn. Cancellation stops automatic release until the user submits or
+   * promotes a turn. Alt-Enter submits or promotes; Alt-E edits newest.
+   */
+  SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS = 1
+} sl_prompt_queue_profile_t;
+
+/** Per-handle built-in prompt queue key mappings. SL_KEY_NONE disables an
+ * action. */
+typedef struct sl_prompt_queue_keys {
+  /** Queue the active nonempty draft and continue editing. */
+  sl_key_t enqueue_draft;
+  /** Restore the newest queued entry into an empty active draft. */
+  sl_key_t edit_newest;
+  /** Submit a nonempty draft, or promote the newest queue entry when empty. */
+  sl_key_t submit_or_promote_newest;
+} sl_prompt_queue_keys_t;
 
 /**
  * Renderer-owned visual treatment for the complete interactive prompt UI.
@@ -366,8 +442,10 @@ struct sl {
   const char *(*last_error)(const sl_t *self);
   /** Private implementation pointer; callers must not read or modify it. */
   void *impl;
-  /** Return the next queued prompt FIFO, or read a direct prompt when empty.
-   * source may be NULL. */
+  /** Auto-deliver the next queued prompt FIFO, or read a direct/promotion
+   * result. Manual delivery always opens the editor. On interactive handles,
+   * this retains terminal input ownership between results; destroy() restores
+   * the terminal. source may be NULL. */
   char *(*next_prompt)(sl_t *self, const char *prompt,
                        sl_prompt_source_t *source);
   /** Enable/configure Tab queueing; reducing capacity below queued work
@@ -387,12 +465,61 @@ struct sl {
   /** Set, replace, or clear one retained status-line element. */
   int (*set_status_element)(sl_t *self, size_t index, const char *element);
   /** Set busy state; busy renders x (or a spinner), while idle uses the
-   * configured marker, which defaults to green +. */
+   * configured marker, which defaults to green +. In the queued-turns profile
+   * with queueing enabled, busy also retains turns and idle releases one FIFO
+   * turn into an active next_prompt() call. */
   int (*set_status_busy)(sl_t *self, int busy);
   /** Enable or disable the 500ms /-\\| busy spinner. */
   int (*set_status_spinner)(sl_t *self, int enabled);
   /** Set the printable ASCII idle marker, or '\0' for a blank reserved slot. */
   int (*set_status_idle_marker)(sl_t *self, char marker);
+  /** Return the number of entries in this handle's prompt queue. */
+  size_t (*prompt_queue_count)(const sl_t *self);
+  /** Return this handle's configured prompt queue capacity. */
+  size_t (*prompt_queue_capacity)(const sl_t *self);
+  /** Copy one oldest-first queue entry into a softline-allocated string. */
+  int (*prompt_queue_peek)(const sl_t *self, size_t index, char **out);
+  /** Insert nonempty text at an oldest-first queue index. */
+  int (*prompt_queue_insert)(sl_t *self, size_t index, const char *text);
+  /** Append nonempty text to the newest end of the queue. */
+  int (*prompt_queue_append)(sl_t *self, const char *text);
+  /** Replace one oldest-first queue entry with nonempty text. */
+  int (*prompt_queue_replace)(sl_t *self, size_t index, const char *text);
+  /** Remove one oldest-first queue entry and transfer it to the caller. */
+  int (*prompt_queue_take)(sl_t *self, size_t index, char **out);
+  /** Clear queued entries without changing the active editor draft. */
+  int (*prompt_queue_clear)(sl_t *self);
+  /** Atomically queue the active nonempty draft and clear the editor. */
+  int (*prompt_queue_enqueue_draft)(sl_t *self);
+  /** Set automatic or host-controlled queued delivery for next_prompt(). This
+   * is the delivery policy for the default profile; queued-turns derives it
+   * from set_status_busy(). */
+  int (*set_prompt_queue_delivery)(sl_t *self,
+                                   sl_prompt_queue_delivery_t delivery);
+  /** Return this handle's queued delivery mode. */
+  int (*get_prompt_queue_delivery)(const sl_t *self,
+                                   sl_prompt_queue_delivery_t *out);
+  /** Select built-in default or queued-turns prompt queue behavior. */
+  int (*set_prompt_queue_profile)(sl_t *self,
+                                  sl_prompt_queue_profile_t profile);
+  /** Return this handle's selected prompt queue profile. */
+  int (*get_prompt_queue_profile)(const sl_t *self,
+                                  sl_prompt_queue_profile_t *out);
+  /** Set built-in prompt queue action keys; duplicate non-NONE keys fail. */
+  int (*set_prompt_queue_keys)(sl_t *self, const sl_prompt_queue_keys_t *keys);
+  /** Return this handle's built-in prompt queue action keys. */
+  int (*get_prompt_queue_keys)(const sl_t *self, sl_prompt_queue_keys_t *out);
+  /** Register an application-owned descriptor to wake active TTY editing;
+   * non-TTY handles reject watches. */
+  int (*watch_add)(sl_t *self, int fd, unsigned int events,
+                   sl_watch_callback_t callback, void *userdata,
+                   sl_watch_id_t *out_id);
+  /** Change one watch's requested readiness conditions. */
+  int (*watch_modify)(sl_t *self, sl_watch_id_t id, unsigned int events);
+  /** Remove one registered watch. */
+  int (*watch_remove)(sl_t *self, sl_watch_id_t id);
+  /** Remove every registered watch from this handle. */
+  int (*watch_clear)(sl_t *self);
 };
 
 /**
@@ -431,10 +558,16 @@ sl_t *sl_create_with_config(const sl_config_t *config);
 char *sl_readline(sl_t *self, const char *prompt);
 
 /**
- * Return the next application prompt. Queued prompts are returned FIFO without
- * entering the terminal editor and set *source to SL_PROMPT_SOURCE_QUEUED.
- * With no queued prompt this behaves as sl_readline() and sets *source to
- * SL_PROMPT_SOURCE_DIRECT when text is submitted. source may be NULL.
+ * Return the next application prompt. Automatic delivery returns queued prompts
+ * FIFO without entering the terminal editor and sets *source to
+ * SL_PROMPT_SOURCE_QUEUED. Manual delivery always opens the editor while
+ * retaining queued entries. Queued-turns cancellation retains drafts and
+ * stops automatic release until a direct submit or Alt-Enter promotion. A
+ * queued-turns Alt-Enter promotion sets *source to SL_PROMPT_SOURCE_PROMOTED.
+ * Otherwise submitted editor text is direct. On interactive handles,
+ * next_prompt() retains terminal input ownership between results; sl_destroy()
+ * restores the terminal.
+ * source may be NULL.
  */
 char *sl_next_prompt(sl_t *self, const char *prompt,
                      sl_prompt_source_t *source);
@@ -483,6 +616,55 @@ int sl_set_live_scroll_region(sl_t *self, int enabled);
 int sl_set_prompt_queue(sl_t *self, int enabled, int max_entries,
                         int preview_entries);
 
+/** Return the number of oldest-first entries currently queued on self. */
+size_t sl_prompt_queue_count(const sl_t *self);
+
+/** Return the configured capacity of self's bounded prompt queue. */
+size_t sl_prompt_queue_capacity(const sl_t *self);
+
+/** Copy queue index into a softline-allocated string returned through out. */
+int sl_prompt_queue_peek(const sl_t *self, size_t index, char **out);
+
+/** Insert nonempty text at queue index. Index zero is the oldest entry. */
+int sl_prompt_queue_insert(sl_t *self, size_t index, const char *text);
+
+/** Append nonempty text to the newest end of the queue. */
+int sl_prompt_queue_append(sl_t *self, const char *text);
+
+/** Replace queue index with nonempty text. Index zero is the oldest entry. */
+int sl_prompt_queue_replace(sl_t *self, size_t index, const char *text);
+
+/** Remove queue index and transfer its softline-allocated text through out. */
+int sl_prompt_queue_take(sl_t *self, size_t index, char **out);
+
+/** Clear queued entries without changing the active editor draft. */
+int sl_prompt_queue_clear(sl_t *self);
+
+/** Queue the active nonempty draft and clear it atomically while editing. */
+int sl_prompt_queue_enqueue_draft(sl_t *self);
+
+/** Set automatic or manual queued delivery for the default profile.
+ * queued-turns derives delivery from sl_set_status_busy(). */
+int sl_set_prompt_queue_delivery(sl_t *self,
+                                 sl_prompt_queue_delivery_t delivery);
+
+/** Return the queued delivery mode through out. */
+int sl_get_prompt_queue_delivery(const sl_t *self,
+                                 sl_prompt_queue_delivery_t *out);
+
+/** Select the default or busy-driven queued-turns queue interaction profile. */
+int sl_set_prompt_queue_profile(sl_t *self, sl_prompt_queue_profile_t profile);
+
+/** Return the selected prompt queue interaction profile through out. */
+int sl_get_prompt_queue_profile(const sl_t *self,
+                                sl_prompt_queue_profile_t *out);
+
+/** Set built-in queue action keys; duplicate non-NONE keys are invalid. */
+int sl_set_prompt_queue_keys(sl_t *self, const sl_prompt_queue_keys_t *keys);
+
+/** Return built-in queue action keys through out. */
+int sl_get_prompt_queue_keys(const sl_t *self, sl_prompt_queue_keys_t *out);
+
 /** Select a built-in theme for the complete interactive prompt UI. */
 int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
 
@@ -502,7 +684,9 @@ int sl_set_status_elements(sl_t *self, const char *const *elements,
 int sl_set_status_element(sl_t *self, size_t index, const char *element);
 
 /** Set the status-line busy state. With the spinner disabled, busy renders x;
- * idle renders the configured marker or a blank reserved slot by default. */
+ * idle renders the configured marker or a blank reserved slot by default. In
+ * the queued-turns profile with queueing enabled, this is the native turn
+ * lifecycle signal: busy retains turns and idle releases one FIFO turn. */
 int sl_set_status_busy(sl_t *self, int busy);
 
 /** Enable or disable the 500ms /-\\| spinner used while status is busy. */
@@ -514,6 +698,23 @@ int sl_set_status_idle_marker(sl_t *self, char marker);
 /** Register or clear an idle callback for this handle. */
 int sl_set_idle_callback(sl_t *self, sl_idle_callback_t callback,
                          void *userdata);
+
+/** Register an application-owned descriptor to wake an active TTY editor.
+ * Softline never consumes or closes fd; non-TTY handles reject watches. Ready
+ * watches are dispatched round-robin, with at most eight callbacks before
+ * terminal input is given another chance to run. */
+int sl_watch_add(sl_t *self, int fd, unsigned int events,
+                 sl_watch_callback_t callback, void *userdata,
+                 sl_watch_id_t *out_id);
+
+/** Change one watch's requested readiness conditions. */
+int sl_watch_modify(sl_t *self, sl_watch_id_t id, unsigned int events);
+
+/** Remove one registered watch. */
+int sl_watch_remove(sl_t *self, sl_watch_id_t id);
+
+/** Remove every registered watch from this handle. */
+int sl_watch_clear(sl_t *self);
 
 /** Bind key to callback for this handle; NULL callback removes the binding. */
 int sl_bind_key(sl_t *self, sl_key_t key, sl_key_callback_t callback,

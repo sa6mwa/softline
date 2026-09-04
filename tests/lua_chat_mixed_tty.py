@@ -30,7 +30,7 @@ def main():
             raise AssertionError(
                 f"Lua mixed-TTY chat failed with {proc.returncode}: {error!r}"
             )
-        if output != b"[direct] hello\n":
+        if output != b"[turn] hello\n":
             raise AssertionError(f"unexpected Lua mixed-TTY output: {output!r}")
         if b"\x1b[" in output:
             raise AssertionError("Lua mixed-TTY chat emitted terminal controls")

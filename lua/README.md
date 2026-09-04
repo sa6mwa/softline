@@ -56,10 +56,13 @@ live scroll regions, status lines, and spinners are off; the theme is
 
 - `sl:readline([prompt])` returns a submitted string, or `nil, status` for EOF,
   cancellation, interrupt, or error.
-- `sl:next_prompt([prompt])` returns `line, source`, dispatching queued Tab
-  entries FIFO before opening a direct editor. `source` is
-  `PROMPT_SOURCE_QUEUED` or `PROMPT_SOURCE_DIRECT`. On no result it returns
-  `nil, status`.
+- `sl:next_prompt([prompt])` returns `line, source`. Automatic queue delivery
+  dispatches FIFO entries before opening an editor; manual delivery retains
+  them for explicit take or Alt-Enter promotion. `source` is
+  `PROMPT_SOURCE_QUEUED`, `PROMPT_SOURCE_DIRECT`, or
+  `PROMPT_SOURCE_PROMOTED`. On interactive handles it retains terminal input
+  ownership between results; `close()` restores the terminal. On no result it
+  returns `nil, status`.
 - `sl:history_add(line)` adds one history entry.
 - `sl:history_set_max_len(max_len)` changes the retained history cap; `0`
   clears and disables history.
@@ -78,10 +81,45 @@ live scroll regions, status lines, and spinners are off; the theme is
   `cancel`. Closing that handle from its own idle callback is rejected. A Lua
   callback error ends the active `readline()` or `next_prompt()` with
   `READLINE_ERROR`; `sl:last_error()` returns the captured Lua error text.
+- `sl:watch_add(fd_or_file, events, callback)` registers an integer descriptor
+  or open Lua file handle for owner-thread wakeups while editing. The callback
+  receives `id, fd, events`; it must drain bounded application work. Use
+  `sl:watch_modify(id, events)`, `sl:watch_remove(id)`, or
+  `sl:watch_clear()` to manage registrations. Watches require interactive TTY
+  handles and callbacks may not recursively enter `readline` or `next_prompt`.
+  Softline retains a supplied file handle until its watch is removed, cleared,
+  or the Softline handle closes; do not close that file while registered.
+  Ready watches are visited round-robin, with at most eight callbacks before
+  terminal input is handled again.
 - `sl:set_prompt_queue(enabled, max_entries, preview_entries)` enables the
-  chat queue. Tab queues a nonempty editor and Alt-E recalls the newest
-  queued entry into the editor. Disabling the queue clears it; reducing
-  `max_entries` below the current queue length fails.
+  chat queue. The default profile maps Tab to queue a nonempty editor and
+  Alt-E to edit the newest queued entry. Disabling the queue clears it;
+  reducing `max_entries` below the current queue length fails.
+- `sl:queue_count()` and `sl:queue_capacity()` return the queue state.
+- `sl:queue_peek(index)`, `sl:queue_insert(index, text)`,
+  `sl:queue_append(text)`, `sl:queue_replace(index, text)`, and
+  `sl:queue_take(index)` inspect or mutate oldest-first queue entries. Lua
+  indexes are one-based; `peek` and `take` return ordinary Lua strings.
+- `sl:queue_clear()` clears queued entries without changing the active draft;
+  `sl:queue_draft()` atomically queues an active nonempty draft.
+- `sl:set_queue_delivery("auto" | "manual")` selects automatic FIFO delivery
+  or host-controlled retention for the `default` profile;
+  `sl:queue_delivery()` returns that mode.
+- `sl:set_queue_profile("default" | "queued_turns")` selects the built-in
+  keymap and queue policy. `queued_turns` maps Enter to enqueue while
+  `sl:set_status_busy(true)` is active, Alt-E to edit-newest, and Alt-Enter
+  to submit a nonempty draft or promote the newest queued entry when empty.
+  `sl:set_status_busy(false)` releases exactly one oldest queued turn; starting
+  that turn should set busy again, leaving later turns queued. `sl:queue_profile()`
+  returns the selected profile.
+  Alt-Enter returns a nonempty draft immediately with `PROMPT_SOURCE_DIRECT`,
+  even while busy; an empty-editor promotion returns `PROMPT_SOURCE_PROMOTED`.
+  Cancellation retains queued drafts and stops automatic FIFO release until a
+  direct submission or manual promotion resumes it.
+- `sl:queue_keys()` returns a table with `enqueue_draft`, `edit_newest`, and
+  `submit_or_promote_newest`; pass a table with those fields to
+  `sl:set_queue_keys(keys)` to override built-in actions. Use `nil` for a
+  disabled action. Explicit `sl:bind_key()` callbacks still take precedence.
 - `sl:set_prompt_theme(theme)` selects one of `PROMPT_THEME_DEFAULT`, `PROMPT_THEME_PLAIN`,
   `PROMPT_THEME_ACCENT`, `PROMPT_THEME_DRACULA`, `PROMPT_THEME_GRUVBOX`,
   `PROMPT_THEME_MONOCHROME`, `PROMPT_THEME_MONOGREEN`, `PROMPT_THEME_OUTRUN`,
@@ -96,7 +134,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   contain C0/C1 controls or DEL.
 - `sl:set_status_element(index, value)` updates one zero-based element; pass
   `nil` as `value` to clear it.
-- `sl:set_status_busy(busy)` selects the red busy `x` or spinner marker.
+- `sl:set_status_busy(busy)` selects the red busy `x` or spinner marker. With
+  the `queued_turns` profile and queueing enabled, it is also the native turn
+  lifecycle signal: busy retains turns; idle releases one oldest queued turn.
 - `sl:set_status_spinner(enabled)` enables the 500ms `/ - \\ |` busy spinner.
 - `sl:set_status_idle_marker(marker)` selects a one-byte printable ASCII green
   idle marker; it defaults to `+`. Pass `nil` to leave the reserved two-column
@@ -135,6 +175,12 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.PROMPT_SOURCE_NONE`
 - `softline.PROMPT_SOURCE_DIRECT`
 - `softline.PROMPT_SOURCE_QUEUED`
+- `softline.PROMPT_SOURCE_PROMOTED`
+- `softline.ERROR_FULL`
+- `softline.WATCH_READ`
+- `softline.WATCH_WRITE`
+- `softline.WATCH_ERROR`
+- `softline.WATCH_HANGUP`
 - `softline.PROMPT_THEME_PLAIN`
 - `softline.PROMPT_THEME_ACCENT`
 - `softline.PROMPT_THEME_DRACULA`
@@ -147,7 +193,11 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.PROMPT_THEME_DEFAULT`
 - `softline.STATUS_MAX_ELEMENTS`
 - `softline.KEY_CTRL_C`
+- `softline.KEY_ESCAPE`
 - `softline.KEY_TAB`
+- `softline.KEY_ENTER`
+- `softline.KEY_CTRL_ENTER`
+- `softline.KEY_ALT_ENTER`
 - `softline.KEY_CTRL_N`
 - `softline.KEY_CTRL_P`
 - `softline.KEY_UP`

@@ -176,8 +176,20 @@ keys represented through `SL_KEY_ALT_BASE`.
 and no input byte is available. It can update the buffer, print above the
 prompt, submit, or cancel through public methods.
 
-This is the current hook for timer-like or async-adjacent behavior. It is not a
-general event loop integration API.
+This remains a local owner-thread hook. Use external watches for immediate
+application wakeups while an editor is active.
+
+### External Watches
+
+`watch_add()` registers an application-owned descriptor on an interactive
+handle. During `readline()` and `next_prompt()`, Softline waits for terminal
+input and registered watch readiness together, then invokes the callback on the
+same owner thread. The callback drains bounded application work and may print
+above the prompt, mutate queue state, and update status without racing the
+active editor. Softline does not read, close, duplicate, or change flags on a
+watched descriptor. Non-TTY handles reject watches. To preserve interactive
+fairness, ready watches are visited round-robin and Softline dispatches at most
+eight callbacks before it gives terminal input another chance to run.
 
 ### Streaming Output Above Prompt
 
@@ -241,7 +253,10 @@ Current build surfaces include:
 - CMake presets
 - static and shared library builds
 - shared-library ABI/SOVERSION policy through `SOFTLINE_ABI_VERSION`, currently
-  `0`, decoupled from the project release version
+  `1`, decoupled from the project release version. v0.3.0 is withdrawn as an
+  architectural miss rather than a supported shared-library upgrade baseline;
+  the current event-driven architecture replaces it without advancing that ABI
+  generation.
 - installed CMake package exports with canonical target `softline::softline`
 - installed pkg-config metadata
 - Lua 5.5 facade packaged as LuaRocks source artifacts
@@ -360,19 +375,11 @@ Missing:
 
 ### Event Loop And Async Integration
 
-The idle callback is useful but not a full integration model.
-
-Missing:
-
-- nonblocking readline session API
-- explicit poll fd exposure
-- step/tick API
-- integration with `select`, `poll`, `epoll`, or external loops
-- cancellation from another thread or signal-safe wakeups
-- async output queueing above the prompt
-- deterministic ownership rules for async callbacks
-
-This would likely require a new session-oriented API rather than extending
+Interactive reads are an owner-thread reactor over terminal input and watched
+application descriptors. Workers signal an application-created wake FD; they
+must never call Softline directly. Future work may add a separately driven
+session API or platform-specific backends, but it must preserve this
+single-owner rendering rule.
 `readline()` alone.
 
 ### Output And Transcript Management
