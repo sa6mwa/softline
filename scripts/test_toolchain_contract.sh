@@ -105,6 +105,34 @@ if ! grep -q 'Stale or incompatible CMake cache' "${stale_build}/reconfigure.err
   exit 1
 fi
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+while IFS='|' read -r target archive expected_sha256; do
+  description="$("$RESOLVER" ensure "${target}")"
+  cache="$(sed -n 's/^cache=//p' <<<"${description}")"
+  if ! grep -qx "archive=${archive}.tar.xz" <<<"${description}"; then
+    echo "ERROR: ${target} must resolve ${archive}.tar.xz" >&2
+    exit 1
+  fi
+  if [ "$(sha256_file "${cache}/archives/${archive}.tar.xz")" != "${expected_sha256}" ]; then
+    echo "ERROR: ${target} must retain the pinned ${archive} checksum" >&2
+    exit 1
+  fi
+done <<'EOF'
+x86_64-linux-gnu|x86-64--glibc--stable-2026.08-1|cde893afab04ac7dcd15c46aac214ff550441b982536124c88a71146a0eeedd3
+x86_64-linux-musl|x86-64--musl--stable-2026.08-1|78d3a4683d6ac47b5ee73bd5bce210b55eb93dff1b137c61298af97eb0d2b5a6
+aarch64-linux-gnu|aarch64--glibc--stable-2026.08-1|0213efac9b5577f20d58de9431960a191347ffc2257b27ffe7250522bf1f7867
+aarch64-linux-musl|aarch64--musl--stable-2026.08-1|b388c480a48e8e9f9b99e3d14e69219c4d61e5a2424a82faecb88a015b781a60
+armhf-linux-gnu|armv7-eabihf--glibc--stable-2026.08-1|9b7e25a74e87dac1e05d399444295e254a3073a056101e3197a859490e5701cd
+armhf-linux-musl|armv7-eabihf--musl--stable-2026.08-1|9147bafae4aa272321a3c6440d04d83b7e23411b2d344f875541d84c4444ba9b
+EOF
+
 description="$("$RESOLVER" ensure x86_64-linux-gnu)"
 if ! grep -qx 'status=ready' <<<"${description}"; then
   echo "ERROR: x86_64-linux-gnu toolchain must be ready for the lifecycle contract" >&2

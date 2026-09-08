@@ -14,6 +14,7 @@
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -5943,12 +5944,12 @@ static void test_busy_spinner_ticks_with_quiet_watch(void) {
   int result_pipe[2];
   int status;
   int spinner_advanced;
-  int tries;
   pid_t pid;
   char result[128];
   char terminal[8192];
   size_t terminal_len;
   ssize_t n;
+  struct timeval spinner_started;
 
   TEST("busy spinner ticks while an external watch is quiet");
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
@@ -6003,16 +6004,30 @@ static void test_busy_spinner_ticks_with_quiet_watch(void) {
     terminal[terminal_len] = '\0';
   }
   spinner_advanced = 0;
-  for (tries = 0; tries < 10; tries++) {
+  ASSERT_TRUE(gettimeofday(&spinner_started, NULL) == 0,
+              "spinner clock read failed");
+  while (!spinner_advanced) {
+    struct timeval now;
+    long elapsed_ms;
+    long remaining_ms;
+
+    ASSERT_TRUE(gettimeofday(&now, NULL) == 0, "spinner clock read failed");
+    elapsed_ms = (long)(now.tv_sec - spinner_started.tv_sec) * 1000L +
+                 (long)(now.tv_usec - spinner_started.tv_usec) / 1000L;
+    if (elapsed_ms >= 1500L)
+      break;
+    remaining_ms = 1500L - elapsed_ms;
+    if (remaining_ms > 100L)
+      remaining_ms = 100L;
     n = read_some_with_timeout_ms(master_fd, terminal + terminal_len,
-                                  sizeof(terminal) - 1 - terminal_len, 100);
+                                  sizeof(terminal) - 1 - terminal_len,
+                                  remaining_ms);
     if (n > 0) {
       terminal_len += (size_t)n;
       terminal[terminal_len] = '\0';
     }
     if (contains_bytes(terminal, "- ")) {
       spinner_advanced = 1;
-      break;
     }
   }
   ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "spinner submit failed");
