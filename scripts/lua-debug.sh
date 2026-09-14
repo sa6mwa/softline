@@ -17,12 +17,18 @@ fi
 )
 
 "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${ROCKSPEC}" >/dev/null
+sh "${ROOT_DIR}/scripts/build-local-lua.sh" "${ROOT_DIR}/build/debug" local-lua-debug
+SOFTLINE_LUA_INCDIR="${ROOT_DIR}/build/local-lua-debug/source/lua-5.5.1/src"
+export SOFTLINE_LUA_INCDIR
 rm -rf "${LUA_TREE}"
+SOFTLINE_LUA_BOOTLIN=0
 if NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target 2>/dev/null)"; then
   "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
-  eval "$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
+  BOOTLIN_ENV="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
+  eval "${BOOTLIN_ENV}"
   SOFTLINE_LUA_CC="${CC}"
   export CC LD AR RANLIB SOFTLINE_LUA_CC
+  SOFTLINE_LUA_BOOTLIN=1
 fi
 (
   cd "${ROOT_DIR}"
@@ -31,16 +37,20 @@ fi
     luarocks --tree "${LUA_TREE}" make "${ROCKSPEC}"
 )
 
-eval "$("${ROOT_DIR}/scripts/lua-debug-env.sh")"
+SOFTLINE_LUA_ENV="$("${ROOT_DIR}/scripts/lua-debug-env.sh")"
+eval "${SOFTLINE_LUA_ENV}"
 
 case "${MODE}" in
   test)
+    if [ "${SOFTLINE_LUA_BOOTLIN}" -eq 1 ]; then
+      lua "${ROOT_DIR}/tests/lua_runtime.lua"
+    fi
     lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
     lua "${ROOT_DIR}/tests/lua_smoke.lua"
     printf 'hello\n' | lua "${ROOT_DIR}/tests/lua_readline.lua"
     printf 'exit\n' | lua "${ROOT_DIR}/examples/simple.lua" >/dev/null
     SOFTLINE_LUA_CHAT_OUTPUT="$(printf 'hello\nexit\n' | lua "${ROOT_DIR}/examples/chat.lua")"
-    if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "[direct] hello" ]; then
+    if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "[turn] hello" ]; then
       echo "ERROR: non-tty Lua chat output mismatch: ${SOFTLINE_LUA_CHAT_OUTPUT}" >&2
       exit 1
     fi

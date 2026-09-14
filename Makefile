@@ -108,7 +108,25 @@ test: build-debug ## Run debug tests
 test-debug: test ## Run debug tests
 
 .PHONY: test-all
-test-all: test asan valgrind-portable fuzz-portable lua-test ## Run all deterministic local tests
+test-all: test test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test ## Run all deterministic local tests
+
+.PHONY: test-lua-platform
+test-lua-platform: ## Verify local Lua builds with Darwin platform settings
+	@python3 tests/check_lua_platform.py
+
+.PHONY: test-lua-env
+test-lua-env: ## Verify Lua environments reject missing local interpreters
+	@python3 tests/check_lua_env.py
+	@python3 tests/check_lua_runtime_selection.py
+
+.PHONY: test-artifact-runtime
+test-artifact-runtime: ## Reject local runtime paths in release artifacts
+	@python3 tests/check_artifact_portability.py
+	@python3 tests/check_artifact_runtime.py
+
+.PHONY: test-runtime-config
+test-runtime-config: ## Verify missing-runtime and archive cache failures
+	@python3 tests/check_runtime_config.py "$(ROOT_DIR)"
 
 .PHONY: asan
 asan: ## Run ASan+UBSan tests

@@ -215,7 +215,7 @@ The repository ships Lua examples equivalent to the C examples:
 
 ```sh
 make lua-test
-eval "$(make lua-env)"
+softline_lua_env="$(make lua-env)" && eval "${softline_lua_env}"
 lua examples/simple.lua
 lua examples/chat.lua
 ```

@@ -2,7 +2,8 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/consumer.XXXXXX")"
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
 BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
@@ -33,6 +34,8 @@ find_package(softline REQUIRED CONFIG)
 
 add_executable(consumer main.c)
 target_link_libraries(consumer PRIVATE softline::softline)
+include("${SOFTLINE_RUNTIME_HELPER}")
+softline_local_runtime(consumer)
 EOF
 
 cat > "${APP_DIR}/main.c" <<'EOF'
@@ -221,6 +224,7 @@ smoke_mode() {
     ${BOOTLIN_TOOLCHAIN_ARG:+"${BOOTLIN_TOOLCHAIN_ARG}"} \
     ${BOOTLIN_TARGET_ARG:+"${BOOTLIN_TARGET_ARG}"} \
     -DCMAKE_PREFIX_PATH="${install_dir}" \
+    -DSOFTLINE_RUNTIME_HELPER="${ROOT_DIR}/cmake/softline_local_runtime.cmake" \
     -Dsoftline_DIR="${install_libdir}/cmake/softline"
   cmake --build "${app_build_dir}"
   "${app_build_dir}/consumer"
@@ -234,6 +238,7 @@ smoke_mode() {
   pkg-config --exists softline
   test "$(pkg-config --modversion softline)" = "${VERSION}"
   "${CONSUMER_CC}" -std=c89 -Wall -Wextra -Wpedantic -Werror \
+    @"${app_build_dir}/consumer-runtime.flags" \
     $(pkg-config --cflags softline) "${APP_DIR}/main.c" \
     $(pkg-config --libs softline) -Wl,-rpath,"${install_libdir}" \
     -o "${pkg_consumer}"

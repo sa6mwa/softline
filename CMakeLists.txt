@@ -163,6 +163,8 @@ if(SL_BUILD_SHARED)
   add_library(softline ALIAS softline_shared)
 endif()
 
+include(cmake/softline_local_runtime.cmake)
+
 if(SL_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
@@ -176,6 +178,7 @@ if(SL_BUILD_FUZZERS)
   add_executable(softline_stdin_fuzz fuzz/softline_stdin_fuzz.c)
   target_link_libraries(softline_stdin_fuzz PRIVATE softline)
   softline_apply_warnings(softline_stdin_fuzz)
+  softline_local_runtime(softline_stdin_fuzz)
 endif()
 
 if(SL_INSTALL)

@@ -6,7 +6,7 @@ CFLAGS="${2:?missing CFLAGS}"
 LIBFLAG="${3:?missing LIBFLAG}"
 OBJ_EXTENSION="${4:?missing object extension}"
 LIB_EXTENSION="${5:?missing library extension}"
-LUA_INCDIR="${6:?missing Lua include directory}"
+LUA_INCDIR="${SOFTLINE_LUA_INCDIR:-${6:?missing Lua include directory}}"
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build/lua-rock"

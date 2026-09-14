@@ -3,7 +3,8 @@ set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
-TMP_DIR="$(mktemp -d)"
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package-verify.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 if [ ! -d "${DIST_DIR}" ] || [ -z "$(ls -A "${DIST_DIR}" 2>/dev/null)" ]; then
@@ -91,46 +92,7 @@ scan_for_local_paths() {
 }
 
 verify_elf_metadata() {
-  artifact="$1"
-  root="$2"
-  if [ -z "${READELF:-}" ]; then
-    echo "ERROR: ${artifact}: readelf unavailable for ELF verification"
-    exit 1
-  fi
-  find "${root}" -type f \( -name '*.so' -o -name '*.so.*' \) | while IFS= read -r file; do
-    dynamic="$("${READELF}" -d "${file}" 2>/dev/null || true)"
-    case "${file}" in
-      */libsoftline.so|*/libsoftline.so.*)
-        soname="$(printf '%s\n' "${dynamic}" |
-          sed -n 's/.*Library soname: \[\(.*\)\].*/\1/p')"
-        if [ -n "${soname}" ] &&
-           [ "${soname}" != "libsoftline.so.${SOFTLINE_ABI_VERSION}" ]; then
-          echo "ERROR: ${artifact}: ${file} SONAME ${soname} does not match ABI ${SOFTLINE_ABI_VERSION}"
-          exit 1
-        fi
-        ;;
-    esac
-    runpaths="$(printf '%s\n' "${dynamic}" |
-      sed -n 's/.*\(RPATH\|RUNPATH\).*: \[\(.*\)\].*/\2/p')"
-    if [ -n "${runpaths}" ]; then
-      old_ifs="${IFS}"
-      IFS=:
-      for runpath in ${runpaths}; do
-        case "${runpath}" in
-          '$ORIGIN'|'$ORIGIN/'*) ;;
-          /*)
-            echo "ERROR: ${artifact}: ${file} has absolute ELF runtime path ${runpath}"
-            exit 1
-            ;;
-          *"${ROOT_DIR}"*|*"${HOME}"*)
-            echo "ERROR: ${artifact}: ${file} has local ELF runtime path ${runpath}"
-            exit 1
-            ;;
-        esac
-      done
-      IFS="${old_ifs}"
-    fi
-  done
+  python3 "${ROOT_DIR}/scripts/verify_artifact_runtime.py" "$2" --readelf "${READELF}"
 }
 
 verify_darwin_metadata() {
@@ -209,6 +171,8 @@ project(softline_extracted_consumer LANGUAGES C)
 find_package(softline REQUIRED CONFIG)
 add_executable(softline_extracted_consumer main.c)
 target_link_libraries(softline_extracted_consumer PRIVATE softline::softline)
+include("${SOFTLINE_RUNTIME_HELPER}")
+softline_local_runtime(softline_extracted_consumer)
 EOF
   cat > "${consumer_dir}/main.c" <<'EOF'
 #include "softline/softline.h"
@@ -228,6 +192,7 @@ EOF
   cmake -S "${consumer_dir}" -B "${consumer_dir}/cmake-build" -G Ninja \
     "$@" \
     -DCMAKE_PREFIX_PATH="${pkg_root}" \
+    -DSOFTLINE_RUNTIME_HELPER="${ROOT_DIR}/cmake/softline_local_runtime.cmake" \
     -Dsoftline_DIR="${pkg_lib_dir}/cmake/softline"
   cmake --build "${consumer_dir}/cmake-build"
 
@@ -244,15 +209,18 @@ EOF
       $(pkg-config --libs softline) -o "${consumer_dir}/pkg-config-consumer"
   else
     "${CC}" -std=c89 -Wall -Wextra -Wpedantic -Werror \
+      @"${consumer_dir}/cmake-build/softline_extracted_consumer-runtime.flags" \
       $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
-      $(pkg-config --libs softline) -o "${consumer_dir}/pkg-config-consumer"
+      $(pkg-config --libs softline) -Wl,-rpath,"${pkg_lib_dir}" -o "${consumer_dir}/pkg-config-consumer"
   fi
 
-  if [ "${target}" = "x86_64-linux-gnu" ]; then
-    LD_LIBRARY_PATH="${pkg_lib_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-      "${consumer_dir}/cmake-build/softline_extracted_consumer"
-    LD_LIBRARY_PATH="${pkg_lib_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-      "${consumer_dir}/pkg-config-consumer"
+  if [ "${target}" = "x86_64-linux-gnu" ] || [ "${target}" = "x86_64-linux-musl" ]; then
+    "${consumer_dir}/cmake-build/softline_extracted_consumer"
+    "${consumer_dir}/pkg-config-consumer"
+    "${CC}" -static -std=c89 -Wall -Wextra -Wpedantic -Werror \
+      $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
+      $(pkg-config --static --libs softline) -o "${consumer_dir}/static-consumer"
+    "${consumer_dir}/static-consumer"
   fi
 }
 
