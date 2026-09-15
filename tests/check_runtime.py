@@ -1,4 +1,5 @@
 """Assert actual loader resolution and exec behavior, without loader wrappers."""
+import os
 import pathlib
 import re
 import subprocess
@@ -6,6 +7,7 @@ import sys
 
 
 def check(binary, sysroot, readelf):
+    libmdf_root = os.environ.get("SOFTLINE_TEST_LIBMDF_RUNTIME_ROOT")
     metadata = subprocess.check_output([readelf, "-l", binary], text=True)
     loader = re.search(r"interpreter: (.*?)\]", metadata)
     assert loader and loader[1].startswith(sysroot + "/"), metadata
@@ -15,9 +17,15 @@ def check(binary, sysroot, readelf):
         if "=> /" in line:
             path = line.split("=> ", 1)[1].split()[0]
             if "libsoftline" not in path:
-                assert pathlib.Path(path).resolve().is_relative_to(
-                    pathlib.Path(sysroot).resolve().parent.parent
-                ), listing
+                resolved = pathlib.Path(path).resolve()
+                if "libmdf" in path:
+                    assert libmdf_root and resolved.is_relative_to(
+                        pathlib.Path(libmdf_root).resolve()
+                    ), listing
+                else:
+                    assert resolved.is_relative_to(
+                        pathlib.Path(sysroot).resolve().parent.parent
+                    ), listing
 
 
 if __name__ == "__main__":

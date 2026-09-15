@@ -1,4 +1,20 @@
-# Archive acquisition is only for the local Lua verification interpreter.
+include_guard(GLOBAL)
+
+# External verification dependencies share the lifecycle archive cache.  The
+# cache contains only checksum-verified immutable archives; extraction remains
+# under an individual build tree.
+if(NOT DEFINED CPKT_DEPENDENCY_CACHE)
+  if(DEFINED ENV{CPKT_DEPENDENCY_CACHE})
+    set(CPKT_DEPENDENCY_CACHE "$ENV{CPKT_DEPENDENCY_CACHE}")
+  elseif(DEFINED ENV{XDG_CACHE_HOME})
+    set(CPKT_DEPENDENCY_CACHE "$ENV{XDG_CACHE_HOME}/c.pkt.systems/deps")
+  else()
+    set(CPKT_DEPENDENCY_CACHE "$ENV{HOME}/.cache/c.pkt.systems/deps")
+  endif()
+endif()
+set(CPKT_DEPENDENCY_CACHE "${CPKT_DEPENDENCY_CACHE}" CACHE PATH
+  "Verified dependency archives")
+
 function(softline_verified_archive url digest name output)
   set(directory "${CPKT_DEPENDENCY_CACHE}/archives/sha256/${digest}")
   set(archive "${directory}/${name}")

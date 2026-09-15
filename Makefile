@@ -144,6 +144,9 @@ valgrind: ## Run native Valgrind Memcheck tests
 		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 \
 			--trace-children=yes ./tests/test_examples \
 			./examples/example_simple ./examples/example_chat
+	@cd $(BUILD_DIR)/valgrind && \
+		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 \
+			./tests/test_libmdf_stream
 
 .PHONY: valgrind-portable
 valgrind-portable: ## Run native Valgrind on supported Linux hosts, skip where unsupported

@@ -8,6 +8,17 @@ endif()
 add_test(NAME softline_unit COMMAND test_softline)
 set_tests_properties(softline_unit PROPERTIES LABELS "unit" TIMEOUT 10)
 
+include(${PROJECT_SOURCE_DIR}/cmake/softline_test_libmdf.cmake)
+find_package(Threads REQUIRED)
+add_executable(test_libmdf_stream test_libmdf_stream.c)
+target_link_libraries(test_libmdf_stream PRIVATE softline Threads::Threads)
+softline_enable_test_libmdf(test_libmdf_stream)
+softline_apply_warnings(test_libmdf_stream)
+softline_local_runtime(test_libmdf_stream)
+add_test(NAME softline_libmdf_stream COMMAND test_libmdf_stream)
+set_tests_properties(softline_libmdf_stream PROPERTIES
+  LABELS "integration;streaming;libmdf" TIMEOUT 10)
+
 if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
    SL_TARGET_ID STREQUAL "x86_64-linux-gnu")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -21,8 +32,11 @@ if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
   add_test(NAME softline_runtime COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/check_runtime.py" "${CMAKE_SYSROOT}"
     "${CMAKE_READELF}"
-    $<TARGET_FILE:runtime_probe> $<TARGET_FILE:test_softline> ${runtime_examples})
-  set_tests_properties(softline_runtime PROPERTIES TIMEOUT 10 LABELS "runtime")
+    $<TARGET_FILE:runtime_probe> $<TARGET_FILE:test_softline>
+    $<TARGET_FILE:test_libmdf_stream> ${runtime_examples})
+  set_tests_properties(softline_runtime PROPERTIES
+    ENVIRONMENT "SOFTLINE_TEST_LIBMDF_RUNTIME_ROOT=${SOFTLINE_TEST_LIBMDF_RUNTIME_ROOT}"
+    TIMEOUT 10 LABELS "runtime")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET example_chat)
