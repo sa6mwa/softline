@@ -154,6 +154,11 @@ a green `+` by default; callers can supply another printable ASCII marker or
 
 ## Current Extension Points
 
+For the proposed native, persistent libmdf Markdown output integration, see
+[the native libmdf stream design](softline-mdf-stream-design.md). It is
+intentionally separate from the current finite `print_above()` callback API
+and remains pending the documented libmdf geometry operation.
+
 ### Key Bindings
 
 `bind_key()` attaches a per-handle callback to a key. The callback may:
