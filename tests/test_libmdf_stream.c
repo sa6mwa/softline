@@ -23,6 +23,7 @@ struct markdown_source {
 struct renderer_stream {
   int write_fd;
   struct markdown_source source;
+  size_t feeds;
   size_t sink_writes;
   size_t first_sink_source_offset;
   mdf_status status;
@@ -103,9 +104,11 @@ static int write_rendered(void *userdata, const char *src, size_t length) {
 static void *render_markdown(void *userdata) {
   struct renderer_stream *stream;
   mdf_options options;
-  mdf_source source;
   mdf_sink sink;
   mdf *renderer;
+  char chunk[2];
+  size_t length;
+  int error;
 
   stream = (struct renderer_stream *)userdata;
   renderer = NULL;
@@ -114,11 +117,27 @@ static void *render_markdown(void *userdata) {
   options.width = 72;
   stream->status = mdf_create(MDF_FORMAT_ANSI, &options, &renderer);
   if (stream->status == MDF_OK) {
-    source.userdata = &stream->source;
-    source.read = read_markdown;
     sink.userdata = stream;
     sink.write = write_rendered;
-    stream->status = renderer->render(renderer, &source, &sink);
+    for (;;) {
+      error = 0;
+      length = read_markdown(&stream->source, chunk, sizeof(chunk), &error);
+      if (error != 0) {
+        stream->status = MDF_ERROR_IO;
+        break;
+      }
+      if (length == 0)
+        break;
+      stream->status = renderer->feed(renderer, chunk, length, &sink);
+      if (stream->status != MDF_OK)
+        break;
+      stream->feeds++;
+      stream->status = renderer->flush(renderer, &sink);
+      if (stream->status != MDF_OK)
+        break;
+    }
+    if (stream->status == MDF_OK)
+      stream->status = renderer->finish_document(renderer, &sink);
   }
   if (renderer != NULL)
     renderer->destroy(renderer);
@@ -269,15 +288,16 @@ int main(void) {
   (void)close(rendered_pipe[0]);
   (void)close(output_pipe[0]);
   if (status != SL_OK || renderer.status != MDF_OK || output.failed ||
-      renderer.source.reads < 2 || renderer.sink_writes < 2 || pull.reads < 2 ||
-      output.reads < 2 ||
+      renderer.source.reads < 2 || renderer.feeds < 2 ||
+      renderer.sink_writes < 2 || pull.reads < 2 || output.reads < 2 ||
       renderer.first_sink_source_offset >= renderer.source.length) {
     fprintf(stderr,
             "libmdf streaming test: bridge failed (sl=%d mdf=%d output=%d "
-            "source_reads=%lu sink_writes=%lu pull_reads=%lu output_reads=%lu "
+            "source_reads=%lu feeds=%lu sink_writes=%lu pull_reads=%lu "
+            "output_reads=%lu "
             "first_sink=%lu source_length=%lu)\n",
             status, (int)renderer.status, output.failed,
-            (unsigned long)renderer.source.reads,
+            (unsigned long)renderer.source.reads, (unsigned long)renderer.feeds,
             (unsigned long)renderer.sink_writes, (unsigned long)pull.reads,
             (unsigned long)output.reads,
             (unsigned long)renderer.first_sink_source_offset,
