@@ -9,15 +9,21 @@ add_test(NAME softline_unit COMMAND test_softline)
 set_tests_properties(softline_unit PROPERTIES LABELS "unit" TIMEOUT 10)
 
 include(${PROJECT_SOURCE_DIR}/cmake/softline_test_libmdf.cmake)
-find_package(Threads REQUIRED)
-add_executable(test_libmdf_stream test_libmdf_stream.c)
-target_link_libraries(test_libmdf_stream PRIVATE softline Threads::Threads)
-softline_enable_test_libmdf(test_libmdf_stream)
-softline_apply_warnings(test_libmdf_stream)
-softline_local_runtime(test_libmdf_stream)
-add_test(NAME softline_libmdf_stream COMMAND test_libmdf_stream)
-set_tests_properties(softline_libmdf_stream PROPERTIES
-  LABELS "integration;streaming;libmdf" TIMEOUT 10)
+softline_test_libmdf_supported(_softline_test_libmdf_supported)
+if(_softline_test_libmdf_supported)
+  find_package(Threads REQUIRED)
+  add_executable(test_libmdf_stream test_libmdf_stream.c)
+  target_link_libraries(test_libmdf_stream PRIVATE softline Threads::Threads)
+  softline_enable_test_libmdf(test_libmdf_stream)
+  softline_apply_warnings(test_libmdf_stream)
+  softline_local_runtime(test_libmdf_stream)
+  add_test(NAME softline_libmdf_stream COMMAND test_libmdf_stream)
+  set_tests_properties(softline_libmdf_stream PROPERTIES
+    LABELS "integration;streaming;libmdf" TIMEOUT 10)
+else()
+  message(STATUS
+    "Skipping libmdf streaming integration test: unsupported target '${SL_TARGET_ID}'")
+endif()
 
 if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
    SL_TARGET_ID STREQUAL "x86_64-linux-gnu")

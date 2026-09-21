@@ -6,9 +6,18 @@ set(SOFTLINE_TEST_LIBMDF_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 # Softline library target or appear in exported package metadata.
 set(SOFTLINE_TEST_LIBMDF_VERSION "0.10.0")
 
-function(softline_enable_test_libmdf target)
-  if(NOT SL_TARGET_ID MATCHES
+function(softline_test_libmdf_supported output)
+  if(SL_TARGET_ID MATCHES
       "^(x86_64-linux-gnu|x86_64-linux-musl|aarch64-linux-gnu|aarch64-linux-musl|armhf-linux-gnu|armhf-linux-musl|arm64-apple-darwin)$")
+    set(${output} TRUE PARENT_SCOPE)
+  else()
+    set(${output} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(softline_enable_test_libmdf target)
+  softline_test_libmdf_supported(_softline_libmdf_supported)
+  if(NOT _softline_libmdf_supported)
     message(FATAL_ERROR
       "libmdf streaming integration requires a supported SL_TARGET_ID; got '${SL_TARGET_ID}'")
   endif()
@@ -53,13 +62,18 @@ function(softline_enable_test_libmdf target)
   find_package(PkgConfig REQUIRED)
   set(_softline_old_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
   set(_softline_old_pkg_config_libdir "$ENV{PKG_CONFIG_LIBDIR}")
+  set(_softline_old_pkg_config_sysroot_dir "$ENV{PKG_CONFIG_SYSROOT_DIR}")
   set(ENV{PKG_CONFIG_PATH}
     "${_softline_libmdf_root}/lib/pkgconfig:${_softline_old_pkg_config_path}")
   set(ENV{PKG_CONFIG_LIBDIR} "${_softline_libmdf_root}/lib/pkgconfig")
+  # The extracted SDK records absolute target paths. An active cross sysroot
+  # would incorrectly prefix those paths during this private lookup.
+  set(ENV{PKG_CONFIG_SYSROOT_DIR} "")
   pkg_check_modules(SOFTLINE_TEST_LIBMDF REQUIRED IMPORTED_TARGET
     "libmdf=${SOFTLINE_TEST_LIBMDF_VERSION}")
   set(ENV{PKG_CONFIG_PATH} "${_softline_old_pkg_config_path}")
   set(ENV{PKG_CONFIG_LIBDIR} "${_softline_old_pkg_config_libdir}")
+  set(ENV{PKG_CONFIG_SYSROOT_DIR} "${_softline_old_pkg_config_sysroot_dir}")
 
   target_link_libraries(${target} PRIVATE PkgConfig::SOFTLINE_TEST_LIBMDF)
   # CMake's sysroot-only library search can retain -lmdf while dropping the
