@@ -12,7 +12,7 @@ require_make_target() {
 }
 
 for target in \
-  help deps-debug deps-release deps-cross build build-debug build-release \
+  help deps deps-debug deps-release deps-cross build build-debug build-release \
   test test-debug test-all asan valgrind valgrind-portable fuzz fuzz-smoke fuzz-portable fuzz-long package package-source \
   package-source-smoke package-consumer-smoke package-checksums package-verify \
   verify-release-archives verify-release-privacy release-matrix \
@@ -34,6 +34,18 @@ fi
 if ! grep -q 'softline_reject_stale_linux_toolchain_cache' "${ROOT_DIR}/CMakeLists.txt" ||
    ! grep -q 'Stale or incompatible CMake cache' "${ROOT_DIR}/CMakeLists.txt"; then
   echo "ERROR: CMake must reject stale host-compiler caches after lifecycle toolchain cutover" >&2
+  exit 1
+fi
+if ! grep -q 'cmake_minimum_required(VERSION 3.24)' "${ROOT_DIR}/CMakeLists.txt" ||
+   ! grep -q -- '-std=c89' "${ROOT_DIR}/CMakeLists.txt" ||
+   ! grep -q -- '-pedantic-errors' "${ROOT_DIR}/CMakeLists.txt"; then
+  echo "ERROR: project-owned C targets must use the lifecycle C89 flags" >&2
+  exit 1
+fi
+if [ ! -f "${ROOT_DIR}/cmake/softline.exports" ] ||
+   ! grep -q 'version-script' "${ROOT_DIR}/CMakeLists.txt" ||
+   ! grep -q 'check_exports.py' "${ROOT_DIR}/tests/CMakeLists.txt"; then
+  echo "ERROR: shared library requires a source-controlled export allowlist and test" >&2
   exit 1
 fi
 
@@ -174,8 +186,12 @@ if ! grep -A4 '^release:' "${ROOT_DIR}/Makefile" | grep -q '$(MAKE) clean'; then
   echo "ERROR: release must clean before its shared proof graph" >&2
   exit 1
 fi
-if ! grep -A5 '^release:' "${ROOT_DIR}/Makefile" | grep -q 'SOFTLINE_REQUIRE_DARWIN=1'; then
+if ! grep -A10 '^release:' "${ROOT_DIR}/Makefile" | grep -q 'SOFTLINE_REQUIRE_DARWIN=1'; then
   echo "ERROR: release must require a Darwin artifact" >&2
+  exit 1
+fi
+if ! grep -A10 '^release:' "${ROOT_DIR}/Makefile" | grep -q '$(MAKE) package-source-smoke'; then
+  echo "ERROR: only the final release path may reconstruct and smoke the source archive" >&2
   exit 1
 fi
 if ! grep -A2 '^prerelease:' "${ROOT_DIR}/Makefile" | grep -q '$(MAKE) release-pipeline'; then
@@ -220,13 +236,8 @@ if grep -q 'project(softline_version_probe VERSION 0.0.0 LANGUAGES C)' "${ROOT_D
   exit 1
 fi
 if ! grep -q 'lifecycle readelf is required' "${ROOT_DIR}/scripts/package-consumer-smoke.sh" ||
-   ! grep -q 'command -v readelf' "${ROOT_DIR}/scripts/package-consumer-smoke.sh" ||
-   ! grep -q 'SKIP: shared SONAME check requires readelf' "${ROOT_DIR}/scripts/package-consumer-smoke.sh"; then
-  echo "ERROR: package consumer smoke must require lifecycle readelf for Bootlin builds and preserve host fallback" >&2
-  exit 1
-fi
-if ! awk '/verify_shared_abi\(\)/ { in_func = 1; next } in_func && /^}/ { exit } in_func && /libsoftline.dylib/ { dylib = NR } in_func && /shared install missing libsoftline.so/ { so = NR } END { exit !(dylib && so && dylib < so) }' "${ROOT_DIR}/scripts/package-consumer-smoke.sh"; then
-  echo "ERROR: package consumer smoke must handle Darwin dylib host fallback before requiring ELF soname layout" >&2
+   grep -q 'using host toolchain' "${ROOT_DIR}/scripts/package-consumer-smoke.sh"; then
+  echo "ERROR: package consumer smoke must require lifecycle readelf and reject host fallback" >&2
   exit 1
 fi
 if ! awk '/for target in \$\{TARGETS\}/ { in_loop = 1; next } in_loop && /cmake --preset "\$\{preset\}"/ { cmake = NR } in_loop && /rm -rf "\$\{build_dir\}"/ { clean = NR } END { exit !(clean && cmake && clean < cmake) }' "${ROOT_DIR}/scripts/package.sh"; then
@@ -279,7 +290,7 @@ if ! grep -q 'SOFTLINE_LUA_CC' "${ROOT_DIR}/scripts/build_lua_rock.sh" ||
    ! grep -q 'LUA_COMPILE_INCDIR' "${ROOT_DIR}/scripts/build_lua_rock.sh" ||
    ! grep -q 'SOFTLINE_LUA_CC="${CC}"' "${ROOT_DIR}/scripts/lua-test.sh" ||
    ! grep -q 'ensure "${NATIVE_TARGET}"' "${ROOT_DIR}/scripts/lua-test.sh" ||
-   ! grep -q 'native-linux-target 2>/dev/null' "${ROOT_DIR}/scripts/lua-test.sh" ||
+   grep -q 'native-linux-target 2>/dev/null' "${ROOT_DIR}/scripts/lua-test.sh" ||
    ! grep -q 'export CC LD AR RANLIB SOFTLINE_LUA_CC' "${ROOT_DIR}/scripts/lua-test.sh"; then
   echo "ERROR: Lua facade builds must prefer the lifecycle compiler over LuaRocks compiler defaults" >&2
   exit 1
@@ -303,9 +314,9 @@ if ! grep -q 'verify_extracted_consumer' "${ROOT_DIR}/scripts/package-verify.sh"
   echo "ERROR: package verification must smoke extracted SDK consumers" >&2
   exit 1
 fi
-if ! grep -q 'package-source-smoke.sh' "${ROOT_DIR}/scripts/package-verify.sh" ||
-   grep -q 'source archive, skipped by binary package verifier' "${ROOT_DIR}/scripts/package-verify.sh"; then
-  echo "ERROR: package verification must verify checksum-listed C source archives" >&2
+if grep -q 'package-source-smoke.sh' "${ROOT_DIR}/scripts/package-verify.sh" ||
+   ! grep -q 'source archive is verified only by package-source-smoke' "${ROOT_DIR}/scripts/package-verify.sh"; then
+  echo "ERROR: binary package verification must not reconstruct source archives" >&2
   exit 1
 fi
 if ! grep -q 'cpkt-toolchains.sh" env' "${ROOT_DIR}/scripts/package-verify.sh"; then
@@ -329,8 +340,9 @@ if ! grep -q 'native-linux-target' "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ||
   exit 1
 fi
 if ! grep -q 'native-linux-target' "${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake" ||
-   ! grep -q 'No supported native Bootlin Linux target selected; using host toolchain' "${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"; then
-  echo "ERROR: Bootlin CMake toolchain must resolve supported native targets before host fallback" >&2
+   ! grep -q 'No supported native Bootlin Linux target is available' "${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake" ||
+   grep -q 'using host toolchain' "${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"; then
+  echo "ERROR: Bootlin CMake toolchain must fail closed when native selection is unavailable" >&2
   exit 1
 fi
 if ! grep -q 'env_out()' "${ROOT_DIR}/scripts/cpkt-aflpp.sh"; then

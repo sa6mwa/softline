@@ -42,17 +42,48 @@ function(softline_enable_test_libmdf target)
 
   include(${SOFTLINE_TEST_LIBMDF_MODULE_DIR}/softline_verified_archive.cmake)
   softline_verified_archive(
+    "libmdf"
     "https://github.com/sa6mwa/libmdf/releases/download/v${SOFTLINE_TEST_LIBMDF_VERSION}/${_softline_libmdf_name}"
     "${_softline_libmdf_sha}" "${_softline_libmdf_name}" _softline_libmdf_archive)
 
+  set(_softline_libmdf_cache_root
+    "${PROJECT_SOURCE_DIR}/.cache")
   set(_softline_libmdf_extract
-    "${CMAKE_BINARY_DIR}/test-deps/libmdf-${SOFTLINE_TEST_LIBMDF_VERSION}-${SL_TARGET_ID}")
+    "${_softline_libmdf_cache_root}/deps-build/${SL_TARGET_ID}/libmdf")
   set(_softline_libmdf_root
-    "${_softline_libmdf_extract}/libmdf-${SOFTLINE_TEST_LIBMDF_VERSION}-${SL_TARGET_ID}")
-  if(NOT EXISTS "${_softline_libmdf_root}/lib")
-    file(MAKE_DIRECTORY "${_softline_libmdf_extract}")
+    "${_softline_libmdf_cache_root}/deps/${SL_TARGET_ID}/libmdf/install")
+  set(_softline_libmdf_contract
+    "${_softline_libmdf_cache_root}/dependency-contracts/${SL_TARGET_ID}/libmdf.txt")
+  set(_softline_libmdf_contract_value
+    "version=${SOFTLINE_TEST_LIBMDF_VERSION}\narchive_sha256=${_softline_libmdf_sha}\n")
+  set(_softline_libmdf_stale FALSE)
+  if(NOT EXISTS "${_softline_libmdf_contract}")
+    set(_softline_libmdf_stale TRUE)
+  else()
+    file(READ "${_softline_libmdf_contract}" _softline_libmdf_existing_contract)
+    if(NOT _softline_libmdf_existing_contract STREQUAL _softline_libmdf_contract_value)
+      set(_softline_libmdf_stale TRUE)
+    endif()
+  endif()
+  if(NOT EXISTS "${_softline_libmdf_root}/lib/pkgconfig/libmdf.pc")
+    set(_softline_libmdf_stale TRUE)
+  endif()
+  if(_softline_libmdf_stale)
+    file(REMOVE_RECURSE "${_softline_libmdf_extract}" "${_softline_libmdf_root}")
+    file(MAKE_DIRECTORY "${_softline_libmdf_extract}" "${_softline_libmdf_root}")
     file(ARCHIVE_EXTRACT INPUT "${_softline_libmdf_archive}"
       DESTINATION "${_softline_libmdf_extract}")
+    set(_softline_libmdf_archive_root
+      "${_softline_libmdf_extract}/libmdf-${SOFTLINE_TEST_LIBMDF_VERSION}-${SL_TARGET_ID}")
+    if(NOT EXISTS "${_softline_libmdf_archive_root}/lib")
+      message(FATAL_ERROR
+        "libmdf SDK archive has an unexpected layout: ${_softline_libmdf_archive_root}")
+    endif()
+    file(COPY "${_softline_libmdf_archive_root}/" DESTINATION "${_softline_libmdf_root}")
+    get_filename_component(_softline_libmdf_contract_dir
+      "${_softline_libmdf_contract}" DIRECTORY)
+    file(MAKE_DIRECTORY "${_softline_libmdf_contract_dir}")
+    file(WRITE "${_softline_libmdf_contract}" "${_softline_libmdf_contract_value}")
   endif()
   if(NOT EXISTS "${_softline_libmdf_root}/lib/pkgconfig/libmdf.pc")
     message(FATAL_ERROR

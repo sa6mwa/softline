@@ -1,21 +1,30 @@
 include_guard(GLOBAL)
 
-# External verification dependencies share the lifecycle archive cache.  The
-# cache contains only checksum-verified immutable archives; extraction remains
-# under an individual build tree.
-if(NOT DEFINED CPKT_DEPENDENCY_CACHE)
-  if(DEFINED ENV{CPKT_DEPENDENCY_CACHE})
-    set(CPKT_DEPENDENCY_CACHE "$ENV{CPKT_DEPENDENCY_CACHE}")
-  elseif(DEFINED ENV{XDG_CACHE_HOME})
-    set(CPKT_DEPENDENCY_CACHE "$ENV{XDG_CACHE_HOME}/c.pkt.systems/deps")
+# External dependencies share one verified-archive cache.  Each CMake root
+# resolves it exactly once; this helper only consumes that resolved contract.
+function(softline_configure_dependency_cache)
+  if(DEFINED CPKT_DEPENDENCY_CACHE)
+    set(_softline_dependency_cache "${CPKT_DEPENDENCY_CACHE}")
+  elseif(DEFINED ENV{CPKT_DEPENDENCY_CACHE} AND
+         NOT "$ENV{CPKT_DEPENDENCY_CACHE}" STREQUAL "")
+    set(_softline_dependency_cache "$ENV{CPKT_DEPENDENCY_CACHE}")
+  elseif(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
+    set(_softline_dependency_cache "$ENV{XDG_CACHE_HOME}/c.pkt.systems/deps")
+  elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+    set(_softline_dependency_cache "$ENV{HOME}/.cache/c.pkt.systems/deps")
   else()
-    set(CPKT_DEPENDENCY_CACHE "$ENV{HOME}/.cache/c.pkt.systems/deps")
+    message(FATAL_ERROR
+      "CPKT_DEPENDENCY_CACHE is unset and neither XDG_CACHE_HOME nor HOME is available")
   endif()
-endif()
-set(CPKT_DEPENDENCY_CACHE "${CPKT_DEPENDENCY_CACHE}" CACHE PATH
-  "Verified dependency archives")
+  set(CPKT_DEPENDENCY_CACHE "${_softline_dependency_cache}" CACHE PATH
+    "Verified dependency archives")
+endfunction()
 
-function(softline_verified_archive url digest name output)
+function(softline_verified_archive component url digest name output)
+  if(NOT DEFINED CPKT_DEPENDENCY_CACHE OR CPKT_DEPENDENCY_CACHE STREQUAL "")
+    message(FATAL_ERROR
+      "${component}: CPKT_DEPENDENCY_CACHE must be configured by the CMake root")
+  endif()
   set(directory "${CPKT_DEPENDENCY_CACHE}/archives/sha256/${digest}")
   set(archive "${directory}/${name}")
   if(EXISTS "${archive}")
@@ -24,7 +33,7 @@ function(softline_verified_archive url digest name output)
       set(${output} "${archive}" PARENT_SCOPE)
       return()
     endif()
-    message(FATAL_ERROR "Corrupt cached archive: ${archive}; expected ${digest}")
+    file(REMOVE "${archive}")
   endif()
   file(MAKE_DIRECTORY "${CPKT_DEPENDENCY_CACHE}/locks" "${directory}")
   file(LOCK "${CPKT_DEPENDENCY_CACHE}/locks/${digest}.lock" GUARD FUNCTION TIMEOUT 600)
@@ -34,7 +43,7 @@ function(softline_verified_archive url digest name output)
       set(${output} "${archive}" PARENT_SCOPE)
       return()
     endif()
-    message(FATAL_ERROR "Corrupt cached archive: ${archive}")
+    file(REMOVE "${archive}")
   endif()
   string(RANDOM LENGTH 12 nonce)
   set(temporary "${directory}/download-${nonce}")
@@ -45,7 +54,8 @@ function(softline_verified_archive url digest name output)
   endif()
   if(NOT code EQUAL 0 OR NOT actual STREQUAL digest)
     file(REMOVE "${temporary}")
-    message(FATAL_ERROR "Cannot acquire ${url}: ${status}; expected ${digest}")
+    message(FATAL_ERROR
+      "${component}: cannot acquire ${url}; expected ${digest}; cache ${archive}; ${status}")
   endif()
   file(RENAME "${temporary}" "${archive}")
   set(${output} "${archive}" PARENT_SCOPE)

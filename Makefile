@@ -39,6 +39,12 @@ deps-release: ## Configure release build dependencies
 deps-cross: ## Provision and inspect all pinned cross toolchains
 	@./scripts/cpkt-toolchains.sh ensure all
 
+.PHONY: deps
+deps: ## Configure one dependency closure (DEPENDENCY=libmdf|lua PRESET=debug)
+	@case "$(DEPENDENCY)" in libmdf|lua) ;; *) echo "ERROR: set DEPENDENCY=libmdf or DEPENDENCY=lua" >&2; exit 2 ;; esac
+	@case "$(PRESET)" in debug|debug-lua) ;; *) echo "ERROR: set PRESET=debug or PRESET=debug-lua" >&2; exit 2 ;; esac
+	@cmake --preset $(PRESET)
+
 .PHONY: build
 build: ## Build debug target
 	@cmake --preset debug
@@ -108,7 +114,7 @@ test: build-debug ## Run debug tests
 test-debug: test ## Run debug tests
 
 .PHONY: test-all
-test-all: test test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test ## Run all deterministic local tests
+test-all: test test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test test-tool-discovery test-toolchain-contract test-darwin-linker-route test-lifecycle-surface test-lua-artifact-privacy test-public-header-docs ## Run all deterministic local tests
 
 .PHONY: test-lua-platform
 test-lua-platform: ## Verify local Lua builds with Darwin platform settings
@@ -301,18 +307,22 @@ prerelease-hardening: ## Expensive hardening gate
 	@$(MAKE) release-pipeline
 
 .PHONY: release
-release: ## Clean release build
+release: ## Clean final release build, including source reconstruction
 	@$(MAKE) lifecycle-version-contract
 	@$(MAKE) clean
 	@SOFTLINE_REQUIRE_DARWIN=1 $(MAKE) release-pipeline
+	@$(MAKE) package-source
+	@$(MAKE) package-source-smoke
+	@$(MAKE) package-checksums
+	@$(MAKE) package-verify
 
 .PHONY: release-pipeline
-release-pipeline: ## Shared clean release proof graph
+release-pipeline: ## Ordinary proof graph plus binary release matrix
 	@$(MAKE) prerelease-checks
 	@$(MAKE) release-matrix
 
 .PHONY: prerelease-checks
-prerelease-checks: format test-all test-tool-discovery test-toolchain-contract test-darwin-linker-route test-release-version test-package-source-worktree test-lifecycle-surface test-lua-artifact-privacy test-clangd test-public-header-docs package-consumer-smoke package-source package-source-smoke
+prerelease-checks: format test-all test-release-version test-package-source-worktree test-clangd package-consumer-smoke
 
 .PHONY: lifecycle-version-contract
 lifecycle-version-contract: ## Verify exact lightweight-tag release version behavior

@@ -18,18 +18,15 @@ fi
 
 "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${ROCKSPEC}" >/dev/null
 sh "${ROOT_DIR}/scripts/build-local-lua.sh" "${ROOT_DIR}/build/debug" local-lua-debug
-SOFTLINE_LUA_INCDIR="${ROOT_DIR}/build/local-lua-debug/source/lua-5.5.1/src"
+SOFTLINE_LUA_INCDIR="$(cat "${ROOT_DIR}/build/local-lua-debug/lua-source-dir.txt")"
 export SOFTLINE_LUA_INCDIR
 rm -rf "${LUA_TREE}"
-SOFTLINE_LUA_BOOTLIN=0
-if NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target 2>/dev/null)"; then
-  "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
-  BOOTLIN_ENV="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
-  eval "${BOOTLIN_ENV}"
-  SOFTLINE_LUA_CC="${CC}"
-  export CC LD AR RANLIB SOFTLINE_LUA_CC
-  SOFTLINE_LUA_BOOTLIN=1
-fi
+NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target)"
+"${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
+BOOTLIN_ENV="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
+eval "${BOOTLIN_ENV}"
+SOFTLINE_LUA_CC="${CC}"
+export CC LD AR RANLIB SOFTLINE_LUA_CC
 (
   cd "${ROOT_DIR}"
   SOFTLINE_INCLUDE_DIR="${ROOT_DIR}/include" \
@@ -42,9 +39,7 @@ eval "${SOFTLINE_LUA_ENV}"
 
 case "${MODE}" in
   test)
-    if [ "${SOFTLINE_LUA_BOOTLIN}" -eq 1 ]; then
-      lua "${ROOT_DIR}/tests/lua_runtime.lua"
-    fi
+    lua "${ROOT_DIR}/tests/lua_runtime.lua"
     lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
     lua "${ROOT_DIR}/tests/lua_smoke.lua"
     printf 'hello\n' | lua "${ROOT_DIR}/tests/lua_readline.lua"

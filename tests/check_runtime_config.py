@@ -44,7 +44,8 @@ softline_local_runtime(probe)
     script = f'''
 set(CPKT_DEPENDENCY_CACHE "{work}/cache")
 include("{root}/cmake/softline_verified_archive.cmake")
-softline_verified_archive("{upstream.as_uri()}" "{digest}" fixture.tar archive)
+softline_configure_dependency_cache()
+softline_verified_archive("fixture" "{upstream.as_uri()}" "{digest}" fixture.tar archive)
 '''
     run(script)
     cached = work / "cache/archives/sha256" / digest / "fixture.tar"
@@ -52,8 +53,6 @@ softline_verified_archive("{upstream.as_uri()}" "{digest}" fixture.tar archive)
     upstream.unlink()
     run(script)  # Offline hit.
     cached.write_bytes(b"corrupt")
-    assert "Corrupt cached archive" in run(script, False)
-    cached.unlink()
-    assert "Cannot acquire" in run(script, False)
+    assert "cannot acquire" in run(script, False).lower()
     assert not list(cached.parent.iterdir()), "failed download left partial data"
 print("Missing-runtime and archive cache contracts passed")

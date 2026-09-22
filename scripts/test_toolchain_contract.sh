@@ -84,23 +84,19 @@ if [ "$(cat "${cmake_probe}/build/sdk.txt")" != "${darwin_sdk}" ]; then
 fi
 
 rm -rf "${stale_build}"
-CPKT_HOST_SYSTEM=Darwin CPKT_HOST_MACHINE=arm64 \
+mkdir -p "${stale_build}"
+if CPKT_HOST_SYSTEM=Darwin CPKT_HOST_MACHINE=arm64 \
   cmake -S "${ROOT_DIR}" -B "${stale_build}" -G Ninja \
-    -DSL_BUILD_TESTS=OFF \
-    -DSL_BUILD_EXAMPLES=OFF \
-    -DSL_INSTALL=OFF \
-    >/dev/null
-if cmake -S "${ROOT_DIR}" -B "${stale_build}" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake" \
   -DSL_BUILD_TESTS=OFF \
   -DSL_BUILD_EXAMPLES=OFF \
   -DSL_INSTALL=OFF \
   >/dev/null 2>"${stale_build}/reconfigure.err"; then
-  echo "ERROR: stale host-compiler CMake caches must not survive the lifecycle toolchain cutover" >&2
+  echo "ERROR: unsupported native Linux hosts must not configure through host tools" >&2
   exit 1
 fi
-if ! grep -q 'Stale or incompatible CMake cache' "${stale_build}/reconfigure.err"; then
-  echo "ERROR: stale CMake cache rejection must explain the lifecycle toolchain mismatch" >&2
+if ! grep -q 'No supported native Bootlin Linux target is available' "${stale_build}/reconfigure.err"; then
+  echo "ERROR: unsupported-host CMake rejection must explain the missing Bootlin target" >&2
   cat "${stale_build}/reconfigure.err" >&2
   exit 1
 fi

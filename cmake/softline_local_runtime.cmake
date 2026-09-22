@@ -4,8 +4,8 @@ include_guard(GLOBAL)
 # library or its exported interface.
 function(softline_local_runtime target)
   set(flags "")
-  # Local dlopen consumers need transitive lookup even on host-toolchain
-  # fallback Linux builds. This does not select a foreign ELF interpreter.
+  # Local dlopen consumers need transitive lookup through the selected
+  # collection runtime. This never affects shipped libraries or metadata.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(flags "-Wl,--disable-new-dtags\n")
   endif()

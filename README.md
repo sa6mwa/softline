@@ -323,7 +323,7 @@ make lua-test
 make prerelease
 ```
 
-The core library is compiled as C89 with POSIX terminal APIs. Shared builds use
+Every project-owned C target is compiled as C89 with POSIX terminal APIs. Shared builds use
 the separate CMake `SOFTLINE_ABI_VERSION`, currently `1`, for SONAME/SOVERSION.
 That ABI version is bumped only for shared-library ABI breaks, not for every
 project release-version bump. The v0.3.0 receiver-shell architecture is
@@ -331,16 +331,13 @@ withdrawn as an architectural miss and is not a supported shared-library
 upgrade baseline; the current event-driven architecture replaces it while
 retaining ABI version `1`.
 
-On supported Linux development hosts, ordinary debug, sanitizer, Valgrind,
-package-consumer, and release package builds use the pinned native GNU Bootlin
-toolchain. The current pinned Bootlin compiler executables are x86_64-hosted, so
-native lifecycle builds are selected automatically only on x86_64 Linux hosts.
-The release matrix still ships the supported Linux target artifacts
+Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
+builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin
+compiler executables are x86_64-hosted, so ordinary Linux lifecycle work is
+supported on native x86_64 Linux hosts. Unsupported Linux hosts fail closed
+rather than selecting host compilers or binutils. The release matrix ships the supported Linux target artifacts
 (`x86_64`, `aarch64`, and `armhf`, each GNU and musl) from those pinned
-toolchains. Fuzzing remains native `x86_64-linux-gnu` only. Unsupported native
-architectures and non-Linux hosts may fall back to the host compiler for local
-development presets, but explicit Linux package/release targets fail closed
-instead of silently using host tools.
+toolchains. Fuzzing remains native `x86_64-linux-gnu` only.
 Host `clangd`, `clang-format`, Valgrind, Lua 5.5, LuaRocks, and packaging
 utilities are development tools; the C compiler, linker, archiver, and sysroot
 for project-owned Linux release builds come from the lifecycle toolchain
@@ -361,21 +358,27 @@ inspection block verification. `make test-artifact-runtime` exercises positive
 and negative packaged fixtures; it is part of `make test-all`.
 
 Lua verification and examples use a local Lua 5.5.1 interpreter built with the
-same collection on supported x86-64 Linux hosts and the native toolchain on
-fallback development hosts, including macOS. Its checksum-pinned upstream source
-archive is reused from the shared dependency cache; extraction and compilation
-stay under `build/local-lua` (or `build/local-lua-debug` for debug workflows).
+same selected collection. Its checksum-pinned upstream source archive is reused
+from the shared dependency cache; disposable extraction state stays under
+`.cache/deps-build/`, while the interpreter build remains under
+`build/local-lua` (or `build/local-lua-debug` for debug workflows).
 LuaRocks remains a host packaging tool. This runtime selection is not hermetic
 execution and does not establish compatibility with older deployment libcs.
 
 `make prerelease` is the deterministic local gate: formatting, debug and
 sanitizer tests, native Valgrind, Lua, toolchain, editor, header, and
 install-tree consumer checks. `make release-matrix` builds the standard Linux GNU/musl target matrix,
-generates source and Lua release artifacts, writes checksums, and verifies
+generates binary and Lua release artifacts, writes checksums, and verifies
 package layout, runtime loader metadata, and release privacy. The rehearsal
 matrix may skip Darwin when osxcross is unavailable. `make release` is stricter:
-it requires the Darwin toolchain and a verified Darwin artifact; packaged Darwin
-artifacts require target-correct Mach-O inspection.
+it requires the Darwin toolchain and a verified Darwin artifact, then creates
+and reconstructs the source archive; packaged Darwin artifacts require
+target-correct Mach-O inspection.
+
+`cmake/softline.exports` is the source-controlled dynamic export contract for
+`libsoftline`. Build and extracted-package checks fail if a public symbol is
+missing or an accidental symbol becomes linkable. The lifecycle migration record
+is maintained in [docs/lifecycle-migration.md](docs/lifecycle-migration.md).
 
 `v99.99.99` is permanently reserved for the release-version contract check and
 is never a valid softline release tag. The Lua facade supports Lua 5.5 only;

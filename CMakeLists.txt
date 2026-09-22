@@ -1,8 +1,10 @@
-cmake_minimum_required(VERSION 3.16)
-project(softline VERSION 0.1.0 LANGUAGES C)
+cmake_minimum_required(VERSION 3.24)
+include(cmake/softline_version.cmake)
+project(softline VERSION "${PROJECT_VERSION}" LANGUAGES C)
 
 include(GNUInstallDirs)
-include(cmake/softline_version.cmake)
+include(cmake/softline_verified_archive.cmake)
+softline_configure_dependency_cache()
 
 option(SL_BUILD_STATIC "Build softline as a static library" ON)
 option(SL_BUILD_SHARED "Build softline as a shared library" ON)
@@ -48,10 +50,12 @@ function(softline_reject_stale_linux_toolchain_cache)
       COMMAND "${_softline_resolver}" native-linux-target
       RESULT_VARIABLE _softline_native_result
       OUTPUT_VARIABLE _softline_expected_target
-      ERROR_QUIET
+      ERROR_VARIABLE _softline_native_error
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(NOT _softline_native_result EQUAL 0)
-      return()
+      message(FATAL_ERROR
+        "No supported native Bootlin Linux target is available for this build: "
+        "${_softline_native_error}")
     endif()
   endif()
 
@@ -96,11 +100,20 @@ softline_reject_stale_linux_toolchain_cache()
 function(softline_apply_warnings target)
   if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(${target}
-      PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter
+      PRIVATE
+        -std=c89
+        -Wall
+        -Wextra
+        -Wpedantic
+        -pedantic-errors
+        -Wno-unused-parameter
     )
     if(SL_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE -Werror)
     endif()
+  endif()
+  if(UNIX)
+    target_compile_definitions(${target} PRIVATE _POSIX_C_SOURCE=200809L)
   endif()
 endfunction()
 
@@ -117,12 +130,6 @@ target_include_directories(sl_lib_obj
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-target_compile_definitions(sl_lib_obj PRIVATE _POSIX_C_SOURCE=200809L)
-if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-  target_compile_options(sl_lib_obj
-    PRIVATE -std=c89
-  )
-endif()
 softline_apply_warnings(sl_lib_obj)
 
 if(SL_BUILD_STATIC)
@@ -145,6 +152,31 @@ if(SL_BUILD_STATIC)
 endif()
 
 if(SL_BUILD_SHARED)
+  set(_softline_export_allowlist "${CMAKE_CURRENT_SOURCE_DIR}/cmake/softline.exports")
+  if(NOT EXISTS "${_softline_export_allowlist}")
+    message(FATAL_ERROR "Missing shared-library export allowlist: ${_softline_export_allowlist}")
+  endif()
+  file(STRINGS "${_softline_export_allowlist}" _softline_export_symbols)
+  if(NOT _softline_export_symbols)
+    message(FATAL_ERROR "Shared-library export allowlist is empty")
+  endif()
+  set(_softline_export_map "${CMAKE_CURRENT_BINARY_DIR}/softline.exports.map")
+  set(_softline_darwin_exports "${CMAKE_CURRENT_BINARY_DIR}/softline.exports.darwin")
+  file(WRITE "${_softline_export_map}" "SOFTLINE_1 {\n  global:\n")
+  file(WRITE "${_softline_darwin_exports}" "")
+  foreach(_softline_export_symbol IN LISTS _softline_export_symbols)
+    string(STRIP "${_softline_export_symbol}" _softline_export_symbol)
+    if(_softline_export_symbol STREQUAL "" OR _softline_export_symbol MATCHES "^#")
+      continue()
+    endif()
+    if(NOT _softline_export_symbol MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
+      message(FATAL_ERROR "Invalid shared-library export: ${_softline_export_symbol}")
+    endif()
+    file(APPEND "${_softline_export_map}" "    ${_softline_export_symbol};\n")
+    file(APPEND "${_softline_darwin_exports}" "_${_softline_export_symbol}\n")
+  endforeach()
+  file(APPEND "${_softline_export_map}" "  local: *;\n};\n")
+
   add_library(softline_shared SHARED)
   target_sources(softline_shared PRIVATE $<TARGET_OBJECTS:sl_lib_obj>)
   target_include_directories(softline_shared
@@ -160,6 +192,13 @@ if(SL_BUILD_SHARED)
     MACOSX_RPATH ON
     INSTALL_NAME_DIR "@rpath"
   )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(softline_shared PRIVATE
+      "LINKER:--version-script,${_softline_export_map}")
+  elseif(APPLE)
+    target_link_options(softline_shared PRIVATE
+      "LINKER:-exported_symbols_list,${_softline_darwin_exports}")
+  endif()
   add_library(softline ALIAS softline_shared)
 endif()
 

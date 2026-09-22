@@ -8,6 +8,16 @@ endif()
 add_test(NAME softline_unit COMMAND test_softline)
 set_tests_properties(softline_unit PROPERTIES LABELS "unit" TIMEOUT 10)
 
+if(TARGET softline_shared AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME softline_exports COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/check_exports.py"
+    --nm "${CMAKE_NM}"
+    --library "$<TARGET_FILE:softline_shared>"
+    --allowlist "${PROJECT_SOURCE_DIR}/cmake/softline.exports")
+  set_tests_properties(softline_exports PROPERTIES LABELS "unit;abi" TIMEOUT 10)
+endif()
+
 include(${PROJECT_SOURCE_DIR}/cmake/softline_test_libmdf.cmake)
 softline_test_libmdf_supported(_softline_test_libmdf_supported)
 if(_softline_test_libmdf_supported)

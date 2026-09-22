@@ -17,7 +17,7 @@ if platform.system() != "Darwin":
 with tempfile.TemporaryDirectory(prefix="lua-platform.", dir=root / "build") as tmp:
     work = Path(tmp)
     subprocess.run(["cmake", "-S", str(root / "cmake/local-lua"), "-B", tmp,
-                    "-G", "Ninja", *options], check=True)
+                    "-G", "Ninja", "-DSL_TARGET_ID=arm64-apple-darwin", *options], check=True)
     subprocess.run(["cmake", "--build", tmp], check=True)
     graph = (work / "build.ninja").read_text()
     assert "LUA_USE_MACOSX" in graph

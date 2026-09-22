@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int set_prompt_theme_from_environment(sl_t *sl,
@@ -96,6 +97,14 @@ static unsigned int operation_step_delay_us(void) {
       milliseconds > 60000)
     return 1000000u;
   return (unsigned int)milliseconds * 1000u;
+}
+
+static void wait_operation_step(unsigned int delay_us) {
+  struct timespec delay;
+  delay.tv_sec = (time_t)(delay_us / 1000000u);
+  delay.tv_nsec = (long)(delay_us % 1000000u) * 1000L;
+  while (nanosleep(&delay, &delay) != 0 && errno == EINTR)
+    ;
 }
 
 struct message_stream {
@@ -285,13 +294,13 @@ static int start_operation(sl_t *sl, struct chat_operation_state *state) {
   if (pid == 0) {
     close(pipe_fds[0]);
     (void)write(pipe_fds[1], "P", 1);
-    usleep(delay_us);
+    wait_operation_step(delay_us);
     (void)write(pipe_fds[1], "L", 1);
-    usleep(delay_us);
+    wait_operation_step(delay_us);
     (void)write(pipe_fds[1], "W", 1);
-    usleep(delay_us);
+    wait_operation_step(delay_us);
     (void)write(pipe_fds[1], "C", 1);
-    usleep(delay_us);
+    wait_operation_step(delay_us);
     (void)write(pipe_fds[1], "R", 1);
     close(pipe_fds[1]);
     _exit(0);
