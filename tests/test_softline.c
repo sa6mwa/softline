@@ -1536,6 +1536,11 @@ struct idle_stream_failure_state {
   int status;
 };
 
+struct idle_stream_end_state {
+  int fd;
+  int attempted;
+};
+
 struct idle_count_print_state {
   int calls;
   int printed;
@@ -1688,6 +1693,21 @@ static void idle_print_once(sl_t *sl, void *userdata) {
   stream.index = 0;
   stream.calls = 0;
   (void)sl->print_above(sl, next_text_chunk, &stream);
+}
+
+static void idle_end_live_stream_once(sl_t *sl, void *userdata) {
+  struct idle_stream_end_state *state;
+  char result;
+  state = (struct idle_stream_end_state *)userdata;
+  if (!state || state->attempted)
+    return;
+  state->attempted = 1;
+  result = sl_output_stream_begin(sl) == SL_OK &&
+                   sl_output_stream_write(sl, "notice\n", 7) == SL_OK &&
+                   sl_output_stream_end(sl) == SL_OK
+               ? 'R'
+               : 'E';
+  (void)write(state->fd, &result, 1);
 }
 
 static void idle_print_through_scroll_region(sl_t *sl, void *userdata) {
@@ -6346,6 +6366,101 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
   PASS();
 }
 
+static void test_live_output_end_restores_unbounded_cursor(void) {
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[4096];
+  char buf[512];
+  char ready;
+  const char *last_hide;
+  const char *last_show;
+  const char *next;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("ending unbounded live output restores the active editor cursor");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0 &&
+                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
+              "pty or pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_stream_end_state state;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    state.fd = ready_pipe[1];
+    state.attempted = 0;
+    if (sl_set_idle_callback(sl, idle_end_live_stream_once, &state) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(result_pipe[1]);
+  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
+                  ready == 'R',
+              "idle stream did not finish");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  for (tries = 0; tries < 100 && terminal_len < sizeof(terminal) - 1; tries++) {
+    n = read_some_with_timeout_ms(master_fd, buf, sizeof(buf), 20);
+    if (n <= 0)
+      break;
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "notice") &&
+                  contains_bytes(terminal, "p> "),
+              "stream or prompt output missing");
+  last_hide = NULL;
+  last_show = NULL;
+  next = terminal;
+  while ((next = strstr(next, "\033[?25l")) != NULL) {
+    last_hide = next;
+    next++;
+  }
+  next = terminal;
+  while ((next = strstr(next, "\033[?25h")) != NULL) {
+    last_show = next;
+    next++;
+  }
+  ASSERT_TRUE(last_show && (!last_hide || last_show > last_hide),
+              "stream end left the editor cursor hidden");
+  ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], buf, sizeof(buf) - 1);
+  ASSERT_TRUE(n == 2 && memcmp(buf, "ok", 2) == 0, "editor result mismatch");
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "child editor failed");
+  PASS();
+}
+
 static void test_idle_callback_prints_above_active_prompt(void) {
   int master_fd;
   int slave_fd;
@@ -8652,7 +8767,9 @@ static void test_live_output_emoji_cluster_width(void) {
       {"\xf0\x9f\x87\xb8", "\xf0\x9f\x87\xaa", NULL,
        "\xf0\x9f\x87\xb8\xf0\x9f\x87\xaa"},
       {"\xf0\x9f\x91\xa9", "\xe2\x80\x8d", "\xf0\x9f\x92\xbb",
-       "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb"}};
+       "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb"},
+      {"\xf0\x9f\x91\x8d", "\xf0\x9f\x8f\xbd", NULL,
+       "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd"}};
   struct winsize ws;
   sl_config_t cfg;
   sl_t *sl;
@@ -9076,6 +9193,11 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_live_output_end_restores_unbounded_cursor(void) {
+  TEST("ending unbounded live output restores the active editor cursor");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_idle_callback_prints_above_active_prompt(void) {
   TEST("idle callback prints above active prompt");
   printf("SKIP\n");
@@ -9247,6 +9369,7 @@ int main(void) {
   test_live_output_emoji_cluster_width();
   test_final_render_failure_reports_error();
   test_narrow_terminal_does_not_submit_before_enter();
+  test_live_output_end_restores_unbounded_cursor();
   test_idle_callback_prints_above_active_prompt();
   test_normal_prompt_pins_at_bottom_for_live_output();
   test_pinned_stream_failure_restores_prompt_cursor();

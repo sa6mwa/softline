@@ -1300,6 +1300,12 @@ static int sl_codepoint_is_regional_indicator(unsigned long cp) {
   return cp >= 0x1f1e6UL && cp <= 0x1f1ffUL;
 }
 
+static int sl_codepoint_accepts_emoji_modifier(unsigned long cp) {
+  return (cp >= 0x1f000UL && cp <= 0x1faffUL &&
+          !sl_codepoint_is_regional_indicator(cp)) ||
+         cp == 0x261dUL || cp == 0x26f9UL || (cp >= 0x270aUL && cp <= 0x270dUL);
+}
+
 static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
                                         int *width) {
   size_t n;
@@ -1307,6 +1313,7 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
   unsigned long cp;
   int w;
   int emoji_sequence;
+  int modifier_eligible;
   n = sl_utf8_decode(buf, len, pos, &cp);
   if (n == 0) {
     if (width)
@@ -1315,6 +1322,7 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
   }
   w = sl_codepoint_width(cp);
   emoji_sequence = sl_codepoint_is_wide(cp);
+  modifier_eligible = sl_codepoint_accepts_emoji_modifier(cp);
   if (sl_codepoint_is_regional_indicator(cp)) {
     step = sl_utf8_decode(buf, len, pos + n, &cp);
     if (step > 0 && sl_codepoint_is_regional_indicator(cp)) {
@@ -1336,6 +1344,12 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
       n += step;
       continue;
     }
+    if (cp >= 0x1f3fbUL && cp <= 0x1f3ffUL && modifier_eligible) {
+      n += step;
+      emoji_sequence = 1;
+      modifier_eligible = 0;
+      continue;
+    }
     if (cp == 0x200dUL) {
       n += step;
       if (pos + n >= len)
@@ -1345,6 +1359,7 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
         break;
       n += step;
       emoji_sequence = 1;
+      modifier_eligible = sl_codepoint_accepts_emoji_modifier(cp);
       continue;
     }
     if (cp == 0x20e3UL) {
@@ -3421,8 +3436,14 @@ static int sl_output_stream_end_method(sl_t *self) {
   sl_surface_destroy(impl->output_surface);
   impl->output_surface = NULL;
   impl->output_stream_active = 0;
-  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0) {
+    (void)sl_show_cursor(impl);
     return SL_ERROR_IO;
+  }
+  if (sl_show_cursor(impl) != 0) {
+    sl_set_error(self, "failed to restore cursor after live output");
+    return SL_ERROR_IO;
+  }
   return SL_OK;
 }
 

@@ -247,6 +247,7 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
         &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
                         (size_t)base_col];
     if ((cells == 0 || codepoint == 0x200dul ||
+         (codepoint >= 0x1f3fbul && codepoint <= 0x1f3fful) ||
          (codepoint >= 0x1f1e6ul && codepoint <= 0x1f1fful) ||
          (cell->len >= 3 &&
           memcmp(cell->bytes + cell->len - 3, "\xe2\x80\x8d", 3) == 0)) &&
