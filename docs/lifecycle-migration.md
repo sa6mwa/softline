@@ -39,8 +39,8 @@ not a repair loop: failures start a separate fix iteration.
 
 ## Intentional boundaries
 
-- libmdf remains an integration-test dependency only. It is not linked into
-  `libsoftline` or its installed metadata.
-- The proposed native libmdf streaming companion is still blocked on the
-  documented libmdf incremental ANSI geometry operation; see
+- libmdf remains an example/integration-test dependency only. It is not linked
+  into `libsoftline` or its installed metadata.
+- Softline's persistent output session is renderer-agnostic. The C chat
+  example composes libmdf's incremental ANSI renderer externally; see
   [softline-mdf-stream-design.md](softline-mdf-stream-design.md).

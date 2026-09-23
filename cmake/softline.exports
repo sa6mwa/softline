@@ -19,6 +19,9 @@ sl_insert
 sl_last_error
 sl_last_readline_status
 sl_next_prompt
+sl_output_stream_begin
+sl_output_stream_end
+sl_output_stream_write
 sl_print_above
 sl_prompt_queue_append
 sl_prompt_queue_capacity

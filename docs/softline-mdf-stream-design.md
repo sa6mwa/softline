@@ -1,306 +1,109 @@
-# Native libmdf Stream: Implementation Design
+# Composable Live Output: Softline and libmdf
 
-## Status
+## Status and boundary
 
-Proposed. libmdf 0.10.0 supplies the required incremental document lifecycle,
-but one additional libmdf operation is required before this design can meet the
-resize contract. See [Required libmdf follow-up](#required-libmdf-follow-up).
+This is the acceptance contract for Softline's live output refactor. Softline
+does not own, include, link, package, or expose libmdf. The application owns
+its producer, event transport, Markdown renderer, renderer options (including
+the two-column margin used by the chat examples), and document boundaries.
+Only the chat examples and integration tests depend on libmdf. A released
+libsoftline, its Lua facade, headers, CMake exports, and package metadata have
+no libmdf dependency.
 
-## Decision
+libmdf 0.11.0 has incremental feed, a bound sink, and in-document width
+changes, but no operation to change margins in an active document. If an
+application needs a changing margin, libmdf must supply that operation; neither
+Softline nor the examples recreate/replay an unfinished Markdown document.
+The application calls both libraries' geometry setters on the Softline owner
+thread before feeding later Markdown. Softline never infers libmdf margins.
 
-Softline needs an optional, released `softline_mdf` companion library. It owns
-the producer-to-UI handoff, the libmdf renderer, and a persistent terminal
-output surface above an active Softline editor.
+## Generic Softline output session
 
-This is deliberately not an application adapter around repeated
-`sl_print_above()` calls:
+One editor may have one open live output session. Public C receiver methods
+and equivalent free functions begin the session, write a byte span, and end
+the session. Lua exposes the same lifecycle on its editor userdata. The API
+uses Softline-owned names and byte strings only, no renderer-specific types.
 
-- `sl_print_above()` consumes one finite callback stream synchronously and
-  completes its output transaction before returning.
-- Each invocation clears/redraws or recreates prompt/output terminal state.
-  That is correct for an independent message, but not for a paragraph whose
-  later Markdown decisions arrive after an arbitrary delay.
-- libmdf's incremental renderer can preserve Markdown state between feeds;
-  Softline must preserve the corresponding terminal-output state between those
-  feeds.
+The session is owner-thread-only. A producer thread/process hands fragments to
+the application through a pipe or another bounded transport. The application
+registers its descriptor with `sl_watch_add()` (Lua: `watch_add()`), drains it
+on the editor thread, feeds its renderer, and forwards each sink emission
+directly into the Softline session. Softline does not buffer whole messages,
+interpret Markdown, own the transport, or run a worker. A sink write is visible
+before the corresponding Softline write returns; no finish/EOF or next prompt
+is needed to make an already-decided fragment appear.
 
-The base `softline` library remains independent of libmdf. The companion is
-the only Softline artifact that links libmdf, and applications that do not use
-Markdown streaming retain the current dependency graph and API.
+Chunk boundaries have no display semantics. In particular, Softline inserts
+no newline, response separator, reset, or space at a write boundary. Ending a
+session does not finish a Markdown document. The application calls its
+renderer’s document lifecycle itself. Each successful write accepts its entire
+span; errors are reported on the handle and never silently discard accepted
+data. A zero-length write is a no-op. Writes after end and overlapping begins
+fail. Existing finite `sl_print_above()` remains available; narrow or offset
+bounds use the same bounded viewport while full-width finite output may retain
+VT scrolling. It cannot be interleaved with an open live session.
 
-## Facts established by the current implementation
+## Terminal ownership and geometry
 
-The intended implementation follows Softline's existing owner-thread model;
-it does not replace it with a second UI thread.
+The output session and editor prompt have one serial terminal owner. The
+transcript lives above the prompt inside the bounds established by
+`sl_set_bounds()`. Every valid bound, including an offset or narrower-than-
+terminal rectangle, is supported. With no explicit bounds, a live session
+pins the prompt to the terminal bottom for its lifetime. A bounded display
+retains at most its visible viewport and partial terminal escape/UTF-8 state;
+it never retains or replays the complete response. Newly received bytes are
+rendered immediately. Viewport state exists only so Softline can repaint the
+visible rectangle after scrolling, prompt growth, or a resize. It is not a
+producer-to-consumer staging buffer.
 
-- `sl_read_input_byte()` already polls the terminal and application watches
-  together. It is the single natural place to add a Softline-owned wake
-  descriptor and dispatch native stream work before the next keyboard read.
-- Watch callbacks run on the UI/`readline()` owner thread. A producer must not
-  call a receiver, a renderer, or `print_above()` from another thread.
-- The current `sl_write_stream*()` helpers and `sl_print_above()` encode a
-  finite transaction. They must not become a hidden persistent-stream API.
-- libmdf 0.10.0 (ABI/SONAME 3) has `mdf_feed()`, `mdf_flush()`,
-  `mdf_finish_document()`, and `mdf_begin_document()`. `feed()` synchronously
-  emits every final Markdown decision; `finish_document()` is the sole EOF
-  operation. `flush()` intentionally emits nothing and does not resolve an
-  incomplete construct.
+The application may call `sl_set_bounds()` and `sl_set_screen_width()` (or
+their receiver and Lua equivalents) while a session is open or while the
+prompt is being edited. The next render reconciles the prompt and transcript
+inside the new bounds without clearing unrelated terminal cells. Input bytes,
+cursor position in the editable buffer, queue contents, pending output, and
+already emitted transcript order are preserved. Dynamic dimensions continue
+to use `TIOCGWINSZ`; Softline does not take ownership of `SIGWINCH`. An
+application wanting synchronous resize coordination can register its own
+signal/self-pipe or other event source, then update Softline and its renderer
+in the same owner-thread callback. Softline may redraw its prompt on the first
+setter call, but no Markdown is fed between the two geometry updates.
 
-The existing `test_libmdf_stream` is therefore only a dependency-integration
-test: it proves that incremental libmdf calls can produce a finite stream for
-the existing `print_above()` API. It does not prove, or implement, a live
-interactive Markdown stream.
+The bounded output layout may not rely on a VT scroll region limited to the
+terminal's full width: standard scroll margins are vertical and would alter
+cells outside a narrow chat box. Softline's visible-viewport state and
+repaint path must keep those outside cells untouched. The memory bound is
+proportional to visible terminal cells and bounded parser state, not response
+length. The stream must continue to accept one-byte fragments indefinitely.
 
-## Product model
+## Compatibility and public surfaces
 
-One `sl_mdf_stream_t` belongs to one `sl_t` and represents a sequence of
-Markdown response documents. One editor permits one open native Markdown
-stream at a time. A single stream supports many documents in order:
+New C receiver pointers append after the existing receiver tail; old method
+offsets remain unchanged. Equivalent free functions validate NULL handles.
+Public declarations document ownership, thread context, lifecycle, errors,
+and chunk semantics for clangd. Lua methods document the same contract in the
+Lua reference and adjacent public binding comments. Lua cannot invoke its VM
+from a foreign producer thread; a watched descriptor supplies owner-thread
+events. The core and Lua libraries do not import libmdf.
 
-```text
-producer thread                         Softline UI owner thread
----------------                         ------------------------
-write("Hello") ─┐
-write(" world") ├─ bounded FIFO ─wake─> drain event -> mdf_feed()
-finish_document ─┘                                  -> persistent surface
-                                                    -> prompt redraw
-```
+## Verification
 
-The FIFO is a bounded transport buffer, not a response buffer: Softline never
-collects an answer, rendered ANSI, or document in full. libmdf may retain the
-bounded partial constructs documented by libmdf itself; Softline does not add
-another materialization layer.
-
-The stream is useful only while the application has returned to
-`next_prompt()`/`readline()` and Softline is driving the terminal. A turn-based
-application starts its operation on a producer thread, immediately re-enters
-`next_prompt()` on the owner thread, and lets the producer submit response
-fragments. This is the required control flow for simultaneous typing and
-output; an application that blocks the owner thread cannot receive either
-terminal input or queued stream work.
-
-## Public companion API
-
-Install a separate header, `include/softline/softline_mdf.h`. Do not add
-libmdf types or a libmdf include to `softline/softline.h`.
-
-```c
-typedef struct sl_mdf_stream sl_mdf_stream_t;
-
-typedef enum sl_mdf_theme {
-  SL_MDF_THEME_DEFAULT = 0,
-  SL_MDF_THEME_PLAIN = 1
-} sl_mdf_theme_t;
-
-typedef struct sl_mdf_stream_config {
-  /* Zero selects 65536. Each queued event costs at least one byte, including
-   * a document-end marker, so control traffic is bounded too. */
-  size_t pending_byte_capacity;
-  /* ANSI left margin. Zero is valid. */
-  size_t margin_left;
-  sl_mdf_theme_t theme;
-} sl_mdf_stream_config_t;
-
-void sl_mdf_stream_config_init(sl_mdf_stream_config_t *config);
-int sl_mdf_stream_open(sl_t *editor, const sl_mdf_stream_config_t *config,
-                       sl_mdf_stream_t **out);
-int sl_mdf_stream_write(sl_mdf_stream_t *stream, const char *data, size_t len);
-int sl_mdf_stream_finish_document(sl_mdf_stream_t *stream);
-int sl_mdf_stream_close(sl_mdf_stream_t *stream);
-```
-
-The first version intentionally exposes Softline-owned scalar configuration,
-not `mdf_options`. In particular, libmdf options may contain borrowed pointers
-and callbacks whose lifetime and thread ownership would be wrong for this
-object. `DEFAULT` maps to libmdf's default ANSI theme; `PLAIN` maps to its
-unstyled ANSI rendering. Additional named themes are a later explicit
-Softline enum extension, not borrowed string pointers.
-
-`open()` and `close()` are owner-thread operations. `write()` and
-`finish_document()` are thread-safe producer operations. A producer call with
-an accepted event copies its bytes before returning. It blocks on a condition
-variable while the finite FIFO lacks capacity; it must never block the owner
-thread. An owner-thread write drains directly when necessary rather than
-waiting on itself. A fragment larger than the configured capacity returns
-`SL_ERROR_FULL`; no partial fragment is accepted.
-
-`close()` first closes admission and wakes blocked producers. Called by the
-owner after producers have been stopped, it drains accepted work, finishes an
-open document if necessary, releases the terminal surface, and destroys the
-renderer. Calls after closure fail with `SL_ERROR_INVALID`. Destruction of an
-editor marks every attached stream closed and wakes blocked producers before
-the editor's terminal state is released; callers must still stop producer
-threads before freeing their own stream references.
-
-The companion uses free functions rather than fields appended to `struct sl`.
-That keeps the established core receiver layout and `libsoftline` SONAME
-unchanged. `libsoftline_mdf` begins with its own ABI generation.
-
-## Mailbox and wakeup protocol
-
-The mailbox stores FIFO records of two kinds: copied byte fragments and a
-document-finish marker. Capacity is charged as `max(fragment_length, 1)` per
-record so an unbounded sequence of zero-byte control markers cannot consume
-unbounded memory.
-
-The companion owns a mutex, two condition variables (space available and
-closed), and a nonblocking self-pipe. The read end is private Softline event
-state; it is not registered through the public application-watch API.
-
-1. A producer waits for capacity, appends exactly one record, and schedules
-   the pipe if no drain is already scheduled.
-2. `sl_read_input_byte()` polls terminal input, application watches, and every
-   active companion pipe. Terminal input retains priority after each bounded
-   dispatch batch, exactly as it does for application watches.
-3. The UI drain consumes a bounded amount of mailbox work, invokes libmdf, and
-   reschedules itself if work remains. It signals waiting producers only after
-   capacity is released.
-4. Pipe state is protected by the same mutex as mailbox state. Draining the
-   pipe before clearing the scheduled bit prevents a producer/UI race from
-   losing a wakeup. `EAGAIN` while scheduling means a wake byte is already
-   pending, not that data has been lost.
-
-A raw public write-fd is not the preferred API. It would still need framing
-for exact document boundaries, an explicit capacity/backpressure contract, EOF
-versus close semantics, and ownership of the descriptor. The self-pipe is the
-right internal wake primitive; the typed `write()`/`finish_document()` API is
-the correct public stream protocol.
-
-## Persistent output surface
-
-The implementation must first refactor terminal output around an internal
-`sl_output_surface` abstraction. It owns transcript geometry, current terminal
-cursor position, deferred newline state, and lifecycle state. The editor
-renderer and a surface use one serial owner-thread terminal writer.
-
-`sl_print_above()` becomes a transient surface user: begin, consume its finite
-callback, finish. The native Markdown stream holds one surface open across
-many UI wakes. This avoids parallel terminal-writing paths and makes prompt
-reflow, queue previews, status lines, and stream output part of the same
-layout protocol.
-
-For each libmdf sink emission, the native surface must:
-
-1. establish or update the transcript scroll area above the current prompt;
-2. append bytes at the retained transcript cursor without clearing an
-   unterminated output row or inserting a response boundary;
-3. preserve deferred newline and ANSI continuation state across emissions;
-4. restore/redraw only the active editor rows and hardware cursor.
-
-When the prompt expands, contracts, moves because queue/status rows change, or
-the terminal is resized, surface reconciliation runs before the editor render.
-It reserves the output region, scrolls transcript rows when prompt rows need
-space, and updates the persistent cursor. It must not call the old
-clear-and-redraw `print_above()` path.
-
-At `finish_document`, the UI performs `mdf_finish_document()`, appends its
-final sink output to the same surface, closes any pending line/ANSI state, and
-ends that document cleanly. On the next data record it calls
-`mdf_begin_document()` before `mdf_feed()`, keeping Markdown and terminal
-style state isolated between responses.
-
-Terminal write or libmdf failure latches the stream failed, displays an
-actionable status-line error on the owner thread, rejects future producer
-writes, wakes waiting producers, and leaves the input editor usable. No error
-path may silently discard an accepted fragment.
-
-## Required libmdf follow-up
-
-libmdf 0.10.0 lacks a public operation that changes ANSI width or margins on
-an active incremental renderer. `mdf_options` is supplied to `mdf_create()`;
-destroying/recreating a renderer at resize would lose unfinished Markdown
-state, and mutating a private renderer/options layout would be an ABI breach.
-
-The required Softline guarantee is that later rendering observes the current
-usable terminal width and configured left margin. Deferring geometry until the
-next document would violate that guarantee. Therefore Softline must not ship
-the companion until libmdf provides and documents an operation equivalent to:
-
-```c
-mdf_status mdf_set_ansi_geometry(mdf *renderer, int width,
-                                 int margin_left, int margin_right);
-```
-
-It must be valid between incremental calls, preserve parser/document state,
-affect only future decisions, reject invalid effective widths, and not replay
-already-emitted output. Softline calls it during owner-thread surface
-reconciliation before the next `mdf_feed()` or `mdf_finish_document()`.
-
-`mdf_flush()` does not solve this: by contract it neither emits nor changes
-retained parser state.
-
-## Build, package, and Lua boundaries
-
-`SL_BUILD_MDF` builds the optional companion and defaults on for normal
-Softline development/release builds. Setting it off produces the current core
-library with no libmdf dependency. The production companion consumes
-checksum-pinned libmdf release SDKs for every shipped target; it requires the
-new libmdf release with SONAME 3 or later as established by the geometry API.
-
-The released package surface is:
-
-- `softline::softline` / `libsoftline`: unchanged, no libmdf dependency.
-- `softline::mdf` / `libsoftline_mdf`: optional companion; CMake and
-  pkg-config metadata declare the required libmdf static and runtime closure.
-- `softline-mdf.pc` and package provenance state the exact libmdf release and
-  ABI requirement without embedding cache or build paths.
-
-The Lua module links the companion when its Markdown facade is enabled and
-adds `editor:mdf_stream(config)`. It returns a stream userdata with `write`,
-`finish_document`, and idempotent `close` methods. Lua calls occur on the Lua
-owner/UI thread and use the same native stream; Lua must not call its VM from a
-foreign producer thread. Native producer threads use the C API.
-
-The current test-only direct libmdf bridge is replaced by tests linked through
-the companion target. libmdf is no longer merely a test dependency once this
-feature ships, but it remains absent from the base Softline library.
-
-## Validation plan
-
-Tests must assert terminal-screen state through the existing PTY screen
-emulator, not raw ANSI substrings alone.
-
-- A producer writes `Hello`, pauses indefinitely, and the visible transcript
-  shows `Hello` while the editable prompt and cursor remain present.
-- `Hello`, a space, and `world` across separate wakeups remain one output
-  line. One-byte chunks produce the same completed transcript as libmdf's
-  one-shot rendering.
-- Cross-chunk italic, bold, code, headings, lists, fenced code, and UTF-8
-  constructs render correctly; finish is the only EOF decision.
-- Two documents on one stream have independent Markdown and ANSI state.
-- Resize during an unfinished document changes later rendering width and
-  preserves the prompt/transcript layout.
-- Continuous output races with typing, paste, queue edits, ordinary submit,
-  and Alt-Enter promotion without lost/reordered input or unintended FIFO
-  dispatch.
-- Capacity saturation blocks an external producer, never busy-spins, resumes
-  deterministically, and preserves all accepted records. Close/failure wakes
-  every waiter.
-- PTY tests cover bounded and ordinary interactive layouts, prompt/status
-  reflow, terminal write errors, libmdf errors, and stream teardown. Thread
-  handoff has TSAN coverage and the full path has leak checking.
-- Lua PTY tests exercise `editor:mdf_stream()` while editing and queueing;
-  they must not implement a Lua Markdown/ANSI forwarding bridge.
-
-The terminal chat C and Lua examples become executable demonstrations of this
-contract: default libmdf styling, `margin_left = 2`, submitted prompt rendered
-as a Markdown block quote with blank lines around it, and a 20 ms-per-character
-Markdown response simulation. Users can type, queue, promote, and cancel
-turns while that response is live.
-
-## Implementation sequence
-
-1. Add the libmdf ANSI-geometry operation and release a pinned SDK containing
-   it. Add libmdf tests for resize between incremental feeds.
-2. Extract and test the internal Softline output-surface/layout primitive using
-   existing finite `print_above()` behavior as the compatibility baseline.
-3. Add the companion target, opaque stream, mailbox/self-pipe lifecycle, and
-   UI drain integration. Keep `struct sl` and core receiver offsets unchanged.
-4. Integrate the libmdf renderer and geometry reconciliation; replace the
-   test-only bridge with companion integration tests.
-5. Add the Lua facade and PTY/race/backpressure tests.
-6. Refactor both chat examples to use the native stream and make their stream
-   behavior part of the example test contract.
-
-No implementation should begin at step 3 by forwarding libmdf sink writes to
-`sl_print_above()`: that would recreate the rejected message-scoped design.
+- A PTY test writes `Hello`, pauses, and observes it above an editable prompt
+  before EOF. Later writes of ` world` continue the same line. Typing and
+  queue edits remain responsive between writes.
+- Identical output in one-byte and larger chunks yields the same visible
+  screen, including styled ANSI and UTF-8 split across write boundaries.
+- Prompt growth, queue/status rows, offset/narrow bounds, mid-prompt
+  `set_bounds()`, `set_screen_width()`, and terminal resize retain transcript
+  order and never modify cells outside the configured rectangle.
+- Sink/write failure and session teardown leave a usable editor and report
+  an actionable diagnostic. Repeated begin/end and invalid calls are tested.
+- The C chat example composes a libmdf incremental renderer with the generic
+  session. The composer configures default palette and a two-column
+  left margin, renders a submitted prompt as a Markdown block quote with
+  blank lines around it, and emits varied Markdown response text one source
+  character per 20 ms while the user may type, queue, promote, and cancel.
+- The Lua facade tests the generic session lifecycle and byte forwarding;
+  the separate Lua chat example remains a plain queued-turn demonstration.
+- Packaging and artifact checks prove that libsoftline, its Lua facade, and
+  installed package metadata have no libmdf link/runtime dependency. Only
+  example and integration-test targets link the pinned libmdf SDK.

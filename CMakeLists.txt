@@ -122,7 +122,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
   add_link_options(-Wl,--fatal-warnings)
 endif()
 
-add_library(sl_lib_obj OBJECT src/softline.c)
+add_library(sl_lib_obj OBJECT src/softline.c src/softline_surface.c)
 set_target_properties(sl_lib_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(sl_lib_obj
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -203,6 +203,7 @@ if(SL_BUILD_SHARED)
 endif()
 
 include(cmake/softline_local_runtime.cmake)
+include(cmake/softline_test_libmdf.cmake)
 
 if(SL_BUILD_EXAMPLES)
   add_subdirectory(examples)

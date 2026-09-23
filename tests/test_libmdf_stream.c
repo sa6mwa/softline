@@ -10,8 +10,9 @@
 #include <string.h>
 #include <unistd.h>
 
-/* The adapter never accumulates rendered output: libmdf pushes through this
- * bounded pipe while Softline pulls bounded chunks into print_above(). */
+/* The test composer never accumulates rendered output: libmdf pushes through
+ * a bounded pipe and the owner thread forwards each read to Softline's live
+ * output session. libsoftline itself has no libmdf dependency. */
 struct markdown_source {
   const char *text;
   size_t length;
@@ -119,6 +120,9 @@ static void *render_markdown(void *userdata) {
   if (stream->status == MDF_OK) {
     sink.userdata = stream;
     sink.write = write_rendered;
+    stream->status = renderer->set_sink(renderer, &sink);
+  }
+  if (stream->status == MDF_OK) {
     for (;;) {
       error = 0;
       length = read_markdown(&stream->source, chunk, sizeof(chunk), &error);
@@ -128,16 +132,16 @@ static void *render_markdown(void *userdata) {
       }
       if (length == 0)
         break;
-      stream->status = renderer->feed(renderer, chunk, length, &sink);
+      stream->status = renderer->feed(renderer, chunk, length);
       if (stream->status != MDF_OK)
         break;
       stream->feeds++;
-      stream->status = renderer->flush(renderer, &sink);
+      stream->status = renderer->flush(renderer);
       if (stream->status != MDF_OK)
         break;
     }
     if (stream->status == MDF_OK)
-      stream->status = renderer->finish_document(renderer, &sink);
+      stream->status = renderer->finish_document(renderer);
   }
   if (renderer != NULL)
     renderer->destroy(renderer);
@@ -278,7 +282,17 @@ int main(void) {
     return 1;
   }
   renderer_started = 1;
-  status = softline->print_above(softline, pull_rendered, &pull);
+  status = sl_output_stream_begin(softline);
+  while (status == SL_OK) {
+    const char *chunk;
+    size_t length;
+    status = pull_rendered(softline, &pull, &chunk, &length);
+    if (status != SL_OK || length == 0)
+      break;
+    status = sl_output_stream_write(softline, chunk, length);
+  }
+  if (status == SL_OK)
+    status = sl_output_stream_end(softline);
   softline->destroy(softline);
   (void)close(output_pipe[1]);
   if (renderer_started)

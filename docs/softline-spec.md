@@ -107,9 +107,11 @@ softline has two prompt modes:
   `0,0,0,0` bounds configuration, or `sl_config_t` with `bounded = 1` and zero
   bounds, means a dynamic full-terminal bottom prompt.
 
-Bounded mode is intended for alternate-screen applications such as chat-style
-interfaces. In that mode, `print_above()` streams output through the area above
-the prompt without overwriting the active input buffer.
+Bounded mode works in either the normal or alternate screen. Both finite
+`print_above()` and persistent output sessions render above the editable
+prompt, including in offset/narrow rectangles. Geometry setters may run during
+an active edit or stream and immediately reconcile the visible output and
+prompt. Neither mode implies a retained full transcript.
 
 ### Prompt Queue
 
@@ -154,10 +156,10 @@ a green `+` by default; callers can supply another printable ASCII marker or
 
 ## Current Extension Points
 
-For the proposed native, persistent libmdf Markdown output integration, see
-[the native libmdf stream design](softline-mdf-stream-design.md). It is
-intentionally separate from the current finite `print_above()` callback API
-and remains pending the documented libmdf geometry operation.
+Persistent output is renderer-agnostic. The C and Lua APIs expose begin,
+write, and end, and the C chat example composes libmdf externally. See
+[the composition contract](softline-mdf-stream-design.md). Softline does not
+link libmdf or own its document lifecycle.
 
 ### Key Bindings
 
@@ -201,6 +203,16 @@ eight callbacks before it gives terminal input another chance to run.
 `print_above()` accepts a chunk callback and writes all chunks above the active
 prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `SL_OK` with length `0` to finish.
+
+`output_stream_begin()` opens a persistent session; every later
+`output_stream_write()` forwards its byte span immediately, without waiting for
+EOF or the next prompt. `output_stream_end()` closes it without adding content.
+An owner-thread watch callback can feed an external renderer and forward each
+sink emission directly while editing and queueing continue. The bounded
+viewport stores only visible cells and partial ANSI/UTF-8 state. SGR and UTF-8
+sequences can cross writes; ending with an incomplete sequence fails and keeps
+the session open. Narrow and offset boxes never use a full-row VT scroll
+region, so their output does not touch outside columns.
 
 For an unbounded prompt, output uses normal clear-and-redraw scrollback by
 default. Set `live_scroll_region = 1` in `sl_config_t` or call
@@ -389,19 +401,20 @@ single-owner rendering rule.
 
 ### Output And Transcript Management
 
-`print_above()` handles chunked output above the active prompt, but softline does
-not own a transcript model.
+`print_above()` and a persistent output session handle chunked output above the
+active prompt. Softline retains a bounded visible viewport, not a full
+transcript model.
 
 Missing:
 
 - scrollback buffer abstraction for alternate-screen applications
-- transcript redraw after resize
-- line wrapping policy for transcript output
-- styled output
-- damage tracking across prompt plus transcript
+- offscreen transcript replay or scrollback
+- caller-driven reflow of already emitted content after resize
+- arbitrary terminal controls beyond documented SGR
 - application-level viewport controls
 
-For now, bounded mode is a prompt manager, not a full terminal UI toolkit.
+Bounded mode remains a prompt and visible-output manager, not a full terminal
+UI toolkit.
 
 ### Styling
 

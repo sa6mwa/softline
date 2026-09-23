@@ -1086,6 +1086,36 @@ static int softline_lua_print_above(lua_State *L) {
   return softline_lua_status(L, status);
 }
 
+/** Lua editor:output_stream_begin(): open one renderer-agnostic session.
+ * The Lua/editor owner thread controls writes and geometry; an external
+ * producer must hand chunks through a watched descriptor. */
+static int softline_lua_output_stream_begin(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_output_stream_begin(handle->sl));
+}
+
+/** Lua editor:output_stream_write(bytes): forward a byte string immediately.
+ * No newline or document boundary is inferred, including for an empty string.
+ */
+static int softline_lua_output_stream_write(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *bytes;
+  size_t length;
+  handle = softline_lua_check(L, 1);
+  bytes = luaL_checklstring(L, 2, &length);
+  return softline_lua_status(L,
+                             sl_output_stream_write(handle->sl, bytes, length));
+}
+
+/** Lua editor:output_stream_end(): release the session without finishing any
+ * external renderer document or adding output bytes. */
+static int softline_lua_output_stream_end(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_output_stream_end(handle->sl));
+}
+
 static const luaL_Reg softline_lua_methods[] = {
     {"readline", softline_lua_readline},
     {"next_prompt", softline_lua_next_prompt},
@@ -1133,6 +1163,9 @@ static const luaL_Reg softline_lua_methods[] = {
     {"watch_remove", softline_lua_watch_remove},
     {"watch_clear", softline_lua_watch_clear},
     {"print_above", softline_lua_print_above},
+    {"output_stream_begin", softline_lua_output_stream_begin},
+    {"output_stream_write", softline_lua_output_stream_write},
+    {"output_stream_end", softline_lua_output_stream_end},
     {"last_readline_status", softline_lua_last_readline_status},
     {"last_error", softline_lua_last_error},
     {"close", softline_lua_close},

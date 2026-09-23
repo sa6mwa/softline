@@ -2,6 +2,7 @@
 #define SOFTLINE_INTERNAL_H
 
 #include "softline/softline.h"
+#include "softline_surface.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -82,6 +83,8 @@ typedef struct sl_impl {
   int bounded;
   int live_scroll_region;
   int auto_scroll_pinned;
+  int output_stream_active;
+  sl_surface_t *output_surface;
   int cursor_position_probe;
   int dynamic_width;
   int dynamic_height;

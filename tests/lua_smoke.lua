@@ -9,6 +9,9 @@ end
 local prompt_methods = {
   "next_prompt",
   "set_live_scroll_region",
+  "output_stream_begin",
+  "output_stream_write",
+  "output_stream_end",
   "set_prompt_queue",
   "queue_count",
   "queue_capacity",
@@ -57,6 +60,13 @@ assert(sl:print_above(function(i)
   end
   return nil
 end))
+assert(sl:output_stream_begin())
+assert(not sl:output_stream_begin())
+assert(sl:output_stream_write("delta"))
+assert(sl:output_stream_write(""))
+assert(sl:output_stream_write("-echo\n"))
+assert(sl:output_stream_end())
+assert(not sl:output_stream_write("after end"))
 sl:close()
 
 local bounded = assert(softline.new({ bounded = true, screen_height = 1 }))

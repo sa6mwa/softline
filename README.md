@@ -97,23 +97,30 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` stays in ordinary terminal scrollback and simulates a generic
-turn processor. While available, Enter dispatches a turn; while its operation
-is running, Enter queues a follow-up locally. The worker process wakes the
-editor through a pipe, and the owner-thread watch callback prints progress
-above the active draft. Alt-Enter
+`example_chat` is the C streaming Markdown demo. It links libmdf only as an
+example dependency: libsoftline and its installed package remain independent
+of libmdf. The composer gives libmdf a two-column left margin and its default
+ANSI palette. Each submitted prompt becomes a Markdown block quote with blank
+lines around it. A worker emits one source character every 20 ms; the
+owner-thread watch callback feeds libmdf incrementally and forwards each sink
+fragment directly into a Softline output session. The responses mix headings,
+subheadings, italic, bold, code, and paragraphs while input remains editable.
+
+While available, Enter dispatches a turn; while its operation is running,
+Enter queues a follow-up in Softline. Alt-Enter
 always dispatches a nonempty draft, and Alt-Enter on an empty editor promotes
 the newest queued entry for immediate host delivery. Alt-E edits the newest
 queued draft. On completion, queued FIFO work automatically dispatches. The
-examples print `[turn]`, `[promoted]`, or `[queued]` source labels and use the
-status spinner only as a presentation of their application-owned busy state.
-Escape or Ctrl-C returns cancellation to the application; the chat examples
-use it to stop the active simulated operation, retain its queue, and keep the
+example uses the status spinner only as a presentation of its application-owned
+busy state. Escape or Ctrl-C returns cancellation to the application; the C chat
+example uses it to stop the active simulated operation, retain its queue, and keep the
 chat open. Automatic FIFO release stays stopped until the user submits a new
 turn or manually promotes a queued one.
-The queue UI, status line, and simulated operation stream activate only when both standard
-input and standard output are terminals, so piped use remains plain
-line-oriented input/output.
+The queue UI, status line, and simulated operation stream activate only when
+both standard input and output are terminals; redirected output is plain
+libmdf-rendered text. The separate Lua chat example remains a plain queued-turn
+demonstration; its facade exposes the same generic output-session API for Lua
+applications composing an external renderer.
 
 ```sh
 make run-simple
@@ -136,9 +143,10 @@ and Lua examples accept
 `SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
 expose that as `THEME=...`. The simple and chat examples default to `default`;
-`make run-chat` supplies Gruvbox. Set `SOFTLINE_LIVE_SCROLL_REGION=1` for
-either chat example, or use a `-sr` convenience target, to demonstrate the
-opt-in scroll-region behavior.
+`make run-chat` supplies Gruvbox. The C live output session always uses its
+bounded viewport, so the `-sr` convenience targets do not change that output
+layout. `SOFTLINE_LIVE_SCROLL_REGION=1` remains available to the Lua chat
+example for finite `print_above()` calls.
 
 ## Bounded prompts
 
@@ -146,6 +154,10 @@ Set `screen_width` and `screen_height` in `sl_config_t`, or call
 `sl_set_bounds()`, to anchor the prompt inside a terminal box. In bounded mode
 the prompt grows upward as input wraps while `sl_print_above()` pulls streamed
 chunks from a callback and writes them through the region above the prompt.
+Full-width bounds can use terminal scrolling. Narrow or offset bounds use a
+bounded cell viewport, not a VT scroll region that would alter outside columns.
+A persistent `sl_output_stream_*()` session uses that viewport at all bounds
+and accepts later chunks without waiting for EOF.
 Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
 bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
 in softline. Bounded rendering keeps a retained view of the visible editor
@@ -164,11 +176,36 @@ previews, status lines, wrapping, and resize reflow change that region with the
 prompt. Softline resets the region whenever the edit finishes; terminals that
 do not answer the cursor-position report continue with clear-and-redraw.
 
-For a persistent bottom prompt, use this bounded mode as a full-screen terminal
-UI on the alternate screen. That keeps the main scrollback intact and lets
-softline manage the prompt box and transcript scroll region coherently.
-Softline never enters or leaves the alternate screen itself: the embedding
-application chooses normal scrollback or an alternate-screen UI.
+For a persistent bottom prompt, use bounded mode in either the normal or
+alternate screen. Softline never enters or leaves the alternate screen itself.
+The live viewport retains only visible terminal cells and partial parser state,
+not the whole response; scrolled-off content is not recoverable through a
+Softline scrollback API.
+
+## Persistent output session
+
+Open a session once, forward each external renderer sink fragment, and close it
+when the conversation ends. The receiver and free-function C APIs are
+equivalent; Lua exposes `sl:output_stream_begin()`,
+`sl:output_stream_write(bytes)`, and `sl:output_stream_end()`.
+
+```c
+sl->output_stream_begin(sl);
+/* Called on the editor owner thread for each external sink emission. */
+sl->output_stream_write(sl, bytes, length);
+sl->output_stream_end(sl);
+```
+
+Each write is visible before it returns, including while `next_prompt()` is
+active. Chunk boundaries add no content or document semantics; ANSI SGR and
+UTF-8 sequences may cross calls. End rejects an incomplete sequence. The
+composer updates Softline geometry (`set_bounds` or `set_screen_width`) and
+renderer width on the owner thread when the terminal changes; neither library
+owns the other's margins. Softline immediately reconciles the transcript and
+editable prompt within its new bounds. A watched FD is the usual way to
+deliver producer events without blocking editor input. See the
+[composition contract](docs/softline-mdf-stream-design.md) for limits and
+failure semantics.
 
 ## Prompt queueing
 

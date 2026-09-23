@@ -2,9 +2,9 @@ include_guard(GLOBAL)
 
 set(SOFTLINE_TEST_LIBMDF_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 
-# libmdf is an integration-test-only SDK.  It must never be linked by a
-# Softline library target or appear in exported package metadata.
-set(SOFTLINE_TEST_LIBMDF_VERSION "0.10.0")
+# libmdf is only for examples and integration tests. It must never be linked
+# by a Softline library target or appear in exported package metadata.
+set(SOFTLINE_TEST_LIBMDF_VERSION "0.11.0")
 
 function(softline_test_libmdf_supported output)
   if(SL_TARGET_ID MATCHES
@@ -15,7 +15,7 @@ function(softline_test_libmdf_supported output)
   endif()
 endfunction()
 
-function(softline_enable_test_libmdf target)
+function(softline_enable_dev_libmdf target)
   softline_test_libmdf_supported(_softline_libmdf_supported)
   if(NOT _softline_libmdf_supported)
     message(FATAL_ERROR
@@ -25,19 +25,19 @@ function(softline_enable_test_libmdf target)
   set(_softline_libmdf_name
     "libmdf-${SOFTLINE_TEST_LIBMDF_VERSION}-${SL_TARGET_ID}.tar.gz")
   if(SL_TARGET_ID STREQUAL "x86_64-linux-gnu")
-    set(_softline_libmdf_sha "8d5af1aa349cd8a797b4acd71e87f2a5da81551d60dd7ae17675367ede5cc4ed")
+    set(_softline_libmdf_sha "eaf328afd14fd696d7ca53fc0ee167ae80eab021d16075ec081c03798316fc93")
   elseif(SL_TARGET_ID STREQUAL "x86_64-linux-musl")
-    set(_softline_libmdf_sha "5dabfa941f4dbaacb36d15ccf22d3dafefdec320c9ef81ceb4be10728829b7ab")
+    set(_softline_libmdf_sha "95e90e03abe6ea03cb59ddcd1af215b08954c6867aa6343df60b6e65c6724d55")
   elseif(SL_TARGET_ID STREQUAL "aarch64-linux-gnu")
-    set(_softline_libmdf_sha "6500704e0aa0e9165b237273c6114d74f1b78bad497bdfd0664a16c094a893c5")
+    set(_softline_libmdf_sha "7b3cb2334eb29684c9699efb99222b28e089e66941a91802d8d1c455ad48a2f8")
   elseif(SL_TARGET_ID STREQUAL "aarch64-linux-musl")
-    set(_softline_libmdf_sha "3f7ac69de7caebb5a3e77d87ba65c93c1a09bfc379998e53adedddcd1ae103a7")
+    set(_softline_libmdf_sha "ff3b9c5d574a2f92ccdabb26bd38099287ab9a620a4bcedb189c6873755a8cd5")
   elseif(SL_TARGET_ID STREQUAL "armhf-linux-gnu")
-    set(_softline_libmdf_sha "36fcfce016ae0090390987229d8e2ce206d95094593a14f56de4e3d8d01eb6a4")
+    set(_softline_libmdf_sha "42270de1326bf92886dacd6ecf122230f0aa38a7446fb55e2ac5d57a690860b5")
   elseif(SL_TARGET_ID STREQUAL "armhf-linux-musl")
-    set(_softline_libmdf_sha "e47001d09f2d4bbf3f17b1e74abdac2a22dc70cff95925467b5069f04d2a7fe8")
+    set(_softline_libmdf_sha "9ce51da59f88f55b31785d37068f7c30c438a19fa688f4837f2fac1d754ec54e")
   else()
-    set(_softline_libmdf_sha "bbc6685f034e6d70ca28ecd4763201e96b42ea31d957f46d8267b1b299c58a0a")
+    set(_softline_libmdf_sha "6c609132dd88eb99ef4be9374dc1fbc479452b41880f49e371348daed4b79ad4")
   endif()
 
   include(${SOFTLINE_TEST_LIBMDF_MODULE_DIR}/softline_verified_archive.cmake)

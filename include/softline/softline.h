@@ -401,10 +401,11 @@ struct sl {
   /** Load history entries from a history file into this handle's current
    * history. */
   int (*history_load)(sl_t *self, const char *filename);
-  /** Configure bounded prompt geometry; width or height zero uses dynamic
-   * terminal bounds. */
+  /** Configure prompt/output geometry; width or height zero follows terminal
+   * size. Safe during an active output session or edit; redraws immediately. */
   int (*set_bounds)(sl_t *self, int x, int y, int width, int height);
-  /** Set normal prompt wrapping width for non-bounded rendering. */
+  /** Set wrapping width, including during an active bounded edit or stream;
+   * zero resumes terminal-width probing. Redraws immediately. */
   int (*set_screen_width)(sl_t *self, int width);
   /** Enable or disable bottom-pinned scroll-region output for unbounded
    * prompts. The setting applies to subsequent print_above() calls. */
@@ -520,6 +521,19 @@ struct sl {
   int (*watch_remove)(sl_t *self, sl_watch_id_t id);
   /** Remove every registered watch from this handle. */
   int (*watch_clear)(sl_t *self);
+  /** Begin one owner-thread, renderer-agnostic live output session. Only one
+   * session may be open per handle. Output occupies the bounds above the
+   * prompt; without explicit bounds the prompt is pinned to the bottom. */
+  int (*output_stream_begin)(sl_t *self);
+  /** Forward exactly length bytes into the open session. A write boundary has
+   * no newline, document, or flush semantics. bytes may be NULL only when
+   * length is zero. Input must be printable UTF-8, LF/CR/Tab, or ANSI SGR;
+   * unsupported terminal controls fail with SL_ERROR_INVALID. */
+  int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
+  /** End the open session without adding a newline or finishing an external
+   * renderer document. Incomplete ANSI/UTF-8 leaves it open and returns
+   * SL_ERROR_INVALID so the caller may supply the missing bytes. */
+  int (*output_stream_end)(sl_t *self);
 };
 
 /**
@@ -597,11 +611,12 @@ int sl_history_save(sl_t *self, const char *filename);
  * entries if capped. */
 int sl_history_load(sl_t *self, const char *filename);
 
-/** Enable bounded prompt rendering at x,y,width,height; zero width or height
- * uses dynamic bounds. */
+/** Set prompt/output bounds at x,y,width,height. Zero width or height tracks
+ * terminal geometry. Safe mid-edit or mid-stream; redraws immediately. */
 int sl_set_bounds(sl_t *self, int x, int y, int width, int height);
 
-/** Set normal prompt wrapping width; zero returns to terminal-width probing. */
+/** Set prompt/output wrapping width, including mid-edit or mid-stream. Zero
+ * returns to terminal-width probing; redraws immediately. */
 int sl_set_screen_width(sl_t *self, int width);
 
 /** Enable or disable bottom-pinned scroll-region output for unbounded prompts.
@@ -748,6 +763,24 @@ int sl_cancel(sl_t *self);
  * their output region; normal prompts clear and redraw by default, or use an
  * enabled live scroll region once they reach the terminal bottom. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
+
+/** Start a persistent output session on self's editor-owner thread. The
+ * caller owns its producer, wakeup, renderer, and document lifecycle. An
+ * unbounded prompt is pinned to the terminal bottom while this session is
+ * open. Returns SL_ERROR_INVALID if a session is already open. */
+int sl_output_stream_begin(sl_t *self);
+
+/** Forward length bytes immediately to the live output session. Zero length
+ * is a no-op; no newline or response boundary is implied. Valid bytes are
+ * printable UTF-8, LF/CR/Tab, and ANSI SGR; malformed or unsupported control
+ * sequences report SL_ERROR_INVALID. A failed write may have emitted a
+ * prefix, while a successful write has emitted all complete input units. */
+int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
+
+/** End the output session without adding a newline. The caller remains
+ * responsible for finishing any external renderer document first. Incomplete
+ * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open. */
+int sl_output_stream_end(sl_t *self);
 
 /** Return the status of the most recent readline() call on this handle. */
 sl_readline_status_t sl_last_readline_status(const sl_t *self);

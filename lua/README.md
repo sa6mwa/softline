@@ -154,10 +154,31 @@ live scroll regions, status lines, and spinners are off; the theme is
   receives the key code and returns a `softline.KEY_ACTION_*` value, or `nil`
   to mark the key handled. Passing `nil` as the callback removes the binding.
 - `sl:print_above(source)` prints above the active prompt. Bounded prompts use
-  their output region; normal prompts clear and redraw by default, or use an
+  their output region, including narrow/offset bounds; normal prompts clear
+  and redraw by default, or use an
   enabled live scroll region after reaching the terminal bottom. `source` may
   be a string, an array-like table of string chunks, or a function that
   receives a 1-based chunk index and returns the next string or `nil`.
+- `sl:output_stream_begin()` opens one persistent output session above the
+  prompt. With no explicit bounds, the prompt is pinned to the terminal bottom
+  while the session is open. The application owns its renderer, wakeup, and
+  response/document lifecycle; Softline has no Markdown dependency.
+- `sl:output_stream_write(bytes)` sends a Lua byte string immediately into the
+  open session. Calls from a watch callback can alternate with prompt typing.
+  Chunk boundaries add no newline or response separator. The stream accepts
+  printable UTF-8, LF/CR/Tab, and ANSI SGR styling; malformed or unsupported
+  terminal controls return `nil, status`. An empty string succeeds without
+  changing the screen. No full response is buffered.
+- `sl:output_stream_end()` ends the session without inserting a newline or
+  finishing an external renderer document. If the last write left an ANSI or
+  UTF-8 sequence incomplete, it returns `nil, status` and keeps the session
+  open so the missing bytes can be supplied. Only one session may be open per
+  editor. All three methods run on the Lua/editor owner thread; foreign
+  producers should notify a watched descriptor instead of calling Lua.
+- `sl:set_bounds(x, y, width, height)` and `sl:set_screen_width(width)` may be
+  called while a session is streaming or a prompt is being edited. Softline
+  immediately redraws its visible output and prompt inside the new geometry;
+  the application updates its external renderer width separately.
 - `sl:last_readline_status()` returns the last readline status code.
 - `sl:last_error()` returns the last handle-owned diagnostic string, or `nil`.
 - `sl:close()` destroys the handle.

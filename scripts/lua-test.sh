@@ -67,6 +67,7 @@ esac
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_ctrl_c.py" "${ROOT_DIR}"
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_mixed_tty.py" "${ROOT_DIR}"
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_watch.py" "${ROOT_DIR}"
+python3 "${ROOT_DIR}/tests/lua_live_output.py" "${ROOT_DIR}"
 python3 "${ROOT_DIR}/tests/lua_idle_callback.py" "${ROOT_DIR}"
 python3 "${ROOT_DIR}/tests/lua_watch_file_gc.py" "${ROOT_DIR}"
 
