@@ -528,7 +528,8 @@ struct sl {
   /** Forward exactly length bytes into the open session. A write boundary has
    * no newline, document, or flush semantics. bytes may be NULL only when
    * length is zero. Input must be printable UTF-8, LF/CR/Tab, or ANSI SGR;
-   * unsupported terminal controls fail with SL_ERROR_INVALID. */
+   * unsupported terminal controls fail with SL_ERROR_INVALID. TTY viewport
+   * clusters longer than 128 bytes also fail without splitting the cell. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
   /** End the open session without adding a newline or finishing an external
    * renderer document. Incomplete ANSI/UTF-8 leaves it open and returns
@@ -773,7 +774,8 @@ int sl_output_stream_begin(sl_t *self);
 /** Forward length bytes immediately to the live output session. Zero length
  * is a no-op; no newline or response boundary is implied. Valid bytes are
  * printable UTF-8, LF/CR/Tab, and ANSI SGR; malformed or unsupported control
- * sequences report SL_ERROR_INVALID. A failed write may have emitted a
+ * sequences or TTY viewport clusters longer than 128 bytes report
+ * SL_ERROR_INVALID. A failed write may have emitted a
  * prefix, while a successful write has emitted all complete input units. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 

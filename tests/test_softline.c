@@ -8710,6 +8710,19 @@ static void test_live_output_error_resets_terminal_style(void) {
   ASSERT_TRUE(styled && last_reset && last_reset > styled,
               "terminal style remained active after invalid output");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK, "second stream failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl, "\033[31;8msecret",
+                                     strlen("\033[31;8msecret")) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "visible", 7) == SL_OK,
+              "unsupported SGR attribute was accepted");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  contains_bytes(output, "visible") &&
+                  !contains_bytes(output, "secret") &&
+                  !contains_bytes(output, "\033[0;31m"),
+              "unsupported SGR changed rendered output or style");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "second stream end failed");
   sl_destroy(sl);
   close(slave_fd);
   close(master_fd);
@@ -8803,6 +8816,10 @@ static void test_live_output_clips_clear_after_narrowing(void) {
 }
 
 static void test_live_output_emoji_cluster_width(void) {
+  static const char long_emoji[] =
+      "\xf0\x9f\x91\xa9\xf0\x9f\x8f\xbf\xe2\x80\x8d"
+      "\xe2\x9d\xa4\xef\xb8\x8f\xe2\x80\x8d\xf0\x9f\x92\x8b"
+      "\xe2\x80\x8d\xf0\x9f\x91\xa8\xf0\x9f\x8f\xbf";
   static const struct {
     const char *first;
     const char *second;
@@ -8815,7 +8832,8 @@ static void test_live_output_emoji_cluster_width(void) {
       {"\xf0\x9f\x91\xa9", "\xe2\x80\x8d", "\xf0\x9f\x92\xbb",
        "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb"},
       {"\xf0\x9f\x91\x8d", "\xf0\x9f\x8f\xbd", NULL,
-       "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd"}};
+       "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd"},
+      {long_emoji, "", NULL, long_emoji}};
   struct winsize ws;
   sl_config_t cfg;
   sl_t *sl;
@@ -8864,6 +8882,49 @@ static void test_live_output_emoji_cluster_width(void) {
     close(slave_fd);
     close(master_fd);
   }
+  PASS();
+}
+
+static void test_live_output_cluster_limit(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char cluster[129];
+  char output[8192];
+  size_t i;
+
+  TEST("oversized live output cluster fails without splitting its cell");
+  cluster[0] = 'a';
+  for (i = 0; i < 64; i++) {
+    cluster[1 + 2 * i] = (char)0xcc;
+    cluster[2 + 2 * i] = (char)0x81;
+  }
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 5, 3) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "cluster limit setup failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl, cluster, sizeof(cluster)) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "b", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "oversized cluster did not fail cleanly");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  contains_bytes(output, "b"),
+              "stream did not recover after oversized cluster");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
   PASS();
 }
 #else
@@ -9297,6 +9358,11 @@ static void test_live_output_emoji_cluster_width(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_live_output_cluster_limit(void) {
+  TEST("oversized live output cluster fails without splitting its cell");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_error_resets_terminal_style(void) {
   TEST("invalid live output resets terminal styling before returning");
   printf("SKIP\n");
@@ -9419,6 +9485,7 @@ int main(void) {
   test_live_output_reconciles_physical_resize();
   test_live_output_clips_clear_after_narrowing();
   test_live_output_emoji_cluster_width();
+  test_live_output_cluster_limit();
   test_final_render_failure_reports_error();
   test_narrow_terminal_does_not_submit_before_enter();
   test_live_output_end_restores_unbounded_cursor();

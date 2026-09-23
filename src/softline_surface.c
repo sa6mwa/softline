@@ -16,6 +16,8 @@ enum {
   SL_SURFACE_STRIKE = 1u << 5
 };
 
+enum { SL_SURFACE_CLUSTER_CAP = 128 };
+
 typedef struct sl_surface_color {
   int mode; /* 0 default, 1 basic SGR, 2 indexed, 3 RGB */
   int values[3];
@@ -28,7 +30,7 @@ typedef struct sl_surface_style {
 } sl_surface_style_t;
 
 typedef struct sl_surface_cell {
-  char bytes[32];
+  char bytes[SL_SURFACE_CLUSTER_CAP];
   unsigned char len;
   unsigned char width; /* zero for a wide-glyph continuation cell */
   sl_surface_style_t style;
@@ -237,6 +239,8 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
     int base_col;
     int new_width;
     sl_surface_cell_t updated;
+    char candidate[sizeof(updated.bytes) + 4];
+    size_t candidate_len;
     base_col = surface->col - 1;
     if (base_col > 0 &&
         surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
@@ -251,15 +255,21 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
          (codepoint >= 0x1f1e6ul && codepoint <= 0x1f1fful) ||
          (cell->len >= 3 &&
           memcmp(cell->bytes + cell->len - 3, "\xe2\x80\x8d", 3) == 0)) &&
-        cell->len > 0 && cell->width > 0 &&
-        (size_t)cell->len + length <= sizeof(cell->bytes)) {
-      updated = *cell;
-      memcpy(updated.bytes + updated.len, bytes, length);
-      updated.len = (unsigned char)(updated.len + length);
-      new_width = surface->cluster_width(updated.bytes, updated.len);
+        cell->len > 0 && cell->width > 0) {
+      candidate_len = (size_t)cell->len + length;
+      if (candidate_len > sizeof(candidate))
+        return -2;
+      memcpy(candidate, cell->bytes, cell->len);
+      memcpy(candidate + cell->len, bytes, length);
+      new_width = surface->cluster_width(candidate, candidate_len);
       if (new_width > 0) {
+        if (candidate_len > sizeof(cell->bytes))
+          return -2;
         if (new_width > surface->width)
           return -2;
+        updated = *cell;
+        memcpy(updated.bytes, candidate, candidate_len);
+        updated.len = (unsigned char)candidate_len;
         updated.width = (unsigned char)new_width;
         if (base_col + new_width > surface->width) {
           cell->bytes[0] = ' ';
@@ -314,6 +324,7 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
 
 static int sl_surface_parse_sgr(sl_surface_t *surface) {
   int params[32];
+  sl_surface_style_t style;
   size_t count;
   size_t i;
   int value;
@@ -342,51 +353,56 @@ static int sl_surface_parse_sgr(sl_surface_t *surface) {
       return -2;
     params[count++] = value;
   }
+  style = surface->style;
   for (i = 0; i < count; i++) {
     int code;
     code = params[i];
     if (code == 0)
-      memset(&surface->style, 0, sizeof(surface->style));
+      memset(&style, 0, sizeof(style));
     else if (code == 1)
-      surface->style.flags |= SL_SURFACE_BOLD;
+      style.flags |= SL_SURFACE_BOLD;
     else if (code == 2)
-      surface->style.flags |= SL_SURFACE_DIM;
+      style.flags |= SL_SURFACE_DIM;
     else if (code == 3)
-      surface->style.flags |= SL_SURFACE_ITALIC;
+      style.flags |= SL_SURFACE_ITALIC;
     else if (code == 4)
-      surface->style.flags |= SL_SURFACE_UNDERLINE;
+      style.flags |= SL_SURFACE_UNDERLINE;
     else if (code == 7)
-      surface->style.flags |= SL_SURFACE_REVERSE;
+      style.flags |= SL_SURFACE_REVERSE;
     else if (code == 9)
-      surface->style.flags |= SL_SURFACE_STRIKE;
+      style.flags |= SL_SURFACE_STRIKE;
     else if (code == 22)
-      surface->style.flags &= ~(SL_SURFACE_BOLD | SL_SURFACE_DIM);
+      style.flags &= ~(SL_SURFACE_BOLD | SL_SURFACE_DIM);
     else if (code == 23)
-      surface->style.flags &= ~SL_SURFACE_ITALIC;
+      style.flags &= ~SL_SURFACE_ITALIC;
     else if (code == 24)
-      surface->style.flags &= ~SL_SURFACE_UNDERLINE;
+      style.flags &= ~SL_SURFACE_UNDERLINE;
     else if (code == 27)
-      surface->style.flags &= ~SL_SURFACE_REVERSE;
+      style.flags &= ~SL_SURFACE_REVERSE;
     else if (code == 29)
-      surface->style.flags &= ~SL_SURFACE_STRIKE;
+      style.flags &= ~SL_SURFACE_STRIKE;
     else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
-      surface->style.fg.mode = 1;
-      surface->style.fg.values[0] = code;
+      style.fg.mode = 1;
+      style.fg.values[0] = code;
     } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
-      surface->style.bg.mode = 1;
-      surface->style.bg.values[0] = code;
+      style.bg.mode = 1;
+      style.bg.values[0] = code;
     } else if (code == 39)
-      memset(&surface->style.fg, 0, sizeof(surface->style.fg));
+      memset(&style.fg, 0, sizeof(style.fg));
     else if (code == 49)
-      memset(&surface->style.bg, 0, sizeof(surface->style.bg));
+      memset(&style.bg, 0, sizeof(style.bg));
     else if (code == 38 || code == 48) {
       sl_surface_color_t *color;
-      color = code == 38 ? &surface->style.fg : &surface->style.bg;
+      color = code == 38 ? &style.fg : &style.bg;
       if (i + 2 < count && params[i + 1] == 5) {
+        if (params[i + 2] > 255)
+          return -2;
         color->mode = 2;
         color->values[0] = params[i + 2];
         i += 2;
       } else if (i + 4 < count && params[i + 1] == 2) {
+        if (params[i + 2] > 255 || params[i + 3] > 255 || params[i + 4] > 255)
+          return -2;
         color->mode = 3;
         color->values[0] = params[i + 2];
         color->values[1] = params[i + 3];
@@ -394,8 +410,10 @@ static int sl_surface_parse_sgr(sl_surface_t *surface) {
         i += 4;
       } else
         return -2;
-    }
+    } else
+      return -2;
   }
+  surface->style = style;
   return 0;
 }
 
