@@ -1,10 +1,13 @@
 """Configuration failure and verified archive cache regressions."""
 import hashlib
+import os
 import pathlib
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 root = pathlib.Path(sys.argv[1]).resolve()
 (root / "build").mkdir(exist_ok=True)
@@ -49,6 +52,46 @@ softline_verified_archive("fixture" "{upstream.as_uri()}" "{digest}" fixture.tar
 '''
     run(script)
     cached = work / "cache/archives/sha256" / digest / "fixture.tar"
+    assert cached.read_bytes() == payload
+    cached.write_bytes(b"corrupt")
+    ready = work / "lock-held"
+    release = work / "release-lock"
+    holder_script = work / "hold-lock.cmake"
+    holder_script.write_text(f'''
+file(LOCK "{work}/cache/locks/{digest}.lock" GUARD PROCESS TIMEOUT 0)
+file(WRITE "{ready}" "ready")
+while(NOT EXISTS "{release}")
+  execute_process(COMMAND "${{CMAKE_COMMAND}}" -E sleep 0.1)
+endwhile()
+''')
+    holder = subprocess.Popen(["cmake", "-P", str(holder_script)], cwd=work,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    consumer = None
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and holder.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), holder.communicate(timeout=5)
+        consumer = subprocess.Popen(
+            ["cmake", f"--trace-source={root}/cmake/softline_verified_archive.cmake",
+             "--trace-expand", "-P", str(work / "check.cmake")],
+            cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        trace = b""
+        deadline = time.monotonic() + 5
+        while b"file(LOCK" not in trace and consumer.poll() is None and time.monotonic() < deadline:
+            readable, _, _ = select.select([consumer.stderr], [], [],
+                                           max(0, deadline - time.monotonic()))
+            if readable:
+                trace += os.read(consumer.stderr.fileno(), 4096)
+        assert b"file(LOCK" in trace, trace.decode(errors="replace")
+        assert cached.read_bytes() == b"corrupt", "archive changed before locking"
+    finally:
+        release.write_text("release")
+        holder_output = holder.communicate(timeout=5)
+        assert holder.returncode == 0, holder_output
+        if consumer is not None:
+            consumer_output = consumer.communicate(timeout=5)
+            assert consumer.returncode == 0, consumer_output
     assert cached.read_bytes() == payload
     upstream.unlink()
     run(script)  # Offline hit.

@@ -636,8 +636,11 @@ int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length) {
     {
       int status;
       status = sl_surface_byte(surface, (unsigned char)bytes[i]);
-      if (status != 0)
+      if (status != 0) {
+        surface->draw_valid = 0;
+        (void)sl_surface_write_all(surface->fd, "\033[0m", 4);
         return status;
+      }
     }
   }
   surface->draw_valid = 0;
