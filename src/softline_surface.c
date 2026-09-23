@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 enum {
@@ -43,6 +44,7 @@ struct sl_surface {
   sl_surface_cell_t *cells;
   sl_surface_style_t style;
   int (*cell_width)(unsigned long);
+  int (*cluster_width)(const char *, size_t);
   int parser; /* 0 text, 1 ESC, 2 CSI */
   char csi[128];
   size_t csi_len;
@@ -230,6 +232,8 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
     cells = 1;
   if (cells == 0 && surface->col > 0 && surface->cells) {
     int base_col;
+    int new_width;
+    sl_surface_cell_t updated;
     base_col = surface->col - 1;
     if (base_col > 0 &&
         surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
@@ -239,12 +243,37 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
     cell =
         &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
                         (size_t)base_col];
-    if ((size_t)cell->len + length <= sizeof(cell->bytes)) {
-      memcpy(cell->bytes + cell->len, bytes, length);
-      cell->len = (unsigned char)(cell->len + length);
-      return sl_surface_draw_cell(surface, surface->height - 1, base_col, cell);
+    if (cell->len == 0 || cell->width == 0)
+      return -2;
+    if ((size_t)cell->len + length > sizeof(cell->bytes))
+      return -1;
+    updated = *cell;
+    memcpy(updated.bytes + updated.len, bytes, length);
+    updated.len = (unsigned char)(updated.len + length);
+    new_width = surface->cluster_width(updated.bytes, updated.len);
+    if (new_width < 1 || new_width > surface->width)
+      return -2;
+    updated.width = (unsigned char)new_width;
+    if (base_col + new_width > surface->width) {
+      cell->bytes[0] = ' ';
+      cell->len = 1;
+      cell->width = 1;
+      if (sl_surface_draw_cell(surface, surface->height - 1, base_col, cell) !=
+          0)
+        return -1;
+      surface->col = 0;
+      if (sl_surface_scroll(surface) != 0)
+        return -1;
+      base_col = 0;
+      cell =
+          &surface
+               ->cells[(size_t)(surface->height - 1) * (size_t)surface->width];
     }
-    return -1;
+    *cell = updated;
+    if (new_width == 2 && base_col + 1 < surface->width)
+      memset(cell + 1, 0, sizeof(*cell));
+    surface->col = base_col + new_width;
+    return sl_surface_draw_cell(surface, surface->height - 1, base_col, cell);
   }
   if (cells == 0)
     cells = 1;
@@ -386,8 +415,11 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
     return 0;
   }
   if (surface->utf8_need != 0) {
-    if ((byte & 0xc0u) != 0x80u)
+    if ((byte & 0xc0u) != 0x80u || surface->utf8_len >= sizeof(surface->utf8)) {
+      surface->utf8_need = 0;
+      surface->utf8_len = 0;
       return -2;
+    }
     surface->utf8[surface->utf8_len++] = (char)byte;
     if (surface->utf8_len < surface->utf8_need)
       return 0;
@@ -399,10 +431,15 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
     if ((surface->utf8_need == 2 && cp < 0x80ul) ||
         (surface->utf8_need == 3 && cp < 0x800ul) ||
         (surface->utf8_need == 4 && cp < 0x10000ul) ||
-        (cp >= 0xd800ul && cp <= 0xdffful) || cp > 0x10fffful)
+        (cp >= 0xd800ul && cp <= 0xdffful) || cp > 0x10fffful) {
+      surface->utf8_need = 0;
+      surface->utf8_len = 0;
       return -2;
+    }
     surface->utf8_need = 0;
-    return sl_surface_put(surface, surface->utf8, surface->utf8_len, cp);
+    i = surface->utf8_len;
+    surface->utf8_len = 0;
+    return sl_surface_put(surface, surface->utf8, i, cp);
   }
   if (byte == 0x1bu) {
     surface->parser = 1;
@@ -446,10 +483,12 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
 }
 
 sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
-                                int (*cell_width)(unsigned long)) {
+                                int (*cell_width)(unsigned long),
+                                int (*cluster_width)(const char *, size_t)) {
   sl_surface_t *surface;
   size_t count;
-  if (fd < 0 || x < 0 || y < 0 || width < 1 || height < 0 || !cell_width)
+  if (fd < 0 || x < 0 || y < 0 || width < 1 || height < 0 || !cell_width ||
+      !cluster_width)
     return NULL;
   if ((size_t)height > ((size_t)-1) / (size_t)width / sizeof(sl_surface_cell_t))
     return NULL;
@@ -471,6 +510,7 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
   surface->width = width;
   surface->height = height;
   surface->cell_width = cell_width;
+  surface->cluster_width = cluster_width;
   return surface;
 }
 
@@ -490,10 +530,13 @@ int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
 int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
                       int height) {
   sl_surface_cell_t *new_cells;
+  struct winsize terminal;
   size_t count;
   int rows;
   int cols;
   int row;
+  int clear_width;
+  int clear_height;
   if (!surface || x < 0 || y < 0 || width < 1 || height < 0)
     return -1;
   if (sl_surface_matches(surface, x, y, width, height))
@@ -524,8 +567,23 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
       }
     }
   }
-  if (sl_surface_clear_rect(surface, surface->x, surface->y, surface->width,
-                            surface->height) != 0) {
+  if (ioctl(surface->fd, TIOCGWINSZ, &terminal) != 0) {
+    free(new_cells);
+    return -1;
+  }
+  clear_width = surface->width;
+  clear_height = surface->height;
+  if (surface->x >= (int)terminal.ws_col)
+    clear_width = 0;
+  else if (clear_width > (int)terminal.ws_col - surface->x)
+    clear_width = (int)terminal.ws_col - surface->x;
+  if (surface->y >= (int)terminal.ws_row)
+    clear_height = 0;
+  else if (clear_height > (int)terminal.ws_row - surface->y)
+    clear_height = (int)terminal.ws_row - surface->y;
+  if (clear_width > 0 && clear_height > 0 &&
+      sl_surface_clear_rect(surface, surface->x, surface->y, clear_width,
+                            clear_height) != 0) {
     free(new_cells);
     return -1;
   }

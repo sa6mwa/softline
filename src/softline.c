@@ -201,6 +201,7 @@ static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
 static int sl_render_clear_active(sl_t *self);
 static int sl_try_pin_scroll_region(sl_t *self);
 static int sl_codepoint_width(unsigned long cp);
+static int sl_surface_cluster_width(const char *bytes, size_t length);
 
 static sl_impl_t *sl_impl(sl_t *self) {
   if (!self)
@@ -756,8 +757,9 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
   if (width < 1 || height < 0)
     return -1;
   if (!impl->output_surface) {
-    impl->output_surface = sl_surface_create(impl->output_fd, x, y, width,
-                                             height, sl_codepoint_width);
+    impl->output_surface =
+        sl_surface_create(impl->output_fd, x, y, width, height,
+                          sl_codepoint_width, sl_surface_cluster_width);
     return impl->output_surface ? 0 : -1;
   }
   return sl_surface_resize(impl->output_surface, x, y, width, height);
@@ -1357,6 +1359,13 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
   if (width)
     *width = w;
   return n;
+}
+
+static int sl_surface_cluster_width(const char *bytes, size_t length) {
+  int width;
+  if (sl_utf8_cluster_len_width(bytes, length, 0, &width) != length)
+    return -1;
+  return width;
 }
 
 static size_t sl_utf8_next_cluster_len(const char *buf, size_t len,
@@ -3341,9 +3350,9 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
   }
   if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
     return SL_ERROR_IO;
-  if (!impl->output_surface &&
+  if ((!impl->active_prompt || !impl->output_surface) &&
       sl_output_surface_reconcile(self, sl_prompt_top(impl, 1)) != 0) {
-    sl_set_error(self, "failed to create live output surface");
+    sl_set_error(self, "failed to resize live output surface");
     return SL_ERROR_IO;
   }
   if (sl_hide_cursor(impl) != 0) {

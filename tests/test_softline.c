@@ -8408,6 +8408,13 @@ static void test_live_output_stream_chunk_protocol(void) {
                   sl_output_stream_write(sl, "\x81", 1) == SL_OK &&
                   sl_output_stream_write(sl, "\033[0m\n", 5) == SL_OK,
               "split styled UTF-8 bytes failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "\xf0\x80\x80\x80", 4) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\x80", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xc3", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "x", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "R", 1) == SL_OK,
+              "malformed UTF-8 left the live parser unusable");
   ASSERT_TRUE(sl->output_stream_end(sl) == SL_OK, "receiver end failed");
   ASSERT_TRUE(sl_output_stream_write(sl, "x", 1) == SL_ERROR_INVALID &&
                   sl_output_stream_end(sl) == SL_ERROR_INVALID,
@@ -8491,6 +8498,144 @@ static void test_live_output_stream_changes_unbounded_width(void) {
       wrapped = 1;
   }
   ASSERT_TRUE(wrapped, "stream ignored the new six-column width");
+  PASS();
+}
+
+static size_t read_live_pty_output(int fd, char *bytes, size_t capacity) {
+  size_t used;
+  ssize_t amount;
+  used = 0;
+  while (used + 1 < capacity) {
+    amount =
+        read_some_with_timeout_ms(fd, bytes + used, capacity - used - 1, 20);
+    if (amount <= 0)
+      break;
+    used += (size_t)amount;
+  }
+  bytes[used] = '\0';
+  return used;
+}
+
+static void test_live_output_reconciles_physical_resize(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("live output reconciles a physical resize without an active prompt");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "hello", 5) == SL_OK,
+              "initial output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ws.ws_row = 3;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "resize failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, " world", 6) == SL_OK,
+              "resized output failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "resized output missing");
+  ASSERT_TRUE(!contains_bytes(output, "\033[7;") &&
+                  contains_bytes(output, "\033[2;6H"),
+              "resized output used the old terminal row");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_clips_clear_after_narrowing(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+  const char *cursor;
+
+  TEST("live output clips old surface clearing after a physical shrink");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 5, 1, 0, 0) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "old", 3) == SL_OK,
+              "initial bounded output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ws.ws_col = 20;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "resize failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "new", 3) == SL_OK,
+              "narrowed output failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "narrowed output missing");
+  cursor = output;
+  while (*cursor) {
+    if (*cursor == ' ') {
+      size_t spaces;
+      spaces = strspn(cursor, " ");
+      ASSERT_TRUE(spaces <= 15, "old surface clear exceeded terminal width");
+      cursor += spaces;
+    } else {
+      cursor++;
+    }
+  }
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_emoji_cluster_width(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("split emoji cluster occupies two viewport cells before wrap");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 10;
+  ws.ws_row = 4;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 3, 3) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\xe2\x9d\xa4", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "\xef\xb8\x8f", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "a", 1) == SL_OK,
+              "split emoji output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl, "b", 1) == SL_OK,
+              "emoji wrap output failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  contains_bytes(output, "\033[2;1H"),
+              "emoji cluster did not wrap at its two-cell width");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
   PASS();
 }
 #else
@@ -8901,6 +9046,24 @@ static void test_unicode_backspace_deletes_clusters(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+
+static void test_live_output_reconciles_physical_resize(void) {
+  TEST("live output reconciles a physical resize without an active prompt");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
+static void test_live_output_clips_clear_after_narrowing(void) {
+  TEST("live output clips old surface clearing after a physical shrink");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
+static void test_live_output_emoji_cluster_width(void) {
+  TEST("split emoji cluster occupies two viewport cells before wrap");
+  printf("SKIP\n");
+  tests_passed++;
+}
 #endif
 
 int main(void) {
@@ -9013,6 +9176,9 @@ int main(void) {
   test_live_output_stream_across_narrow_bounds();
   test_live_output_stream_chunk_protocol();
   test_live_output_stream_changes_unbounded_width();
+  test_live_output_reconciles_physical_resize();
+  test_live_output_clips_clear_after_narrowing();
+  test_live_output_emoji_cluster_width();
   test_final_render_failure_reports_error();
   test_narrow_terminal_does_not_submit_before_enter();
   test_idle_callback_prints_above_active_prompt();

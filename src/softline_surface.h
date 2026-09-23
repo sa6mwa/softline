@@ -8,7 +8,8 @@
 typedef struct sl_surface sl_surface_t;
 
 sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
-                                int (*cell_width)(unsigned long));
+                                int (*cell_width)(unsigned long),
+                                int (*cluster_width)(const char *, size_t));
 void sl_surface_destroy(sl_surface_t *surface);
 int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
                       int height);
