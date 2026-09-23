@@ -210,6 +210,87 @@ static void *check_output(void *userdata) {
   return NULL;
 }
 
+struct geometry_output {
+  char bytes[128];
+  size_t length;
+  size_t writes;
+};
+
+static int capture_geometry(void *userdata, const char *bytes, size_t length) {
+  struct geometry_output *output;
+  output = (struct geometry_output *)userdata;
+  if (!output || !bytes || length > sizeof(output->bytes) - output->length)
+    return -1;
+  memcpy(output->bytes + output->length, bytes, length);
+  output->length += length;
+  output->writes++;
+  return 0;
+}
+
+static int check_live_geometry(void) {
+  static const char first[] = "  alpha";
+  static const char expected[] = "  alpha\n\n    beta\n";
+  struct geometry_output output;
+  mdf_options options;
+  mdf_sink sink;
+  mdf *renderer;
+  mdf_status status;
+  size_t before_length;
+  size_t before_writes;
+  int stage;
+
+  memset(&output, 0, sizeof(output));
+  mdf_options_init(&options);
+  options.boring = 1;
+  options.width = 40;
+  options.margin_left = 2;
+  renderer = NULL;
+  stage = 0;
+  status = mdf_create(MDF_FORMAT_ANSI, &options, &renderer);
+  if (status != MDF_OK)
+    goto failed;
+  sink.userdata = &output;
+  sink.write = capture_geometry;
+  status = renderer->set_sink(renderer, &sink);
+  if (status != MDF_OK)
+    goto failed;
+  status = renderer->feed(renderer, "alpha\n\n", 7);
+  if (status != MDF_OK)
+    goto failed;
+  status = renderer->flush(renderer);
+  stage = 1;
+  if (status != MDF_OK || output.length != sizeof(first) - 1 ||
+      memcmp(output.bytes, first, sizeof(first) - 1) != 0)
+    goto failed;
+  before_length = output.length;
+  before_writes = output.writes;
+  status = renderer->set_geometry(renderer, 40, 4, 1);
+  stage = 2;
+  if (status != MDF_OK || output.length != before_length ||
+      output.writes != before_writes)
+    goto failed;
+  status = renderer->feed(renderer, "beta\n", 5);
+  if (status != MDF_OK)
+    goto failed;
+  status = renderer->finish_document(renderer);
+  stage = 3;
+  if (status != MDF_OK || output.length != sizeof(expected) - 1 ||
+      memcmp(output.bytes, expected, sizeof(expected) - 1) != 0)
+    goto failed;
+  renderer->destroy(renderer);
+  return 0;
+
+failed:
+  fprintf(stderr,
+          "libmdf geometry test: stage=%d status=%d length=%lu output=", stage,
+          (int)status, (unsigned long)output.length);
+  (void)fwrite(output.bytes, 1, output.length, stderr);
+  fputc('\n', stderr);
+  if (renderer)
+    renderer->destroy(renderer);
+  return 1;
+}
+
 int main(void) {
   static const char markdown[] = "# hello\n\nworld\n";
   static const char expected[] = "# hello\n\nworld\n";
@@ -226,6 +307,8 @@ int main(void) {
   int renderer_started;
   int output_started;
 
+  if (check_live_geometry() != 0)
+    return 1;
   memset(&renderer, 0, sizeof(renderer));
   memset(&pull, 0, sizeof(pull));
   memset(&output, 0, sizeof(output));

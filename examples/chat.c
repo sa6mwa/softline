@@ -46,12 +46,14 @@ static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
              : -1;
 }
 
+static int chat_margin_left(int columns) { return columns >= 5 ? 2 : 0; }
+
 static int new_renderer(struct chat_state *state, mdf **out) {
   mdf_options options;
   mdf_sink sink;
   mdf_options_init(&options);
   options.width = state->columns;
-  options.margin_left = 2;
+  options.margin_left = chat_margin_left(state->columns);
   options.boring = !state->interactive;
   if (mdf_create(MDF_FORMAT_ANSI, &options, out) != MDF_OK)
     return -1;
@@ -70,13 +72,16 @@ static int sync_geometry(struct chat_state *state) {
   columns = mdf_terminal_width(STDOUT_FILENO, 80);
   if (columns == state->columns)
     return 0;
-  /* The composer updates both handles in one owner-thread callback. The
-   * two-column Markdown margin belongs to libmdf, not to Softline. */
+  /* The composer updates both handles in one owner-thread callback. A very
+   * narrow terminal drops the margin so libmdf retains three content columns.
+   */
   if (sl_set_bounds(state->sl, 0, 0, 0, 0) != SL_OK ||
-      state->prompt_renderer->set_width(state->prompt_renderer, columns) !=
-          MDF_OK ||
-      state->response_renderer->set_width(state->response_renderer, columns) !=
-          MDF_OK)
+      state->prompt_renderer->set_geometry(state->prompt_renderer, columns,
+                                           chat_margin_left(columns),
+                                           0) != MDF_OK ||
+      state->response_renderer->set_geometry(state->response_renderer, columns,
+                                             chat_margin_left(columns),
+                                             0) != MDF_OK)
     return -1;
   state->columns = columns;
   return 0;

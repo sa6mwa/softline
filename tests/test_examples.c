@@ -315,7 +315,8 @@ static int finish(pid_t pid, int fd) {
   int status, i;
   char tail[1024];
   size_t tail_len = 0;
-  for (i = 0; i < 1000; i++) {
+  struct timespec deadline = deadline_after(10000);
+  while (before_deadline(&deadline)) {
     fd_set fds;
     struct timeval tv;
     char discard[2048];
@@ -348,6 +349,8 @@ static int finish(pid_t pid, int fd) {
           memcpy(tail + tail_len, discard, keep);
           tail_len += keep;
         }
+      } else {
+        usleep(10000);
       }
     }
   }

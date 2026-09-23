@@ -100,11 +100,13 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 `example_chat` is the C streaming Markdown demo. It links libmdf only as an
 example dependency: libsoftline and its installed package remain independent
 of libmdf. The composer gives libmdf a two-column left margin and its default
-ANSI palette. Each submitted prompt becomes a Markdown block quote with blank
-lines around it. A worker emits one source character every 20 ms; the
-owner-thread watch callback feeds libmdf incrementally and forwards each sink
-fragment directly into a Softline output session. The responses mix headings,
-subheadings, italic, bold, code, and paragraphs while input remains editable.
+ANSI palette, updating both renderers' geometry on resize and dropping the
+margin on very narrow terminals. Each submitted prompt becomes a Markdown
+block quote with blank lines around it. A worker emits one source character
+every 20 ms; the owner-thread watch callback feeds libmdf incrementally and
+forwards each sink fragment directly into a Softline output session. The
+responses mix headings, subheadings, italic, bold, code, and paragraphs while
+input remains editable.
 
 While available, Enter dispatches a turn; while its operation is running,
 Enter queues a follow-up in Softline. Alt-Enter
