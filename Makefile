@@ -8,6 +8,7 @@ DIST_DIR  := $(ROOT_DIR)/dist
 CACHE_DIR := $(ROOT_DIR)/.cache
 
 NINJA := $(shell command -v ninja 2>/dev/null || command -v ninja-build 2>/dev/null)
+PRESET ?= debug
 
 ifneq ($(strip $(THEME)),)
 EXAMPLE_THEME_ENV := SOFTLINE_PROMPT_THEME="$(THEME)"
@@ -41,9 +42,12 @@ deps-cross: ## Provision and inspect all pinned cross toolchains
 
 .PHONY: deps
 deps: ## Configure one dependency closure (DEPENDENCY=libmdf|lua PRESET=debug)
-	@case "$(DEPENDENCY)" in libmdf|lua) ;; *) echo "ERROR: set DEPENDENCY=libmdf or DEPENDENCY=lua" >&2; exit 2 ;; esac
-	@case "$(PRESET)" in debug|debug-lua) ;; *) echo "ERROR: set PRESET=debug or PRESET=debug-lua" >&2; exit 2 ;; esac
-	@cmake --preset $(PRESET)
+	@case "$(DEPENDENCY):$(PRESET)" in \
+		libmdf:debug) cmake --preset debug ;; \
+		lua:debug|lua:debug-lua) cmake --preset "$(PRESET)" && \
+			sh ./scripts/build-local-lua.sh "$(BUILD_DIR)/$(PRESET)" ;; \
+		*) echo "ERROR: use DEPENDENCY=libmdf PRESET=debug or DEPENDENCY=lua PRESET=debug|debug-lua" >&2; exit 2 ;; \
+	esac
 
 .PHONY: build
 build: ## Build debug target
@@ -263,6 +267,7 @@ test-toolchain-contract: ## Verify toolchain provisioning and environment contra
 .PHONY: test-lifecycle-surface
 test-lifecycle-surface: ## Verify standard lifecycle command and preset surfaces
 	@./scripts/test_lifecycle_surface.sh
+	@python3 tests/test_deps_target.py "$(ROOT_DIR)"
 
 .PHONY: test-clangd
 test-clangd: deps-debug ## Verify clangd project configuration and semantic parsing

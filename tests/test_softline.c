@@ -1467,6 +1467,45 @@ static ssize_t read_some_with_timeout_ms(int fd, char *buf, size_t cap,
   return read(fd, buf, cap);
 }
 
+static void test_redirected_live_output_validates_stream(void) {
+  static const char expected[] = "\xc3\xa4\033[31mX\xf0\x80\x80";
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char bytes[64];
+  ssize_t amount;
+
+  TEST("redirected live output validates split ANSI and UTF-8");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\xc3", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xa4\033[31", 5) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "m", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "\001", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "X", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "redirected stream did not enforce byte protocol");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\xf0\x80\x80\x80", 4) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\x80", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "redirected stream accepted malformed UTF-8");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "redirected stream did not forward its valid prefix exactly");
+  PASS();
+}
+
 static ssize_t read_until_eof_with_timeout(int fd, char *buf, size_t cap) {
   ssize_t total;
   total = 0;
@@ -8603,39 +8642,65 @@ static void test_live_output_clips_clear_after_narrowing(void) {
 }
 
 static void test_live_output_emoji_cluster_width(void) {
+  static const struct {
+    const char *first;
+    const char *second;
+    const char *third;
+    const char *cluster;
+  } cases[] = {
+      {"\xe2\x9d\xa4", "\xef\xb8\x8f", NULL, "\xe2\x9d\xa4\xef\xb8\x8f"},
+      {"\xf0\x9f\x87\xb8", "\xf0\x9f\x87\xaa", NULL,
+       "\xf0\x9f\x87\xb8\xf0\x9f\x87\xaa"},
+      {"\xf0\x9f\x91\xa9", "\xe2\x80\x8d", "\xf0\x9f\x92\xbb",
+       "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb"}};
   struct winsize ws;
   sl_config_t cfg;
   sl_t *sl;
   int master_fd;
   int slave_fd;
   char output[8192];
+  size_t i;
 
-  TEST("split emoji cluster occupies two viewport cells before wrap");
-  memset(&ws, 0, sizeof(ws));
-  ws.ws_col = 10;
-  ws.ws_row = 4;
-  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
-              "openpty failed");
-  sl_config_init(&cfg);
-  cfg.input_fd = slave_fd;
-  cfg.output_fd = slave_fd;
-  sl = sl_create_with_config(&cfg);
-  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 3, 3) == SL_OK &&
-                  sl_output_stream_begin(sl) == SL_OK &&
-                  sl_output_stream_write(sl, "\xe2\x9d\xa4", 3) == SL_OK &&
-                  sl_output_stream_write(sl, "\xef\xb8\x8f", 3) == SL_OK &&
-                  sl_output_stream_write(sl, "a", 1) == SL_OK,
-              "split emoji output failed");
-  (void)read_live_pty_output(master_fd, output, sizeof(output));
-  ASSERT_TRUE(sl_output_stream_write(sl, "b", 1) == SL_OK,
-              "emoji wrap output failed");
-  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
-                  contains_bytes(output, "\033[2;1H"),
-              "emoji cluster did not wrap at its two-cell width");
-  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
-  sl_destroy(sl);
-  close(slave_fd);
-  close(master_fd);
+  TEST("split emoji clusters occupy two viewport cells before wrap");
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = 10;
+    ws.ws_row = 4;
+    ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+                "openpty failed");
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 3, 3) == SL_OK &&
+                    sl_output_stream_begin(sl) == SL_OK,
+                "emoji stream setup failed");
+    (void)read_live_pty_output(master_fd, output, sizeof(output));
+    ASSERT_TRUE(sl_output_stream_write(sl, cases[i].first,
+                                       strlen(cases[i].first)) == SL_OK &&
+                    sl_output_stream_write(sl, cases[i].second,
+                                           strlen(cases[i].second)) == SL_OK &&
+                    (!cases[i].third ||
+                     sl_output_stream_write(sl, cases[i].third,
+                                            strlen(cases[i].third)) == SL_OK),
+                "split emoji output failed");
+    ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+                "emoji cluster output missing");
+    ASSERT_TRUE(contains_bytes(output, cases[i].cluster),
+                "emoji cluster was split across terminal draws");
+    ASSERT_TRUE(sl_output_stream_write(sl, "a", 1) == SL_OK,
+                "glyph after emoji failed");
+    (void)read_live_pty_output(master_fd, output, sizeof(output));
+    ASSERT_TRUE(sl_output_stream_write(sl, "b", 1) == SL_OK,
+                "emoji wrap output failed");
+    ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                    contains_bytes(output, "\033[2;1H"),
+                "emoji cluster did not wrap at its two-cell width");
+    ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+    sl_destroy(sl);
+    close(slave_fd);
+    close(master_fd);
+  }
   PASS();
 }
 #else
@@ -9060,7 +9125,7 @@ static void test_live_output_clips_clear_after_narrowing(void) {
 }
 
 static void test_live_output_emoji_cluster_width(void) {
-  TEST("split emoji cluster occupies two viewport cells before wrap");
+  TEST("split emoji clusters occupy two viewport cells before wrap");
   printf("SKIP\n");
   tests_passed++;
 }
@@ -9173,6 +9238,7 @@ int main(void) {
   test_watch_completion_preserves_input_for_next_prompt();
   test_watch_fairness_rotates_ready_flood();
   test_watch_lifecycle_reports_terminal_events();
+  test_redirected_live_output_validates_stream();
   test_live_output_stream_across_narrow_bounds();
   test_live_output_stream_chunk_protocol();
   test_live_output_stream_changes_unbounded_width();

@@ -40,10 +40,22 @@ struct chat_state {
 
 static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
   struct chat_state *state;
+  ssize_t written;
   state = (struct chat_state *)userdata;
-  return state && sl_output_stream_write(state->sl, bytes, length) == SL_OK
-             ? 0
-             : -1;
+  if (!state || (!bytes && length > 0))
+    return -1;
+  if (state->interactive)
+    return sl_output_stream_write(state->sl, bytes, length) == SL_OK ? 0 : -1;
+  while (length > 0) {
+    written = write(STDOUT_FILENO, bytes, length);
+    if (written < 0 && errno == EINTR)
+      continue;
+    if (written <= 0)
+      return -1;
+    bytes += written;
+    length -= (size_t)written;
+  }
+  return 0;
 }
 
 static int chat_margin_left(int columns) { return columns >= 5 ? 2 : 0; }
@@ -398,7 +410,7 @@ int main(void) {
         set_prompt_theme_from_environment(state.sl) != 0 ||
         sl_bind_key(state.sl, SL_KEY_ESCAPE, cancel_editor_key, NULL) !=
             SL_OK)) ||
-      state.sl->output_stream_begin(state.sl) != SL_OK ||
+      (interactive && state.sl->output_stream_begin(state.sl) != SL_OK) ||
       new_renderer(&state, &state.prompt_renderer) != 0 ||
       new_renderer(&state, &state.response_renderer) != 0) {
     report_failure(&state, "setup");
@@ -484,7 +496,8 @@ cleanup:
   if (state.response_renderer)
     state.response_renderer->destroy(state.response_renderer);
   if (state.sl) {
-    (void)state.sl->output_stream_end(state.sl);
+    if (interactive)
+      (void)state.sl->output_stream_end(state.sl);
     sl_destroy(state.sl);
   }
   return exit_code;

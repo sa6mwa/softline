@@ -119,10 +119,10 @@ example uses it to stop the active simulated operation, retain its queue, and ke
 chat open. Automatic FIFO release stays stopped until the user submits a new
 turn or manually promotes a queued one.
 The queue UI, status line, and simulated operation stream activate only when
-both standard input and output are terminals; redirected output is plain
-libmdf-rendered text. The separate Lua chat example remains a plain queued-turn
-demonstration; its facade exposes the same generic output-session API for Lua
-applications composing an external renderer.
+both standard input and output are terminals; piped input or redirected output
+produces plain libmdf-rendered text. The separate Lua chat example remains a
+plain queued-turn demonstration; its facade exposes the same generic
+output-session API for Lua applications composing an external renderer.
 
 ```sh
 make run-simple
@@ -355,6 +355,8 @@ static int next_chunk(sl_t *sl, void *userdata,
 ```sh
 make build
 make test
+make deps DEPENDENCY=libmdf
+make deps DEPENDENCY=lua PRESET=debug-lua
 make asan
 make valgrind
 make package-consumer-smoke

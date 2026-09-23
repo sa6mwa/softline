@@ -3314,7 +3314,13 @@ static int sl_output_stream_begin_method(sl_t *self) {
   }
   sl_release_auto_scroll_region(impl);
   impl->output_stream_active = 1;
-  if (impl->active_prompt) {
+  if (!isatty(impl->output_fd)) {
+    impl->output_surface = sl_surface_create_validator();
+    if (!impl->output_surface) {
+      sl_set_error(self, "failed to create live output validator");
+      goto failed;
+    }
+  } else if (impl->active_prompt) {
     if (sl_render_apply(self, impl->active_prompt) != 0)
       goto failed;
   } else if (sl_output_surface_reconcile(self, sl_prompt_top(impl, 1)) != 0) {
@@ -3342,9 +3348,26 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
   if (length == 0)
     return SL_OK;
   if (!isatty(impl->output_fd)) {
-    if (sl_write_all(impl->output_fd, bytes, length) != 0) {
-      sl_set_error(self, "failed to write live output");
-      return SL_ERROR_IO;
+    size_t offset;
+    offset = 0;
+    while (offset < length) {
+      size_t span;
+      size_t accepted;
+      span = length - offset > 4096 ? 4096 : length - offset;
+      result = sl_surface_validate(impl->output_surface, bytes + offset, span,
+                                   &accepted);
+      if (accepted > 0 &&
+          sl_write_all(impl->output_fd, bytes + offset, accepted) != 0) {
+        sl_set_error(self, "failed to write live output");
+        return SL_ERROR_IO;
+      }
+      offset += accepted;
+      if (result != 0) {
+        sl_set_error(
+            self,
+            "live output contains an unsupported or invalid byte sequence");
+        return SL_ERROR_INVALID;
+      }
     }
     return SL_OK;
   }

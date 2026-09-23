@@ -593,6 +593,60 @@ static void test_chat_non_tty(const char *path) {
   PASS();
 }
 
+static void test_chat_piped_input_terminal_output(const char *path) {
+  int input[2], master_fd, slave_fd;
+  pid_t pid;
+  char bytes[2048], *args[2];
+  size_t used;
+  struct timespec deadline;
+
+  TEST("chat with piped input keeps terminal output line-oriented");
+  ASSERT_TRUE(pipe(input) == 0 &&
+                  openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
+              "pipe or pty failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    close(input[1]);
+    close(master_fd);
+    (void)dup2(input[0], STDIN_FILENO);
+    (void)dup2(slave_fd, STDOUT_FILENO);
+    close(input[0]);
+    close(slave_fd);
+    args[0] = (char *)path;
+    args[1] = NULL;
+    execv(path, args);
+    _exit(127);
+  }
+  close(input[0]);
+  close(slave_fd);
+  ASSERT_TRUE(write(input[1], "hello\nexit\n", 11) == 11, "input failed");
+  close(input[1]);
+  used = 0;
+  deadline = deadline_after(3000);
+  while (before_deadline(&deadline) && used < sizeof(bytes) - 1) {
+    fd_set readfds;
+    struct timeval timeout;
+    ssize_t amount;
+    FD_ZERO(&readfds);
+    FD_SET(master_fd, &readfds);
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 50000;
+    if (select(master_fd + 1, &readfds, NULL, NULL, &timeout) <= 0)
+      continue;
+    amount = read(master_fd, bytes + used, sizeof(bytes) - 1 - used);
+    if (amount <= 0)
+      break;
+    used += (size_t)amount;
+  }
+  bytes[used] = '\0';
+  ASSERT_TRUE(finish(pid, master_fd) == 0, "child failed");
+  ASSERT_TRUE(strstr(bytes, "> hello") != NULL, "quote missing");
+  ASSERT_TRUE(strstr(bytes, "\033[") == NULL,
+              "piped chat input activated terminal viewport");
+  PASS();
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   if (argc != 3)
@@ -606,6 +660,7 @@ int main(int argc, char **argv) {
   test_chat_resizes_while_streaming(argv[2]);
   test_chat_immediate_steer(argv[2]);
   test_chat_non_tty(argv[2]);
+  test_chat_piped_input_terminal_output(argv[2]);
   printf("%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;
 }

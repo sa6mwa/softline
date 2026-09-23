@@ -45,6 +45,7 @@ struct sl_surface {
   sl_surface_style_t style;
   int (*cell_width)(unsigned long);
   int (*cluster_width)(const char *, size_t);
+  int validate_only;
   int parser; /* 0 text, 1 ESC, 2 CSI */
   char csi[128];
   size_t csi_len;
@@ -227,10 +228,12 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
                           unsigned int length, unsigned long codepoint) {
   sl_surface_cell_t *cell;
   int cells;
+  if (surface->validate_only)
+    return 0;
   cells = surface->cell_width(codepoint);
   if (cells < 0)
     cells = 1;
-  if (cells == 0 && surface->col > 0 && surface->cells) {
+  if (surface->col > 0 && surface->cells) {
     int base_col;
     int new_width;
     sl_surface_cell_t updated;
@@ -243,37 +246,44 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
     cell =
         &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
                         (size_t)base_col];
-    if (cell->len == 0 || cell->width == 0)
-      return -2;
-    if ((size_t)cell->len + length > sizeof(cell->bytes))
-      return -1;
-    updated = *cell;
-    memcpy(updated.bytes + updated.len, bytes, length);
-    updated.len = (unsigned char)(updated.len + length);
-    new_width = surface->cluster_width(updated.bytes, updated.len);
-    if (new_width < 1 || new_width > surface->width)
-      return -2;
-    updated.width = (unsigned char)new_width;
-    if (base_col + new_width > surface->width) {
-      cell->bytes[0] = ' ';
-      cell->len = 1;
-      cell->width = 1;
-      if (sl_surface_draw_cell(surface, surface->height - 1, base_col, cell) !=
-          0)
-        return -1;
-      surface->col = 0;
-      if (sl_surface_scroll(surface) != 0)
-        return -1;
-      base_col = 0;
-      cell =
-          &surface
-               ->cells[(size_t)(surface->height - 1) * (size_t)surface->width];
+    if ((cells == 0 || codepoint == 0x200dul ||
+         (codepoint >= 0x1f1e6ul && codepoint <= 0x1f1fful) ||
+         (cell->len >= 3 &&
+          memcmp(cell->bytes + cell->len - 3, "\xe2\x80\x8d", 3) == 0)) &&
+        cell->len > 0 && cell->width > 0 &&
+        (size_t)cell->len + length <= sizeof(cell->bytes)) {
+      updated = *cell;
+      memcpy(updated.bytes + updated.len, bytes, length);
+      updated.len = (unsigned char)(updated.len + length);
+      new_width = surface->cluster_width(updated.bytes, updated.len);
+      if (new_width > 0) {
+        if (new_width > surface->width)
+          return -2;
+        updated.width = (unsigned char)new_width;
+        if (base_col + new_width > surface->width) {
+          cell->bytes[0] = ' ';
+          cell->len = 1;
+          cell->width = 1;
+          if (sl_surface_draw_cell(surface, surface->height - 1, base_col,
+                                   cell) != 0)
+            return -1;
+          surface->col = 0;
+          if (sl_surface_scroll(surface) != 0)
+            return -1;
+          base_col = 0;
+          cell = &surface->cells[(size_t)(surface->height - 1) *
+                                 (size_t)surface->width];
+        }
+        *cell = updated;
+        if (new_width == 2 && base_col + 1 < surface->width)
+          memset(cell + 1, 0, sizeof(*cell));
+        surface->col = base_col + new_width;
+        return sl_surface_draw_cell(surface, surface->height - 1, base_col,
+                                    cell);
+      }
     }
-    *cell = updated;
-    if (new_width == 2 && base_col + 1 < surface->width)
-      memset(cell + 1, 0, sizeof(*cell));
-    surface->col = base_col + new_width;
-    return sl_surface_draw_cell(surface, surface->height - 1, base_col, cell);
+    if (cells == 0)
+      return -2;
   }
   if (cells == 0)
     cells = 1;
@@ -409,8 +419,10 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
       surface->parser = 0;
       return -2;
     }
-    if (surface->csi_len >= sizeof(surface->csi))
+    if (surface->csi_len >= sizeof(surface->csi)) {
+      surface->parser = 0;
       return -2;
+    }
     surface->csi[surface->csi_len++] = (char)byte;
     return 0;
   }
@@ -446,6 +458,8 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
     return 0;
   }
   if (byte == '\n') {
+    if (surface->validate_only)
+      return 0;
     surface->col = 0;
     return sl_surface_scroll(surface);
   }
@@ -455,6 +469,8 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
   }
   if (byte == '\t') {
     int spaces;
+    if (surface->validate_only)
+      return 0;
     spaces = 8 - (surface->col % 8);
     while (spaces-- > 0) {
       if (sl_surface_put(surface, " ", 1, ' ') != 0)
@@ -511,6 +527,14 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
   surface->height = height;
   surface->cell_width = cell_width;
   surface->cluster_width = cluster_width;
+  return surface;
+}
+
+sl_surface_t *sl_surface_create_validator(void) {
+  sl_surface_t *surface;
+  surface = (sl_surface_t *)calloc(1, sizeof(*surface));
+  if (surface)
+    surface->validate_only = 1;
   return surface;
 }
 
@@ -600,7 +624,7 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
 
 int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length) {
   size_t i;
-  if (!surface || (!bytes && length > 0))
+  if (!surface || surface->validate_only || (!bytes && length > 0))
     return -2;
   if (length == 0)
     return 0;
@@ -617,6 +641,25 @@ int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length) {
   }
   surface->draw_valid = 0;
   return sl_surface_write_all(surface->fd, "\033[0m", 4);
+}
+
+int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,
+                        size_t *accepted) {
+  size_t i;
+  int status;
+  if (!surface || !surface->validate_only || (!bytes && length > 0) ||
+      !accepted)
+    return -2;
+  *accepted = 0;
+  for (i = 0; i < length; i++) {
+    status = sl_surface_byte(surface, (unsigned char)bytes[i]);
+    if (status != 0) {
+      *accepted = i;
+      return status;
+    }
+  }
+  *accepted = length;
+  return 0;
 }
 
 int sl_surface_complete(const sl_surface_t *surface) {
