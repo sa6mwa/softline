@@ -8737,6 +8737,122 @@ static size_t read_live_pty_output(int fd, char *bytes, size_t capacity) {
   return used;
 }
 
+static void test_live_output_preserves_reverse_search_prompt(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[32768];
+  char chunk[4096];
+  char result[64];
+  size_t terminal_len;
+  size_t output_mark;
+  unsigned int history_before;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("live output preserves reverse-search prompt and stable history");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 16;
+  ws.ws_row = 6;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0 && pipe(result_pipe) == 0,
+              "pipe setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct live_output_test_state state;
+    char *line;
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_history_add(sl, "alpha") != SL_OK ||
+        sl_output_stream_begin(sl) != SL_OK)
+      _exit(2);
+    state.fd = wake_pipe[0];
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ, live_output_test_watch,
+                     &state, &watch_id) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "chat> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    if (sl_output_stream_end(sl) != SL_OK)
+      _exit(5);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  for (tries = 0; tries < 10 && !contains_bytes(terminal, "chat> "); tries++) {
+    n = (ssize_t)read_live_pty_output(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0, "initial prompt missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  ASSERT_TRUE(write(master_fd, "\022", 1) == 1, "reverse search input failed");
+  for (tries = 0; tries < 40; tries++) {
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0, "reverse search prompt missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+    if (contains_bytes(terminal, "(r-search)`':"))
+      break;
+  }
+  ASSERT_TRUE(tries < 40, "reverse search did not become visible");
+  n = (ssize_t)read_live_pty_output(master_fd, chunk, sizeof(chunk));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  vt_init(&screen, 6, 16);
+  vt_apply(&screen, terminal);
+  history_before = screen.history_count;
+  output_mark = terminal_len;
+  ASSERT_TRUE(write(wake_pipe[1], "1", 1) == 1, "live write signal failed");
+  for (tries = 0;
+       tries < 10 && !contains_bytes(terminal + output_mark, "Hello");
+       tries++) {
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0, "live write missing during reverse search");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  ASSERT_TRUE(!contains_bytes(terminal + output_mark, "chat> "),
+              "live output redrew the ordinary prompt over reverse search");
+  vt_init(&screen, 6, 16);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(screen.history_count == history_before,
+              "live output moved or replaced the reverse-search prompt");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "search submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "search result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(wake_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "search child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  strcmp(result, "alpha") == 0,
+              "reverse search result changed after live output");
+  PASS();
+}
+
 struct live_submit_state {
   int fired;
   int status;
@@ -9022,7 +9138,9 @@ static void test_live_output_prompt_growth_preserves_history(void) {
   for (tries = 0; tries < 20; tries++) {
     vt_init(&screen, 8, 20);
     vt_apply(&screen, output);
-    if (vt_contains(&screen, "SEVEN") && vt_contains(&screen, "> "))
+    if (vt_history_contains(&screen, "ONE") &&
+        vt_history_contains(&screen, "TWO") && vt_contains(&screen, "THREE") &&
+        vt_contains(&screen, "SEVEN") && vt_contains(&screen, "> "))
       break;
     amount = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
     ASSERT_TRUE(amount > 0 && used + (size_t)amount < sizeof(output),
@@ -9133,6 +9251,48 @@ static void test_live_output_reconciles_physical_resize(void) {
                   contains_bytes(output, "\033[2;6H"),
               "resized output used the old terminal row");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_rejects_fixed_bounds_after_shrink(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("fixed live output rejects off-screen bounds after terminal shrink");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 6;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 5, 1, 10, 4) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "A", 1) == SL_OK,
+              "initial bounded output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ws.ws_col = 12;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "shrink failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "ABCDEFGHIJ", 10) == SL_ERROR_INVALID,
+              "off-screen fixed bounds were accepted");
+  ASSERT_TRUE(strstr(sl_last_error(sl), "bounds exceed") != NULL,
+              "resize error did not explain the bounds failure");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) == 0,
+              "rejected output wrote outside the box");
+  ws.ws_col = 20;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0 &&
+                  sl_output_stream_write(sl, "B", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "stream did not recover after terminal widened");
   sl_destroy(sl);
   close(slave_fd);
   close(master_fd);
@@ -9300,6 +9460,11 @@ static void test_live_output_cluster_limit(void) {
   PASS();
 }
 #else
+static void test_live_output_preserves_reverse_search_prompt(void) {
+  TEST("live output preserves reverse-search prompt and stable history");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_after_readline_submit_clears_editor(void) {
   TEST("live output after readline submission excludes old editor cells");
   printf("SKIP\n");
@@ -9744,6 +9909,12 @@ static void test_live_output_reconciles_physical_resize(void) {
   tests_passed++;
 }
 
+static void test_live_output_rejects_fixed_bounds_after_shrink(void) {
+  TEST("fixed live output rejects off-screen bounds after terminal shrink");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
 static void test_live_output_clips_clear_after_narrowing(void) {
   TEST("live output clips old surface clearing after a physical shrink");
   printf("SKIP\n");
@@ -9877,6 +10048,7 @@ int main(void) {
   test_watch_lifecycle_reports_terminal_events();
   test_redirected_live_output_validates_stream();
   test_live_output_stream_across_narrow_bounds();
+  test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();
   test_live_output_disables_native_scroll_after_widening();
   test_live_output_native_scroll_resets_prompt_style();
@@ -9886,6 +10058,7 @@ int main(void) {
   test_live_output_error_resets_terminal_style();
   test_live_output_stream_changes_unbounded_width();
   test_live_output_reconciles_physical_resize();
+  test_live_output_rejects_fixed_bounds_after_shrink();
   test_live_output_clips_clear_after_narrowing();
   test_live_output_emoji_cluster_width();
   test_live_output_cluster_limit();

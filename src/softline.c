@@ -808,7 +808,10 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
   y = sl_box_top(impl);
   width = sl_box_width(impl);
   height = prompt_top - y;
-  if (width < 1 || height < 0)
+  if (width < 1 || height < 0 || x < 0 || y < 0 ||
+      x >= sl_terminal_columns(impl) || y >= sl_terminal_rows(impl) ||
+      width > sl_terminal_columns(impl) - x ||
+      height > sl_terminal_rows(impl) - y)
     return -1;
   if (!impl->output_surface) {
     impl->output_surface =
@@ -3520,6 +3523,13 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
     }
     return SL_OK;
   }
+  if (sl_box_left(impl) >= sl_terminal_columns(impl) ||
+      sl_box_top(impl) >= sl_terminal_rows(impl) ||
+      sl_box_width(impl) > sl_terminal_columns(impl) - sl_box_left(impl) ||
+      sl_terminal_height(impl) > sl_terminal_rows(impl) - sl_box_top(impl)) {
+    sl_set_error(self, "live output bounds exceed the terminal after resize");
+    return SL_ERROR_INVALID;
+  }
   if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
     return SL_ERROR_IO;
   if ((!impl->active_prompt || !impl->output_surface) &&
@@ -4655,6 +4665,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     int key;
     sl_key_action_t action;
     render_prompt = search.active && search.prompt ? search.prompt : prompt;
+    impl->active_prompt = render_prompt;
     paste_len = 0;
     if (impl->bracketed_paste)
       key = sl_read_paste_input(self, paste_bytes, &paste_len);
@@ -4688,6 +4699,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         }
       }
       render_prompt = search.active && search.prompt ? search.prompt : prompt;
+      impl->active_prompt = render_prompt;
       if (!done && sl_render_apply(self, render_prompt) != 0) {
         failed = 1;
         done = 1;
@@ -4719,6 +4731,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
           break;
         }
         render_prompt = search.active && search.prompt ? search.prompt : prompt;
+        impl->active_prompt = render_prompt;
         if (sl_render_apply(self, render_prompt) != 0) {
           failed = 1;
           done = 1;
@@ -4948,12 +4961,14 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       break;
     }
     render_prompt = search.active && search.prompt ? search.prompt : prompt;
+    impl->active_prompt = render_prompt;
     if (!done && sl_render_apply(self, render_prompt) != 0) {
       failed = 1;
       done = 1;
     }
   }
   impl->active_readline = 0;
+  impl->active_prompt = prompt;
   if (interrupted) {
     sl_prompt_queue_stop_queued_turns(impl);
     free(promoted);
