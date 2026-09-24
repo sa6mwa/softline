@@ -8723,6 +8723,140 @@ static size_t read_live_pty_output(int fd, char *bytes, size_t capacity) {
   return used;
 }
 
+struct native_scroll_probe {
+  int master_fd;
+  int output_fd;
+  int resize;
+  int fired;
+  int result;
+};
+
+static void native_scroll_probe_idle(sl_t *sl, void *userdata) {
+  struct native_scroll_probe *probe;
+  struct winsize ws;
+  const char *bytes;
+  probe = (struct native_scroll_probe *)userdata;
+  if (probe->fired)
+    return;
+  probe->fired = 1;
+  if (probe->resize) {
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = 30;
+    ws.ws_row = 8;
+    if (ioctl(probe->master_fd, TIOCSWINSZ, &ws) != 0 ||
+        write(probe->output_fd, "\033[1;25HOUTSID", 13) != 13) {
+      probe->result = SL_ERROR_IO;
+      (void)sl_cancel(sl);
+      return;
+    }
+    bytes = "FIRST\nSECOND\nTHIRD";
+  } else {
+    bytes = "\033[41mRED\nNEXT";
+  }
+  probe->result = sl_output_stream_write(sl, bytes, strlen(bytes));
+  (void)sl_cancel(sl);
+}
+
+static void test_live_output_disables_native_scroll_after_widening(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct native_scroll_probe probe;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+
+  TEST("widening terminal disables native scroll for fixed-width bounds");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 8) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "full-width setup failed");
+  memset(&probe, 0, sizeof(probe));
+  probe.master_fd = master_fd;
+  probe.output_fd = slave_fd;
+  probe.resize = 1;
+  ASSERT_TRUE(sl_set_idle_callback(sl, native_scroll_probe_idle, &probe) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line == NULL && probe.fired && probe.result == SL_OK,
+              "resized live write failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(strncmp(screen.cells[0] + 24, "OUTSID", 6) == 0 &&
+                  vt_contains(&screen, "FIRST") &&
+                  vt_contains(&screen, "SECOND") &&
+                  vt_contains(&screen, "THIRD") &&
+                  !contains_bytes(output, "\033[?2026h"),
+              "native scroll modified cells outside widened box");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_native_scroll_resets_prompt_style(void) {
+  struct winsize ws;
+  struct native_scroll_probe probe;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+  const char *sync_start;
+  const char *reset;
+  const char *prompt;
+
+  TEST("native scroll resets streamed style before plain prompt redraw");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  cfg.prompt_theme = SL_PROMPT_THEME_PLAIN;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
+              "plain stream setup failed");
+  memset(&probe, 0, sizeof(probe));
+  probe.master_fd = master_fd;
+  probe.output_fd = slave_fd;
+  ASSERT_TRUE(sl_set_idle_callback(sl, native_scroll_probe_idle, &probe) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line == NULL && probe.fired && probe.result == SL_OK,
+              "styled live write failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  sync_start = strstr(output, "\033[?2026h");
+  reset = sync_start ? strstr(sync_start, "\033[0m") : NULL;
+  prompt = sync_start ? strstr(sync_start, "> ") : NULL;
+  ASSERT_TRUE(sync_start && reset && prompt && reset < prompt,
+              "plain prompt inherited streamed background colour");
+  ASSERT_TRUE(contains_bytes(output, "\033[0;41mNEXT"),
+              "native scroll lost the stream's logical ANSI style");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
 static void test_live_output_short_full_width_box_uses_viewport(void) {
   struct winsize ws;
   struct vt_screen screen;
@@ -9091,6 +9225,16 @@ static void test_live_output_cluster_limit(void) {
   PASS();
 }
 #else
+static void test_live_output_disables_native_scroll_after_widening(void) {
+  TEST("widening terminal disables native scroll for fixed-width bounds");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_native_scroll_resets_prompt_style(void) {
+  TEST("native scroll resets streamed style before plain prompt redraw");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_short_full_width_box_uses_viewport(void) {
   TEST("short full-width box keeps streamed rows inside its viewport");
   printf("SKIP\n");
@@ -9653,6 +9797,8 @@ int main(void) {
   test_watch_lifecycle_reports_terminal_events();
   test_redirected_live_output_validates_stream();
   test_live_output_stream_across_narrow_bounds();
+  test_live_output_disables_native_scroll_after_widening();
+  test_live_output_native_scroll_resets_prompt_style();
   test_live_output_short_full_width_box_uses_viewport();
   test_live_output_prompt_growth_preserves_history();
   test_live_output_stream_chunk_protocol();

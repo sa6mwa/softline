@@ -767,7 +767,7 @@ static int sl_native_history_scroll(void *userdata, int after) {
       return -1;
     return rc;
   }
-  if (sl_wstr(impl->output_fd, "\033[?2026h") != 0 ||
+  if (sl_wstr(impl->output_fd, "\033[?2026h\033[0m") != 0 ||
       sl_render_clear_active(self) != 0 ||
       sl_write_cursor_pos(impl->output_fd, sl_terminal_height(impl) - 1, 0) !=
           0 ||
@@ -776,6 +776,22 @@ static int sl_native_history_scroll(void *userdata, int after) {
     return -1;
   }
   return 0;
+}
+
+static void sl_output_surface_update_scroll_hook(sl_t *self) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || !impl->output_surface)
+    return;
+  sl_surface_set_scroll_hook(
+      impl->output_surface,
+      impl->output_stream_active && sl_box_left(impl) == 0 &&
+              sl_box_top(impl) == 0 &&
+              sl_box_width(impl) >= sl_terminal_columns(impl) &&
+              sl_box_bottom(impl) == sl_terminal_rows(impl) - 1
+          ? sl_native_history_scroll
+          : NULL,
+      self);
 }
 
 static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
@@ -804,14 +820,7 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
                                after_native_scroll) != 0) {
     return -1;
   }
-  sl_surface_set_scroll_hook(impl->output_surface,
-                             impl->output_stream_active && x == 0 && y == 0 &&
-                                     width >= sl_terminal_columns(impl) &&
-                                     sl_box_bottom(impl) ==
-                                         sl_terminal_rows(impl) - 1
-                                 ? sl_native_history_scroll
-                                 : NULL,
-                             self);
+  sl_output_surface_update_scroll_hook(self);
   return 0;
 }
 
@@ -2843,7 +2852,7 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
         native_scroll_rows = old_height - top;
     }
     if (native_scroll_rows > 0) {
-      if (sl_wstr(impl->output_fd, "\033[?2026h") != 0)
+      if (sl_wstr(impl->output_fd, "\033[?2026h\033[0m") != 0)
         return -1;
       sync_open = 1;
     }
@@ -3515,6 +3524,7 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
     sl_set_error(self, "failed to resize live output surface");
     return SL_ERROR_IO;
   }
+  sl_output_surface_update_scroll_hook(self);
   if (sl_hide_cursor(impl) != 0) {
     sl_set_error(self, "failed to hide cursor for live output");
     return SL_ERROR_IO;
