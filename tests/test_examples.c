@@ -552,6 +552,8 @@ test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
   ASSERT_TRUE(note_row >= 0 && quote_row == note_row + 2 &&
                   answer_row == quote_row + 2,
               "visible transcript or prompt spacing was lost");
+  ASSERT_TRUE(t.cells[quote_row][0] == '>' && t.cells[quote_row][1] == ' ',
+              "quoted prompt prefix is indented");
   ASSERT_TRUE(quote_row > 0 &&
                   strspn(t.cells[quote_row - 1], " ") == (size_t)t.cols &&
                   strspn(t.cells[quote_row + 1], " ") == (size_t)t.cols,
@@ -811,8 +813,7 @@ static void test_chat_non_tty(const char *path) {
               "child failed");
   ASSERT_TRUE(strstr(bytes, "> hello") != NULL, "quote missing");
   ASSERT_TRUE(
-      strcmp(bytes,
-             "\n\n  > hello\n\n  > ok\n\n  > **literal** # heading\n\n") == 0,
+      strcmp(bytes, "\n\n> hello\n\n> ok\n\n> **literal** # heading\n\n") == 0,
       "renderer output has more or fewer than one empty prompt row");
   ASSERT_TRUE(strstr(bytes, "\033[") == NULL, "terminal controls in pipe");
   PASS();

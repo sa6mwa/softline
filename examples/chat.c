@@ -456,7 +456,6 @@ int main(void) {
         set_prompt_theme_from_environment(state.sl) != 0 ||
         sl_bind_key(state.sl, SL_KEY_ESCAPE, cancel_editor_key, NULL) !=
             SL_OK)) ||
-      sl_set_quoted_prompt_prefix(state.sl, "  > ") != SL_OK ||
       state.sl->output_stream_begin(state.sl) != SL_OK ||
       new_renderer(&state, &state.note_renderer) != 0 ||
       new_renderer(&state, &state.response_renderer) != 0) {
