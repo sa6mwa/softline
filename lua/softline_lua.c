@@ -756,6 +756,45 @@ static int softline_lua_set_prompt_theme(lua_State *L) {
                              (sl_prompt_theme_t)luaL_checkinteger(L, 2)));
 }
 
+static int softline_lua_set_quoted_prompt_prefix(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  const char *prefix = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+  return softline_lua_status(L,
+                             sl_set_quoted_prompt_prefix(handle->sl, prefix));
+}
+
+static void softline_lua_quote_color(lua_State *L, int index, const char *field,
+                                     sl_quote_color_t *out) {
+  unsigned char *values[3];
+  int i;
+  lua_getfield(L, index, field);
+  luaL_checktype(L, -1, LUA_TTABLE);
+  values[0] = &out->red;
+  values[1] = &out->green;
+  values[2] = &out->blue;
+  for (i = 0; i < 3; i++) {
+    lua_Integer value;
+    lua_rawgeti(L, -1, i + 1);
+    value = luaL_checkinteger(L, -1);
+    if (value < 0 || value > 255)
+      luaL_error(L, "quoted prompt %s colour channels must be 0..255", field);
+    *values[i] = (unsigned char)value;
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+}
+
+static int softline_lua_set_quoted_prompt_style(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_quote_style_t style;
+  if (lua_isnoneornil(L, 2))
+    return softline_lua_status(L, sl_set_quoted_prompt_style(handle->sl, NULL));
+  luaL_checktype(L, 2, LUA_TTABLE);
+  softline_lua_quote_color(L, 2, "prefix", &style.prefix);
+  softline_lua_quote_color(L, 2, "text", &style.text);
+  return softline_lua_status(L, sl_set_quoted_prompt_style(handle->sl, &style));
+}
+
 static int softline_lua_set_statusline(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -1143,6 +1182,13 @@ static int softline_lua_output_stream_write(lua_State *L) {
                              sl_output_stream_write(handle->sl, bytes, length));
 }
 
+static int softline_lua_output_stream_write_quoted_prompt(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  const char *text = luaL_checkstring(L, 2);
+  return softline_lua_status(
+      L, sl_output_stream_write_quoted_prompt(handle->sl, text));
+}
+
 /** Lua editor:output_stream_end(): release the session without finishing any
  * external renderer document or adding output bytes. */
 static int softline_lua_output_stream_end(lua_State *L) {
@@ -1180,6 +1226,8 @@ static const luaL_Reg softline_lua_methods[] = {
     {"set_queue_keys", softline_lua_set_queue_keys},
     {"queue_keys", softline_lua_queue_keys},
     {"set_prompt_theme", softline_lua_set_prompt_theme},
+    {"set_quoted_prompt_prefix", softline_lua_set_quoted_prompt_prefix},
+    {"set_quoted_prompt_style", softline_lua_set_quoted_prompt_style},
     {"set_statusline", softline_lua_set_statusline},
     {"set_status_message", softline_lua_set_status_message},
     {"set_status_elements", softline_lua_set_status_elements},
@@ -1203,6 +1251,8 @@ static const luaL_Reg softline_lua_methods[] = {
     {"print_above", softline_lua_print_above},
     {"output_stream_begin", softline_lua_output_stream_begin},
     {"output_stream_write", softline_lua_output_stream_write},
+    {"output_stream_write_quoted_prompt",
+     softline_lua_output_stream_write_quoted_prompt},
     {"output_stream_end", softline_lua_output_stream_end},
     {"last_readline_status", softline_lua_last_readline_status},
     {"last_error", softline_lua_last_error},

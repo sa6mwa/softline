@@ -179,6 +179,14 @@ live scroll regions, status lines, and spinners are off; the theme is
   printable UTF-8, LF/CR/Tab, and ANSI SGR styling; malformed or unsupported
   terminal controls return `nil, status`. An empty string succeeds without
   changing the screen. No full response is buffered.
+- `sl:output_stream_write_quoted_prompt(text)` writes submitted text between
+  renderer segments as a wrapped, themed quote, repeating the prefix on every
+  visible row and keeping one empty row on each side. The text is literal, so
+  Markdown punctuation remains visible. `sl:set_quoted_prompt_prefix(prefix)`
+  changes the default `> ` prefix; `nil` restores it.
+  `sl:set_quoted_prompt_style({prefix={r,g,b}, text={r,g,b}})` overrides the
+  theme colours; `nil` restores theme defaults. The prefix stays faded and the
+  text stays italic.
 - `sl:output_stream_end()` ends the session without inserting a newline or
   finishing an external renderer document. If the last write left an ANSI or
   UTF-8 sequence incomplete, it returns `nil, status` and keeps the session

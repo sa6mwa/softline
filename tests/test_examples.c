@@ -471,8 +471,8 @@ static void test_chat_live_queue(const char *path) {
               "italic status or prompt treatment missing");
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "heading not streamed");
-  ASSERT_TRUE(strstr(t.raw, "\033[0;3;34mfirst") != NULL,
-              "libmdf did not render the submitted prompt in italics");
+  ASSERT_TRUE(strstr(t.raw, "\033[0;3;96mfirst") != NULL,
+              "quoted prompt did not use its italic accent style");
   ASSERT_TRUE(wait_screen(&t, "Reasoning...", 3000) == 0,
               "status message did not update mid-stream");
   ASSERT_TRUE(write(fd, "draft", 5) == 5, "draft failed");
@@ -702,6 +702,17 @@ static void test_chat_queued_steer(const char *path) {
               "steer mode was not shown in the queue");
   ASSERT_TRUE(wait_screen(&t, "> steer", 5000) == 0,
               "steer was not delivered at a seam");
+  {
+    struct timespec queue_deadline = deadline_after(1500);
+    while (!term_contains(&t, "Q 1. queued") &&
+           before_deadline(&queue_deadline))
+      if (term_read(&t) < 0)
+        break;
+  }
+  if (!term_contains(&t, "Q 1. queued"))
+    term_dump(&t);
+  ASSERT_TRUE(term_contains(&t, "Q 1. queued"),
+              "ordinary queued turn was consumed at the steer seam");
   ASSERT_TRUE(wait_screen(&t, "Next step", 6000) == 0,
               "response did not continue after steer");
   paragraph_row = term_row_of(&t, "Here is italic context");
@@ -718,8 +729,6 @@ static void test_chat_queued_steer(const char *path) {
     term_dump(&t);
   ASSERT_TRUE(valid_seam,
               "steer split a Markdown paragraph or lacked blank rows");
-  ASSERT_TRUE(term_contains(&t, "Q 1. queued"),
-              "ordinary queued turn was consumed at the steer seam");
   ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
@@ -784,7 +793,9 @@ static void test_chat_non_tty(const char *path) {
   }
   close(input[0]);
   close(output[1]);
-  ASSERT_TRUE(write(input[1], "hello\nok\nexit\n", 14) == 14, "input failed");
+  ASSERT_TRUE(write(input[1], "hello\nok\n**literal** # heading\nexit\n", 36) ==
+                  36,
+              "input failed");
   close(input[1]);
   used = 0;
   while (used < sizeof(bytes) - 1) {
@@ -799,8 +810,10 @@ static void test_chat_non_tty(const char *path) {
                   WEXITSTATUS(status) == 0,
               "child failed");
   ASSERT_TRUE(strstr(bytes, "> hello") != NULL, "quote missing");
-  ASSERT_TRUE(strcmp(bytes, "\n\n  > hello\n\n  > ok\n\n") == 0,
-              "renderer output has more or fewer than one empty prompt row");
+  ASSERT_TRUE(
+      strcmp(bytes,
+             "\n\n  > hello\n\n  > ok\n\n  > **literal** # heading\n\n") == 0,
+      "renderer output has more or fewer than one empty prompt row");
   ASSERT_TRUE(strstr(bytes, "\033[") == NULL, "terminal controls in pipe");
   PASS();
 }

@@ -103,8 +103,8 @@ events. The core and Lua libraries do not import libmdf.
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
 - The C chat example composes a libmdf incremental renderer with the generic
   session. The composer configures default palette and a two-column
-  left margin, passes a submitted prompt through an italic Markdown blockquote
-  source hook with blank lines around it, and emits varied Markdown response
+  left margin, passes submitted prompts to Softline's themed quoted-prompt
+  helper between libmdf output segments, and emits varied Markdown response
   text one source character per 20 ms while the user may type, queue, promote,
   and cancel.
 - The Lua facade tests the generic session lifecycle and byte forwarding;

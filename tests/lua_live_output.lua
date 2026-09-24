@@ -14,6 +14,12 @@ watch = assert(sl:watch_add(producer,
       local byte = producer:read(1)
       if byte == "A" then
         assert(sl:output_stream_write("first"))
+        assert(sl:set_quoted_prompt_prefix("?? "))
+        assert(sl:set_quoted_prompt_style({prefix = {1, 2, 3},
+            text = {4, 5, 6}}))
+        assert(sl:output_stream_write_quoted_prompt("*literal*"))
+        assert(sl:set_quoted_prompt_style(nil))
+        assert(sl:set_quoted_prompt_prefix(nil))
       elseif byte == "B" then
         assert(sl:set_bounds(4, 1, 24, 6))
         assert(sl:set_screen_width(24))

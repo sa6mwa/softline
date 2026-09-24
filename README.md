@@ -123,9 +123,10 @@ chat open. Automatic FIFO release stays stopped until the user submits a new
 turn or manually promotes a queued one.
 The queue UI, status line, and simulated operation stream activate only when
 both standard input and output are terminals; piped input or redirected output
-produces plain libmdf-rendered text. The separate Lua chat example remains a
-plain queued-turn demonstration; its facade exposes the same generic
-output-session API for Lua applications composing an external renderer.
+produces plain libmdf-rendered responses with Softline-quoted prompts. The
+separate Lua chat example remains a plain queued-turn demonstration; its facade
+exposes the same generic output-session API for Lua applications composing an
+external renderer.
 
 ```sh
 make run-simple
@@ -207,7 +208,14 @@ Each write is visible before it returns, including while `next_prompt()` is
 active. Chunk boundaries add no content or document semantics; ANSI SGR and
 UTF-8 sequences may cross calls. End rejects an incomplete sequence. Softline
 clears completed editor rows when a turn is submitted during an open session;
-applications can render the submitted text into the transcript. The composer
+applications can render the submitted text into the transcript. Use
+`sl_output_stream_write_quoted_prompt(sl, submitted)` between complete renderer
+segments for a literal, italic prompt. Softline wraps it at the current output
+width, repeats `> ` on each visible row, and supplies missing line breaks for
+one blank row on each side. The prefix and its colour can be configured
+independently with `sl_set_quoted_prompt_prefix()` and
+`sl_set_quoted_prompt_style()`; NULL restores the theme defaults. The Lua
+facade exposes matching methods. The composer
 updates Softline geometry (`set_bounds` or `set_screen_width`) and
 renderer width on the owner thread when the terminal changes; neither library
 owns the other's margins. Softline immediately reconciles the transcript and

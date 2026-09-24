@@ -320,6 +320,20 @@ typedef enum sl_prompt_theme {
   SL_PROMPT_THEME_DEFAULT = 9
 } sl_prompt_theme_t;
 
+/** RGB colour for a separately styled quoted transcript prompt. */
+typedef struct sl_quote_color {
+  unsigned char red;
+  unsigned char green;
+  unsigned char blue;
+} sl_quote_color_t;
+
+/** Override colours for quoted prompts. The prefix is dimmed and the prompt
+ * text is italic regardless of the selected colours. */
+typedef struct sl_quote_style {
+  sl_quote_color_t prefix;
+  sl_quote_color_t text;
+} sl_quote_style_t;
+
 /** Maximum number of retained status-line elements. Excess bulk elements end
  * in a final `...` element. */
 #define SL_STATUS_MAX_ELEMENTS 32
@@ -554,6 +568,15 @@ struct sl {
   /** Change one queued entry's delivery intent. */
   int (*prompt_queue_set_mode)(sl_t *self, size_t index,
                                sl_prompt_queue_mode_t mode);
+  /** Write a submitted prompt into the open output stream as a wrapped quote.
+   * Add only the line breaks needed for one empty row on either side.
+   */
+  int (*output_stream_write_quoted_prompt)(sl_t *self, const char *text);
+  /** Set a nonempty, printable, single-line UTF-8 quote prefix. NULL restores
+   * the default "> ". The prefix is repeated on each visible wrapped row. */
+  int (*set_quoted_prompt_prefix)(sl_t *self, const char *prefix);
+  /** Override quoted-prompt RGB colours. NULL restores theme defaults. */
+  int (*set_quoted_prompt_style)(sl_t *self, const sl_quote_style_t *style);
 };
 
 /**
@@ -815,6 +838,19 @@ int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
  * responsible for finishing any external renderer document first. Incomplete
  * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open. */
 int sl_output_stream_end(sl_t *self);
+
+/** Write a submitted prompt as a themed quote into an open output stream.
+ * Word-wrap at the current output width and prefix every visible row. Add only
+ * the missing line breaks for one empty row before and after the quote.
+ * Preceding streamed bytes must form a complete ANSI/UTF-8 sequence. The
+ * input must be valid UTF-8 with printable characters, LF, and Tab only. */
+int sl_output_stream_write_quoted_prompt(sl_t *self, const char *text);
+
+/** Set a nonempty printable single-line UTF-8 prefix; NULL restores "> ". */
+int sl_set_quoted_prompt_prefix(sl_t *self, const char *prefix);
+
+/** Override per-theme quote colours, or pass NULL to restore theme defaults. */
+int sl_set_quoted_prompt_style(sl_t *self, const sl_quote_style_t *style);
 
 /** Return the status of the most recent readline() call on this handle. */
 sl_readline_status_t sl_last_readline_status(const sl_t *self);

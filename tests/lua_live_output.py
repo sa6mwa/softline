@@ -54,6 +54,8 @@ def main():
             raise AssertionError("Lua live output child failed")
         if output.index(b"first") > output.index(b"second"):
             raise AssertionError("stream fragment order reversed")
+        if b"0;2;38;2;1;2;3m" not in output or b"0;3;38;2;4;5;6m" not in output:
+            raise AssertionError("Lua quoted prompt did not apply its custom styles")
     finally:
         os.close(master)
         if proc.poll() is None:

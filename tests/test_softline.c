@@ -1577,6 +1577,139 @@ static void test_redirected_live_output_validates_stream(void) {
   PASS();
 }
 
+static void test_quoted_prompt_output_api(void) {
+  static const char expected[] =
+      "answer\n\n? one two\n? three four\n\n>> a\n>> b    c\n\n> *md*\n\n"
+      "> \xe7\x95\x8c\n> \xe7\x95\x8c\xe7\x95\x8c\n\n";
+  sl_config_t cfg;
+  sl_quote_style_t style;
+  sl_t *sl;
+  int output[2];
+  char bytes[256];
+  ssize_t amount;
+
+  TEST(
+      "quoted prompt API wraps, separates, configures, and preserves Markdown");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  cfg.screen_width = 12;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl->output_stream_write_quoted_prompt &&
+                  sl->set_quoted_prompt_prefix && sl->set_quoted_prompt_style,
+              "quoted prompt receiver API missing");
+  ASSERT_TRUE(
+      sl_output_stream_write_quoted_prompt(sl, "x") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, "") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, "bad\n") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, "\033[31m") == SL_ERROR_INVALID,
+      "quoted prompt accepted invalid state or prefix");
+  style.prefix.red = 1;
+  style.prefix.green = 2;
+  style.prefix.blue = 3;
+  style.text.red = 4;
+  style.text.green = 5;
+  style.text.blue = 6;
+  ASSERT_TRUE(
+      sl_set_quoted_prompt_style(sl, &style) == SL_OK &&
+          sl_set_quoted_prompt_prefix(sl, "? ") == SL_OK &&
+          sl_output_stream_begin(sl) == SL_OK &&
+          sl_output_stream_write(sl, "answer\n", 7) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "one two three four") ==
+              SL_OK &&
+          sl_set_quoted_prompt_prefix(sl, ">> ") == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "a\nb\tc") == SL_OK &&
+          sl_set_quoted_prompt_prefix(sl, "abcdefghijkl") == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "x") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, NULL) == SL_OK &&
+          sl_set_quoted_prompt_style(sl, NULL) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "bad\033[31m") ==
+              SL_ERROR_INVALID &&
+          sl_output_stream_write_quoted_prompt(sl, "*md*") == SL_OK &&
+          sl_set_screen_width(sl, 7) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(
+              sl, "\xe7\x95\x8c\xe7\x95\x8c\xe7\x95\x8c") == SL_OK &&
+          sl_output_stream_end(sl) == SL_OK,
+      "quoted prompt output or validation failed");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "quoted prompt wrapping, literal text, or blank rows differ");
+  PASS();
+}
+
+static void test_quoted_prompt_terminal_style(void) {
+#if SL_TEST_PTY
+  sl_config_t cfg;
+  sl_quote_style_t style;
+  struct winsize ws;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char bytes[8192];
+  size_t used;
+  ssize_t amount;
+
+  TEST("quoted prompt uses theme colours and independent style override");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 12;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  style.prefix.red = 1;
+  style.prefix.green = 2;
+  style.prefix.blue = 3;
+  style.text.red = 4;
+  style.text.green = 5;
+  style.text.blue = 6;
+  ASSERT_TRUE(sl && sl_set_prompt_theme(sl, SL_PROMPT_THEME_GRUVBOX) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[", 2) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "incomplete") ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "0m", 2) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "theme") == SL_OK &&
+                  sl_set_quoted_prompt_prefix(sl, ">> ") == SL_OK &&
+                  sl_set_quoted_prompt_style(sl, &style) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "custom") == SL_OK &&
+                  sl_set_quoted_prompt_style(sl, NULL) == SL_OK &&
+                  sl_set_prompt_theme(sl, SL_PROMPT_THEME_DEFAULT) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "default") ==
+                      SL_OK &&
+                  sl_set_prompt_theme(sl, SL_PROMPT_THEME_PLAIN) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "plain") == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "terminal quoted prompt setup failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  used = 0;
+  while (used < sizeof(bytes) - 1) {
+    amount = read(master_fd, bytes + used, sizeof(bytes) - 1 - used);
+    if (amount <= 0)
+      break;
+    used += (size_t)amount;
+  }
+  close(master_fd);
+  bytes[used] = '\0';
+  ASSERT_TRUE(strstr(bytes, "\033[0;2;38;2;102;92;84m") != NULL &&
+                  strstr(bytes, "\033[0;3;38;2;250;189;47m") != NULL &&
+                  strstr(bytes, "\033[0;2;38;2;1;2;3m") != NULL &&
+                  strstr(bytes, "\033[0;3;38;2;4;5;6m") != NULL &&
+                  strstr(bytes, "\033[0;2;90m") != NULL &&
+                  strstr(bytes, "\033[0;3;96m") != NULL &&
+                  strstr(bytes, "\033[0;3;97m") != NULL,
+              "theme or custom quote colour and italic treatment missing");
+  PASS();
+#endif
+}
+
 static ssize_t read_until_eof_with_timeout(int fd, char *buf, size_t cap) {
   ssize_t total;
   total = 0;
@@ -10294,6 +10427,8 @@ int main(void) {
   test_watch_fairness_rotates_ready_flood();
   test_watch_lifecycle_reports_terminal_events();
   test_redirected_live_output_validates_stream();
+  test_quoted_prompt_output_api();
+  test_quoted_prompt_terminal_style();
   test_live_output_stream_across_narrow_bounds();
   test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();

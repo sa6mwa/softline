@@ -22,6 +22,7 @@ sl_next_prompt
 sl_output_stream_begin
 sl_output_stream_end
 sl_output_stream_write
+sl_output_stream_write_quoted_prompt
 sl_print_above
 sl_prompt_queue_append
 sl_prompt_queue_capacity
@@ -45,6 +46,8 @@ sl_set_prompt_queue_delivery
 sl_set_prompt_queue_keys
 sl_set_prompt_queue_profile
 sl_set_prompt_theme
+sl_set_quoted_prompt_prefix
+sl_set_quoted_prompt_style
 sl_set_screen_width
 sl_set_status_busy
 sl_set_status_element

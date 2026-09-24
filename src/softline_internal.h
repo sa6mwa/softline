@@ -90,6 +90,8 @@ typedef struct sl_impl {
   int live_scroll_region;
   int auto_scroll_pinned;
   int output_stream_active;
+  int output_trailing_newlines;
+  int output_ansi_state;
   sl_surface_t *output_surface;
   int cursor_position_probe;
   int dynamic_width;
@@ -104,6 +106,9 @@ typedef struct sl_impl {
   sl_history_t history;
   sl_prompt_queue_t prompt_queue;
   sl_prompt_theme_t prompt_theme;
+  char *quoted_prompt_prefix;
+  sl_quote_style_t quoted_prompt_style;
+  int quoted_prompt_style_custom;
   sl_statusline_t statusline;
   char *status_message;
   int history_index;

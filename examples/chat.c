@@ -24,9 +24,9 @@ static const char *const response_templates[] = {
 
 struct chat_state {
   sl_t *sl;
-  mdf *prompt_renderer;
+  mdf *note_renderer;
   mdf *response_renderer;
-  int prompt_documents;
+  int note_documents;
   int response_documents;
   int response_open;
   int interactive;
@@ -38,11 +38,6 @@ struct chat_state {
   unsigned int turn_index;
   size_t response_bytes;
   char previous_response_char;
-  /* Track line endings across libmdf sink fragments and split ANSI SGR. */
-  int trailing_newlines;
-  int ansi_state;
-  int (*prompt_hook)(const char *prompt,
-                     int (*emit)(void *, const char *, size_t), void *userdata);
 };
 
 static int start_operation(struct chat_state *state);
@@ -50,55 +45,10 @@ static int dispatch_next_queued(struct chat_state *state);
 
 static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
   struct chat_state *state;
-  const char *written_bytes;
-  size_t written_length;
-  size_t i;
-  ssize_t written;
   state = (struct chat_state *)userdata;
   if (!state || (!bytes && length > 0))
     return -1;
-  written_bytes = bytes;
-  written_length = length;
-  if (state->interactive) {
-    if (sl_output_stream_write(state->sl, bytes, length) != SL_OK)
-      return -1;
-  } else {
-    while (length > 0) {
-      written = write(STDOUT_FILENO, bytes, length);
-      if (written < 0 && errno == EINTR)
-        continue;
-      if (written <= 0)
-        return -1;
-      bytes += written;
-      length -= (size_t)written;
-    }
-  }
-  for (i = 0; i < written_length; i++) {
-    unsigned char byte = (unsigned char)written_bytes[i];
-    if (state->ansi_state == 1) {
-      state->ansi_state = byte == '[' ? 2 : 0;
-      continue;
-    }
-    if (state->ansi_state == 2) {
-      if (byte >= 0x40 && byte <= 0x7e)
-        state->ansi_state = 0;
-      continue;
-    }
-    if (byte == 0x1b)
-      state->ansi_state = 1;
-    else if (byte == '\n') {
-      if (state->trailing_newlines < 2)
-        state->trailing_newlines++;
-    } else if (byte != '\r')
-      state->trailing_newlines = 0;
-  }
-  return 0;
-}
-
-static int ensure_one_blank_row(struct chat_state *state) {
-  static const char breaks[] = "\n\n";
-  int missing = 2 - state->trailing_newlines;
-  return missing > 0 ? sink_to_softline(state, breaks, (size_t)missing) : 0;
+  return sl_output_stream_write(state->sl, bytes, length) == SL_OK ? 0 : -1;
 }
 
 static int chat_margin_left(int columns) { return columns >= 5 ? 2 : 0; }
@@ -131,9 +81,9 @@ static int sync_geometry(struct chat_state *state) {
    * narrow terminal drops the margin so libmdf retains three content columns.
    */
   if (sl_set_bounds(state->sl, 0, 0, 0, 0) != SL_OK ||
-      state->prompt_renderer->set_geometry(state->prompt_renderer, columns,
-                                           chat_margin_left(columns),
-                                           0) != MDF_OK ||
+      state->note_renderer->set_geometry(state->note_renderer, columns,
+                                         chat_margin_left(columns),
+                                         0) != MDF_OK ||
       state->response_renderer->set_geometry(state->response_renderer, columns,
                                              chat_margin_left(columns),
                                              0) != MDF_OK)
@@ -142,72 +92,35 @@ static int sync_geometry(struct chat_state *state) {
   return 0;
 }
 
-static int begin_prompt_document(struct chat_state *state) {
+static int begin_note_document(struct chat_state *state) {
   if (sync_geometry(state) != 0)
     return -1;
-  if (state->prompt_documents > 0 &&
-      state->prompt_renderer->begin_document(state->prompt_renderer) != MDF_OK)
+  if (state->note_documents > 0 &&
+      state->note_renderer->begin_document(state->note_renderer) != MDF_OK)
     return -1;
   return 0;
 }
 
-static int finish_prompt_document(struct chat_state *state) {
-  if (state->prompt_renderer->finish_document(state->prompt_renderer) != MDF_OK)
+static int finish_note_document(struct chat_state *state) {
+  if (state->note_renderer->finish_document(state->note_renderer) != MDF_OK)
     return -1;
-  state->prompt_documents++;
+  state->note_documents++;
   return 0;
 }
 
 static int render_note(struct chat_state *state, const char *note) {
-  if (begin_prompt_document(state) != 0 ||
-      state->prompt_renderer->feed(state->prompt_renderer, "\n", 1) != MDF_OK ||
-      state->prompt_renderer->feed(state->prompt_renderer, note,
-                                   strlen(note)) != MDF_OK ||
-      state->prompt_renderer->feed(state->prompt_renderer, "\n\n", 2) != MDF_OK)
+  if (begin_note_document(state) != 0 ||
+      state->note_renderer->feed(state->note_renderer, "\n", 1) != MDF_OK ||
+      state->note_renderer->feed(state->note_renderer, note, strlen(note)) !=
+          MDF_OK ||
+      state->note_renderer->feed(state->note_renderer, "\n\n", 2) != MDF_OK)
     return -1;
-  return finish_prompt_document(state);
-}
-
-static int prompt_emit(void *userdata, const char *bytes, size_t length) {
-  struct chat_state *state = (struct chat_state *)userdata;
-  return state->prompt_renderer->feed(state->prompt_renderer, bytes, length) ==
-                 MDF_OK
-             ? 0
-             : -1;
-}
-
-/* The hook only transforms Markdown source. The renderer remains owned by the
- * example and can be replaced without changing Softline's output API. */
-static int italic_quote_prompt(const char *prompt,
-                               int (*emit)(void *, const char *, size_t),
-                               void *userdata) {
-  const char *part;
-  const char *at;
-  if (emit(userdata, "\n\n> *", 5) != 0)
-    return -1;
-  part = prompt;
-  for (at = prompt; *at; at++) {
-    if (*at == '\n') {
-      if (at > part && emit(userdata, part, (size_t)(at - part)) != 0)
-        return -1;
-      if (emit(userdata, "\n> ", 3) != 0)
-        return -1;
-      part = at + 1;
-    }
-  }
-  if ((at > part && emit(userdata, part, (size_t)(at - part)) != 0) ||
-      emit(userdata, "*\n\n", 3) != 0)
-    return -1;
-  return 0;
+  return finish_note_document(state);
 }
 
 static int render_user_prompt(struct chat_state *state, const char *line) {
-  if (begin_prompt_document(state) != 0 || ensure_one_blank_row(state) != 0 ||
-      state->prompt_hook(line, prompt_emit, state) != 0)
-    return -1;
-  if (finish_prompt_document(state) != 0)
-    return -1;
-  return ensure_one_blank_row(state);
+  return sl_output_stream_write_quoted_prompt(state->sl, line) == SL_OK ? 0
+                                                                        : -1;
 }
 
 static int set_busy(struct chat_state *state, int busy) {
@@ -518,7 +431,6 @@ int main(void) {
   int cancelled_busy;
 
   memset(&state, 0, sizeof(state));
-  state.prompt_hook = italic_quote_prompt;
   state.watch_fd = -1;
   state.worker_pid = -1;
   interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
@@ -544,8 +456,9 @@ int main(void) {
         set_prompt_theme_from_environment(state.sl) != 0 ||
         sl_bind_key(state.sl, SL_KEY_ESCAPE, cancel_editor_key, NULL) !=
             SL_OK)) ||
-      (interactive && state.sl->output_stream_begin(state.sl) != SL_OK) ||
-      new_renderer(&state, &state.prompt_renderer) != 0 ||
+      sl_set_quoted_prompt_prefix(state.sl, "  > ") != SL_OK ||
+      state.sl->output_stream_begin(state.sl) != SL_OK ||
+      new_renderer(&state, &state.note_renderer) != 0 ||
       new_renderer(&state, &state.response_renderer) != 0) {
     report_failure(&state, "setup");
     exit_code = 1;
@@ -619,12 +532,12 @@ int main(void) {
 cleanup:
   if (state.busy)
     (void)cancel_operation(&state);
-  if (state.prompt_renderer)
-    state.prompt_renderer->destroy(state.prompt_renderer);
+  if (state.note_renderer)
+    state.note_renderer->destroy(state.note_renderer);
   if (state.response_renderer)
     state.response_renderer->destroy(state.response_renderer);
   if (state.sl) {
-    if (interactive)
+    if (state.sl->output_stream_end)
       (void)state.sl->output_stream_end(state.sl);
     sl_destroy(state.sl);
   }
