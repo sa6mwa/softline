@@ -382,6 +382,7 @@ static void test_prompt_queue_control_api(void) {
   sl_prompt_queue_delivery_t delivery;
   sl_prompt_queue_keys_t keys;
   sl_prompt_queue_profile_t profile;
+  sl_prompt_queue_mode_t mode;
   char *text;
   sl_t *sl;
 
@@ -406,6 +407,22 @@ static void test_prompt_queue_control_api(void) {
   sl_free_string(sl, text);
   ASSERT_TRUE(sl_prompt_queue_replace(sl, 1, "second") == SL_OK,
               "replace failed");
+  ASSERT_TRUE(sl_prompt_queue_get_mode(sl, 1, &mode) == SL_OK &&
+                  mode == SL_PROMPT_QUEUE_MODE_QUEUED,
+              "new queue entry did not default to queued mode");
+  ASSERT_TRUE(sl_prompt_queue_set_mode(sl, 1, SL_PROMPT_QUEUE_MODE_STEER) ==
+                  SL_OK,
+              "steer mode update failed");
+  ASSERT_TRUE(sl_prompt_queue_get_mode(sl, 1, &mode) == SL_OK &&
+                  mode == SL_PROMPT_QUEUE_MODE_STEER,
+              "steer mode readback failed");
+  ASSERT_TRUE(sl_prompt_queue_replace(sl, 1, "second edit") == SL_OK &&
+                  sl_prompt_queue_get_mode(sl, 1, &mode) == SL_OK &&
+                  mode == SL_PROMPT_QUEUE_MODE_STEER,
+              "replacement lost entry mode");
+  ASSERT_TRUE(sl_prompt_queue_set_mode(sl, 1, (sl_prompt_queue_mode_t)9) ==
+                  SL_ERROR_INVALID,
+              "invalid queue mode accepted");
   text = NULL;
   ASSERT_TRUE(sl_prompt_queue_take(sl, 0, &text) == SL_OK, "take failed");
   ASSERT_TRUE(strcmp(text, "one") == 0, "take FIFO entry mismatch");
@@ -451,8 +468,18 @@ static void test_prompt_queue_control_api(void) {
                   delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO,
               "idle queued-turns delivery must release turns");
   ASSERT_TRUE(sl_set_prompt_queue_delivery(
-                  sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_ERROR_INVALID,
-              "queued-turns accepted a host delivery override");
+                  sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_OK &&
+                  sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL,
+              "queued-turns manual delivery configuration failed");
+  ASSERT_TRUE(sl_set_status_busy(sl, 1) == SL_OK &&
+                  sl_set_status_busy(sl, 0) == SL_OK &&
+                  sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL,
+              "busy transition lost host-controlled delivery");
+  ASSERT_TRUE(sl_set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_AUTO) ==
+                  SL_OK,
+              "queued-turns automatic delivery restore failed");
   keys.enqueue_draft = SL_KEY_NONE;
   ASSERT_TRUE(sl_set_prompt_queue_keys(sl, &keys) == SL_OK,
               "available-state queue key configuration failed");
@@ -1820,6 +1847,12 @@ static void idle_finish_after_two_ticks(sl_t *sl, void *userdata) {
   if (state->text)
     (void)sl->insert(sl, state->text);
   (void)sl->submit(sl);
+}
+
+static void idle_release_after_steer_queued(sl_t *sl, void *userdata) {
+  (void)userdata;
+  if (sl_prompt_queue_count(sl) == 2)
+    (void)sl_set_status_busy(sl, 0);
 }
 
 static int idle_quiet_watch_callback(sl_t *sl, const sl_watch_event_t *event,
@@ -7172,11 +7205,10 @@ static void test_queued_turns_profile_promotes_manually(void) {
   pid_t pid;
   char result[128];
   char terminal[8192];
-  char *editor_closed;
   size_t terminal_len;
   ssize_t n;
 
-  TEST("queued-turns profile immediately submits and promotes with Alt-Enter");
+  TEST("queued-turns profile records steer mode for host-controlled delivery");
   if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
       pipe(result_pipe) != 0) {
     FAIL("pty setup failed");
@@ -7189,6 +7221,8 @@ static void test_queued_turns_profile_promotes_manually(void) {
     sl_prompt_source_t source;
     sl_t *sl;
     char *line;
+    char *steer;
+    sl_prompt_queue_mode_t mode;
     char output[128];
     int written;
     close(master_fd);
@@ -7201,7 +7235,9 @@ static void test_queued_turns_profile_promotes_manually(void) {
     if (!sl ||
         sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
             SL_OK ||
-        sl_set_status_busy(sl, 1) != SL_OK)
+        sl_set_status_busy(sl, 1) != SL_OK ||
+        sl_set_idle_callback(sl, idle_release_after_steer_queued, NULL) !=
+            SL_OK)
       _exit(2);
     source = SL_PROMPT_SOURCE_NONE;
     line = sl_next_prompt(sl, "turn> ", &source);
@@ -7211,15 +7247,16 @@ static void test_queued_turns_profile_promotes_manually(void) {
     sl_free_string(sl, line);
     if (written < 0 || written >= (int)sizeof(output))
       _exit(4);
-    source = SL_PROMPT_SOURCE_NONE;
-    line = sl_next_prompt(sl, "turn> ", &source);
-    if (!line)
+    if (source != SL_PROMPT_SOURCE_QUEUED)
       _exit(5);
-    written += snprintf(output + written, sizeof(output) - (size_t)written,
-                        "|%d:%s", (int)source, line);
-    sl_free_string(sl, line);
-    if (written < 0 || written >= (int)sizeof(output))
+    if (sl_prompt_queue_count(sl) != 1 ||
+        sl_prompt_queue_get_mode(sl, 0, &mode) != SL_OK ||
+        mode != SL_PROMPT_QUEUE_MODE_STEER ||
+        sl_prompt_queue_take(sl, 0, &steer) != SL_OK)
       _exit(6);
+    written += snprintf(output + written, sizeof(output) - (size_t)written,
+                        "|%s", steer);
+    sl_free_string(sl, steer);
     (void)write(result_pipe[1], output, (size_t)written);
     sl_destroy(sl);
     close(slave_fd);
@@ -7244,20 +7281,16 @@ static void test_queued_turns_profile_promotes_manually(void) {
       "queued-turns input write failed");
   terminal_len = 0;
   terminal[0] = '\0';
-  editor_closed = NULL;
-  while (!editor_closed || !strstr(editor_closed + 8, "\033[?2004h")) {
+  while (!contains_bytes(terminal, "S 2. steer")) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                sizeof(terminal) - 1 - terminal_len);
     if (n <= 0)
-      FAIL("queued-turns editor did not resume after submission");
+      FAIL("steer queue preview missing");
     terminal_len += (size_t)n;
     terminal[terminal_len] = '\0';
-    editor_closed = strstr(terminal, "\033[?2004l");
   }
-  ASSERT_TRUE(write(master_fd, "\033\r", strlen("\033\r")) ==
-                  (ssize_t)strlen("\033\r"),
-              "queued-turns promotion write failed");
-  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  n = read_some_with_timeout_ms(result_pipe[0], result, sizeof(result) - 1,
+                                5000);
   ASSERT_TRUE(n > 0, "queued-turns result missing");
   result[n] = '\0';
   close(master_fd);
@@ -7265,7 +7298,7 @@ static void test_queued_turns_profile_promotes_manually(void) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "queued-turns wait failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "queued-turns child failed");
-  ASSERT_TRUE(strcmp(result, "1:steer|3:queued") == 0,
+  ASSERT_TRUE(strcmp(result, "2:queued|steer") == 0,
               "queued-turns source or ordering mismatch");
   PASS();
 }

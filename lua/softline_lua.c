@@ -604,6 +604,33 @@ static int softline_lua_queue_take(lua_State *L) {
   return 1;
 }
 
+static int softline_lua_queue_mode(lua_State *L) {
+  softline_lua_handle_t *handle;
+  sl_prompt_queue_mode_t mode;
+  size_t index;
+  int status;
+  handle = softline_lua_check(L, 1);
+  if (!softline_lua_queue_index(L, 2, &index))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  status = sl_prompt_queue_get_mode(handle->sl, index, &mode);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  lua_pushinteger(L, (lua_Integer)mode);
+  return 1;
+}
+
+static int softline_lua_queue_set_mode(lua_State *L) {
+  softline_lua_handle_t *handle;
+  size_t index;
+  handle = softline_lua_check(L, 1);
+  if (!softline_lua_queue_index(L, 2, &index))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  return softline_lua_status(
+      L,
+      sl_prompt_queue_set_mode(
+          handle->sl, index, (sl_prompt_queue_mode_t)luaL_checkinteger(L, 3)));
+}
+
 static int softline_lua_queue_clear(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -1142,6 +1169,8 @@ static const luaL_Reg softline_lua_methods[] = {
     {"queue_append", softline_lua_queue_append},
     {"queue_replace", softline_lua_queue_replace},
     {"queue_take", softline_lua_queue_take},
+    {"queue_mode", softline_lua_queue_mode},
+    {"queue_set_mode", softline_lua_queue_set_mode},
     {"queue_clear", softline_lua_queue_clear},
     {"queue_draft", softline_lua_queue_draft},
     {"set_queue_delivery", softline_lua_set_queue_delivery},
@@ -1226,6 +1255,10 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "PROMPT_SOURCE_QUEUED");
   lua_pushinteger(L, SL_PROMPT_SOURCE_PROMOTED);
   lua_setfield(L, -2, "PROMPT_SOURCE_PROMOTED");
+  lua_pushinteger(L, SL_PROMPT_QUEUE_MODE_QUEUED);
+  lua_setfield(L, -2, "QUEUE_MODE_QUEUED");
+  lua_pushinteger(L, SL_PROMPT_QUEUE_MODE_STEER);
+  lua_setfield(L, -2, "QUEUE_MODE_STEER");
   lua_pushinteger(L, SL_PROMPT_THEME_PLAIN);
   lua_setfield(L, -2, "PROMPT_THEME_PLAIN");
   lua_pushinteger(L, SL_PROMPT_THEME_ACCENT);

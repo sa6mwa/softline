@@ -43,6 +43,7 @@ def main():
         stdout=slave,
         stderr=slave,
         cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
         start_new_session=True,
     )
     os.close(slave)
@@ -66,6 +67,10 @@ def main():
         promote_offset = len(output)
         read_until(master, output, b"[promoted] queued\r\n", promote_offset)
         read_until(master, output, b"[operation] processing input.", promote_offset)
+        os.write(master, b"steer\x1b\r")
+        steer_offset = len(output)
+        read_until(master, output, b"S 1. ", steer_offset)
+        read_until(master, output, b"[active operation] consumed: steer", steer_offset)
         escape_offset = len(output)
         os.write(master, b"\x1b")
         read_until(master, output, b"[operation] cancelled\r\n", escape_offset)

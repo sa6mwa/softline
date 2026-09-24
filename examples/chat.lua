@@ -25,6 +25,7 @@ local busy = false
 local worker
 local worker_pid
 local watch_id
+local dispatch_next_queued
 
 local function operation_step_seconds()
   local value = tonumber(os.getenv("SOFTLINE_CHAT_OPERATION_STEP_MS"))
@@ -51,6 +52,17 @@ local function consume_active_operation_input(line)
   print_message({ "[active operation] consumed: ", line, "\n" })
 end
 
+local function consume_steers()
+  local index = 1
+  while index <= sl:queue_count() do
+    if sl:queue_mode(index) == softline.QUEUE_MODE_STEER then
+      consume_active_operation_input(assert(sl:queue_take(index)))
+    else
+      index = index + 1
+    end
+  end
+end
+
 local function finish_operation()
   if watch_id then
     assert(sl:watch_remove(watch_id))
@@ -61,7 +73,9 @@ local function finish_operation()
     worker = nil
   end
   worker_pid = nil
+  consume_steers()
   set_chat_busy(false)
+  dispatch_next_queued()
 end
 
 -- Escape and Ctrl-C arrive here as READLINE_CANCELLED. The worker belongs to
@@ -110,7 +124,22 @@ local function start_operation()
         elseif event == nil then
           finish_operation()
         end
+        if event ~= nil then
+          consume_steers()
+        end
       end))
+end
+
+dispatch_next_queued = function()
+  for index = 1, sl:queue_count() do
+    if sl:queue_mode(index) == softline.QUEUE_MODE_QUEUED then
+      local line = assert(sl:queue_take(index))
+      assert(sl:history_add(line))
+      print_message({ "[queued] ", line, "\n" })
+      start_operation()
+      return
+    end
+  end
 end
 
 local function run()
@@ -127,6 +156,7 @@ local function run()
     assert(sl:set_prompt_theme(themes[theme_name]))
     assert(sl:set_prompt_queue(true, 64, 3))
     assert(sl:set_queue_profile("queued_turns"))
+    assert(sl:set_queue_delivery("manual"))
     assert(sl:set_statusline(true, 0))
     assert(sl:set_status_elements({
       "gpt-5.6-terra high",
@@ -143,7 +173,7 @@ local function run()
       return softline.KEY_ACTION_CANCEL
     end))
     set_chat_busy(false)
-    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter sends immediate input to the running operation; empty Alt-Enter promotes the newest queued turn; Alt-E edits it. Escape or Ctrl-C stops the operation.\n" })
+    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation.\n" })
   end
 
   while true do

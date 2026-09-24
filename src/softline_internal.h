@@ -36,8 +36,13 @@ typedef struct sl_history {
   int max_len;
 } sl_history_t;
 
+typedef struct sl_prompt_queue_entry {
+  char *text;
+  sl_prompt_queue_mode_t mode;
+} sl_prompt_queue_entry_t;
+
 typedef struct sl_prompt_queue {
-  char **items;
+  sl_prompt_queue_entry_t *items;
   int len;
   int cap;
   int max_entries;
@@ -46,6 +51,7 @@ typedef struct sl_prompt_queue {
   /* A queued-turns cancellation retains drafts but stops automatic FIFO
    * release until the user intentionally submits or promotes a turn. */
   int stopped;
+  int host_controls_delivery;
   sl_prompt_queue_delivery_t delivery;
   sl_prompt_queue_profile_t profile;
   sl_prompt_queue_keys_t keys;

@@ -102,18 +102,25 @@ live scroll regions, status lines, and spinners are off; the theme is
   indexes are one-based; `peek` and `take` return ordinary Lua strings.
 - `sl:queue_clear()` clears queued entries without changing the active draft;
   `sl:queue_draft()` atomically queues an active nonempty draft.
+- `sl:queue_mode(index)` returns `softline.QUEUE_MODE_QUEUED` or
+  `softline.QUEUE_MODE_STEER`; `sl:queue_set_mode(index, mode)` changes an
+  entry's delivery intent. The host chooses which steer to take at a safe seam.
 - `sl:set_queue_delivery("auto" | "manual")` selects automatic FIFO delivery
-  or host-controlled retention for the `default` profile;
+  or host-controlled retention. Busy `queued_turns` retains entries in either
+  mode; manual mode lets the host choose both steer and ordinary turns;
   `sl:queue_delivery()` returns that mode.
 - `sl:set_queue_profile("default" | "queued_turns")` selects the built-in
   keymap and queue policy. `queued_turns` maps Enter to enqueue while
   `sl:set_status_busy(true)` is active, Alt-E to edit-newest, and Alt-Enter
-  to submit a nonempty draft or promote the newest queued entry when empty.
-  `sl:set_status_busy(false)` releases exactly one oldest queued turn; starting
-  that turn should set busy again, leaving later turns queued. `sl:queue_profile()`
+  to queue a steer draft while busy or mark the newest queued entry as steer
+  when the editor is empty.
+  With automatic delivery, `sl:set_status_busy(false)` releases one oldest
+  ordinary queued turn; manual delivery leaves it for the host to take.
+  `sl:queue_profile()`
   returns the selected profile.
-  Alt-Enter returns a nonempty draft immediately with `PROMPT_SOURCE_DIRECT`,
-  even while busy; an empty-editor promotion returns `PROMPT_SOURCE_PROMOTED`.
+  While idle, Alt-Enter submits a nonempty draft immediately with
+  `PROMPT_SOURCE_DIRECT`, or promotes the newest queued entry with
+  `PROMPT_SOURCE_PROMOTED`.
   Cancellation retains queued drafts and stops automatic FIFO release until a
   direct submission or manual promotion resumes it.
 - `sl:queue_keys()` returns a table with `enqueue_draft`, `edit_newest`, and
@@ -200,6 +207,8 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.PROMPT_SOURCE_DIRECT`
 - `softline.PROMPT_SOURCE_QUEUED`
 - `softline.PROMPT_SOURCE_PROMOTED`
+- `softline.QUEUE_MODE_QUEUED`
+- `softline.QUEUE_MODE_STEER`
 - `softline.ERROR_FULL`
 - `softline.WATCH_READ`
 - `softline.WATCH_WRITE`

@@ -37,9 +37,13 @@ struct chat_state {
   int busy;
   unsigned int turn_index;
   size_t response_bytes;
+  char previous_response_char;
   int (*prompt_hook)(const char *prompt,
                      int (*emit)(void *, const char *, size_t), void *userdata);
 };
+
+static int start_operation(struct chat_state *state);
+static int dispatch_next_queued(struct chat_state *state);
 
 static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
   struct chat_state *state;
@@ -163,9 +167,13 @@ static int italic_quote_prompt(const char *prompt,
 
 static int render_user_prompt(struct chat_state *state, const char *line) {
   if (begin_prompt_document(state) != 0 ||
+      sink_to_softline(state, "\n\n", 2) != 0 ||
       state->prompt_hook(line, prompt_emit, state) != 0)
     return -1;
-  return finish_prompt_document(state);
+  if (finish_prompt_document(state) != 0)
+    return -1;
+  /* Markdown blank lines separate blocks but are not emitted as blank rows. */
+  return sink_to_softline(state, "\n", 1);
 }
 
 static int set_busy(struct chat_state *state, int busy) {
@@ -174,6 +182,30 @@ static int set_busy(struct chat_state *state, int busy) {
       sl_set_status_message(state->sl, busy ? "Thinking..." : NULL) != SL_OK)
     return -1;
   state->busy = busy;
+  return 0;
+}
+
+static int deliver_steers(struct chat_state *state) {
+  size_t index;
+  sl_prompt_queue_mode_t mode;
+  char *line;
+  for (index = 0; index < sl_prompt_queue_count(state->sl);) {
+    if (sl_prompt_queue_get_mode(state->sl, index, &mode) != SL_OK)
+      return -1;
+    if (mode != SL_PROMPT_QUEUE_MODE_STEER) {
+      index++;
+      continue;
+    }
+    line = NULL;
+    if (sl_prompt_queue_take(state->sl, index, &line) != SL_OK)
+      return -1;
+    if (sl_history_add(state->sl, line) != SL_OK ||
+        render_user_prompt(state, line) != 0) {
+      sl_free_string(state->sl, line);
+      return -1;
+    }
+    sl_free_string(state->sl, line);
+  }
   return 0;
 }
 
@@ -221,7 +253,9 @@ static int finish_operation(struct chat_state *state) {
     state->response_open = 0;
     state->response_documents++;
   }
-  return set_busy(state, 0);
+  if (deliver_steers(state) != 0 || set_busy(state, 0) != 0)
+    return -1;
+  return dispatch_next_queued(state);
 }
 
 static int cancel_operation(struct chat_state *state) {
@@ -271,6 +305,10 @@ static int operation_watch(sl_t *sl, const sl_watch_event_t *event,
       if (state->response_renderer->feed(state->response_renderer, bytes + i,
                                          1) != MDF_OK)
         return SL_ERROR_IO;
+      if (bytes[i] == '\n' && state->previous_response_char == '\n' &&
+          deliver_steers(state) != 0)
+        return SL_ERROR_IO;
+      state->previous_response_char = bytes[i];
       state->response_bytes++;
       if (state->response_bytes == 15 &&
           sl_set_status_message(state->sl, "Reasoning...") != SL_OK)
@@ -299,6 +337,7 @@ static int start_operation(struct chat_state *state) {
     return -1;
   state->response_open = 1;
   state->response_bytes = 0;
+  state->previous_response_char = '\0';
   answer =
       response_templates[state->turn_index++ % (sizeof(response_templates) /
                                                 sizeof(response_templates[0]))];
@@ -338,6 +377,29 @@ static int start_operation(struct chat_state *state) {
                    operation_watch, state, &state->watch_id) != SL_OK) {
     (void)cancel_operation(state);
     return -1;
+  }
+  return 0;
+}
+
+static int dispatch_next_queued(struct chat_state *state) {
+  size_t index;
+  sl_prompt_queue_mode_t mode;
+  char *line;
+  for (index = 0; index < sl_prompt_queue_count(state->sl); index++) {
+    if (sl_prompt_queue_get_mode(state->sl, index, &mode) != SL_OK)
+      return -1;
+    if (mode != SL_PROMPT_QUEUE_MODE_QUEUED)
+      continue;
+    line = NULL;
+    if (sl_prompt_queue_take(state->sl, index, &line) != SL_OK)
+      return -1;
+    if (sl_history_add(state->sl, line) != SL_OK ||
+        render_user_prompt(state, line) != 0 || start_operation(state) != 0) {
+      sl_free_string(state->sl, line);
+      return -1;
+    }
+    sl_free_string(state->sl, line);
+    break;
   }
   return 0;
 }
@@ -428,6 +490,8 @@ int main(void) {
         sl_set_prompt_queue(state.sl, 1, 64, 3) != SL_OK ||
         sl_set_prompt_queue_profile(
             state.sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) != SL_OK ||
+        sl_set_prompt_queue_delivery(
+            state.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
         sl_set_statusline(state.sl, 1, 0) != SL_OK ||
         sl_set_status_elements(state.sl, status_elements,
                                sizeof(status_elements) /
@@ -497,13 +561,7 @@ int main(void) {
       exit_code = 1;
       break;
     }
-    if (interactive && state.busy) {
-      if (render_note(&state, "*Immediate input received while busy.*") != 0) {
-        sl_free_string(state.sl, line);
-        exit_code = 1;
-        break;
-      }
-    } else if (interactive && start_operation(&state) != 0) {
+    if (interactive && !state.busy && start_operation(&state) != 0) {
       sl_free_string(state.sl, line);
       report_failure(&state, "operation start");
       exit_code = 1;

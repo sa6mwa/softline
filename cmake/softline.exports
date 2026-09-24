@@ -32,6 +32,8 @@ sl_prompt_queue_insert
 sl_prompt_queue_peek
 sl_prompt_queue_replace
 sl_prompt_queue_take
+sl_prompt_queue_get_mode
+sl_prompt_queue_set_mode
 sl_readline
 sl_set_bounds
 sl_set_buffer

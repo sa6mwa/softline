@@ -253,7 +253,7 @@ static void sl_prompt_queue_clear_raw(sl_prompt_queue_t *queue) {
   if (!queue)
     return;
   for (i = 0; i < queue->len; i++)
-    free(queue->items[i]);
+    free(queue->items[i].text);
   free(queue->items);
   queue->items = NULL;
   queue->len = 0;
@@ -261,7 +261,7 @@ static void sl_prompt_queue_clear_raw(sl_prompt_queue_t *queue) {
 }
 
 static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
-  char **items;
+  sl_prompt_queue_entry_t *items;
   int cap;
   if (!queue)
     return -1;
@@ -275,7 +275,8 @@ static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
     }
     cap *= 2;
   }
-  items = (char **)realloc(queue->items, (size_t)cap * sizeof(*items));
+  items = (sl_prompt_queue_entry_t *)realloc(queue->items,
+                                             (size_t)cap * sizeof(*items));
   if (!items)
     return -1;
   queue->items = items;
@@ -283,7 +284,8 @@ static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
   return 0;
 }
 
-static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text) {
+static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text,
+                                      sl_prompt_queue_mode_t mode) {
   char *copy;
   if (!impl || !text)
     return -1;
@@ -297,7 +299,8 @@ static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text) {
     free(copy);
     return -1;
   }
-  impl->prompt_queue.items[impl->prompt_queue.len++] = copy;
+  impl->prompt_queue.items[impl->prompt_queue.len].text = copy;
+  impl->prompt_queue.items[impl->prompt_queue.len++].mode = mode;
   return 0;
 }
 
@@ -322,7 +325,8 @@ static int sl_prompt_queue_insert_raw(sl_impl_t *impl, int index,
   }
   for (i = queue->len; i > index; i--)
     queue->items[i] = queue->items[i - 1];
-  queue->items[index] = copy;
+  queue->items[index].text = copy;
+  queue->items[index].mode = SL_PROMPT_QUEUE_MODE_QUEUED;
   queue->len++;
   return 0;
 }
@@ -339,8 +343,8 @@ static int sl_prompt_queue_replace_raw(sl_impl_t *impl, int index,
   copy = sl_strdup(text);
   if (!copy)
     return -1;
-  free(queue->items[index]);
-  queue->items[index] = copy;
+  free(queue->items[index].text);
+  queue->items[index].text = copy;
   return 0;
 }
 
@@ -349,11 +353,19 @@ static char *sl_prompt_queue_take_raw(sl_prompt_queue_t *queue, int index) {
   int i;
   if (!queue || index < 0 || index >= queue->len)
     return NULL;
-  item = queue->items[index];
+  item = queue->items[index].text;
   for (i = index; i + 1 < queue->len; i++)
     queue->items[i] = queue->items[i + 1];
   queue->len--;
   return item;
+}
+
+static int sl_prompt_queue_first_queued(const sl_prompt_queue_t *queue) {
+  int i;
+  for (i = 0; queue && i < queue->len; i++)
+    if (queue->items[i].mode == SL_PROMPT_QUEUE_MODE_QUEUED)
+      return i;
+  return -1;
 }
 
 static int sl_prompt_queue_enabled(const sl_impl_t *impl) {
@@ -368,11 +380,13 @@ static void sl_prompt_queue_sync_queued_turns_delivery(sl_impl_t *impl) {
       impl->prompt_queue.profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS)
     return;
   impl->prompt_queue.delivery =
-      impl->statusline.busy || impl->prompt_queue.stopped
+      impl->statusline.busy || impl->prompt_queue.stopped ||
+              impl->prompt_queue.host_controls_delivery
           ? SL_PROMPT_QUEUE_DELIVERY_MANUAL
           : SL_PROMPT_QUEUE_DELIVERY_AUTO;
   if (impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->active_readline && impl->prompt_queue.len > 0 && impl->len == 0)
+      impl->active_readline &&
+      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0 && impl->len == 0)
     impl->request_queue_dispatch = 1;
 }
 
@@ -2535,13 +2549,14 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
       return -1;
     row = &render->rows[render->count - 1];
     (void)snprintf(number, sizeof(number), "%d. ", i + 1);
-    entry_prefix = i == 0 ? "Q " : "  ";
+    entry_prefix =
+        queue->items[i].mode == SL_PROMPT_QUEUE_MODE_STEER ? "S " : "Q ";
     (void)snprintf(prefix, sizeof(prefix), "%s%s", entry_prefix, number);
     if (sl_queue_row_append_preview(row, prefix, width, control_style) != 0)
       return -1;
     prefix_width = row->cols;
-    if (sl_queue_row_append_preview(row, queue->items[i], width - prefix_width,
-                                    text_style) != 0)
+    if (sl_queue_row_append_preview(row, queue->items[i].text,
+                                    width - prefix_width, text_style) != 0)
       return -1;
   }
   if (shown < queue->len) {
@@ -3540,10 +3555,25 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
   }
   if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
     return SL_ERROR_IO;
-  if ((!impl->active_prompt || !impl->output_surface) &&
-      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
-    sl_set_error(self, "failed to resize live output surface");
-    return SL_ERROR_IO;
+  if (!impl->output_surface) {
+    if (sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
+      sl_set_error(self, "failed to resize live output surface");
+      return SL_ERROR_IO;
+    }
+  } else if (!impl->active_prompt) {
+    int old_x;
+    int old_y;
+    int old_width;
+    int old_terminal_rows;
+    sl_surface_geometry(impl->output_surface, &old_x, &old_y, &old_width, NULL,
+                        &old_terminal_rows);
+    if ((old_x != sl_box_left(impl) || old_y != sl_box_top(impl) ||
+         old_width != sl_box_width(impl) ||
+         old_terminal_rows != sl_terminal_rows(impl)) &&
+        sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
+      sl_set_error(self, "failed to resize live output surface");
+      return SL_ERROR_IO;
+    }
   }
   sl_output_surface_update_scroll_hook(self);
   if (sl_hide_cursor(impl) != 0) {
@@ -4521,6 +4551,7 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   sl_impl_t *impl;
   sl_prompt_queue_keys_t *keys;
   char *queued;
+  sl_prompt_queue_mode_t queued_mode;
   int rc;
   if (handled)
     *handled = 0;
@@ -4567,12 +4598,13 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
       return SL_OK;
     }
     queued = NULL;
+    queued_mode = impl->prompt_queue.items[impl->prompt_queue.len - 1].mode;
     rc = sl_prompt_queue_take_method(self, (size_t)(impl->prompt_queue.len - 1),
                                      &queued);
     if (rc != SL_OK)
       return rc;
     if (sl_buf_set(self, queued) != 0) {
-      (void)sl_prompt_queue_append_raw(impl, queued);
+      (void)sl_prompt_queue_append_raw(impl, queued, queued_mode);
       free(queued);
       sl_set_error(self, "failed to restore queued draft into editor");
       return SL_ERROR_NOMEM;
@@ -4584,6 +4616,37 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   if (keys->submit_or_promote_newest != SL_KEY_NONE &&
       (sl_key_t)key == keys->submit_or_promote_newest) {
     *handled = 1;
+    if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS &&
+        impl->statusline.busy) {
+      if (impl->len != 0) {
+        rc = sl_prompt_queue_append_raw(impl, impl->buf,
+                                        SL_PROMPT_QUEUE_MODE_STEER);
+        if (rc == 1) {
+          sl_prompt_queue_bell(impl);
+          return SL_OK;
+        }
+        if (rc != 0) {
+          sl_set_error(self, "failed to queue steer draft");
+          return SL_ERROR_NOMEM;
+        }
+        if (sl_buf_set(self, "") != 0) {
+          char *discard = sl_prompt_queue_take_raw(&impl->prompt_queue,
+                                                   impl->prompt_queue.len - 1);
+          free(discard);
+          sl_set_error(self, "failed to clear steered draft");
+          return SL_ERROR_NOMEM;
+        }
+        sl_history_nav_reset(impl);
+        return SL_OK;
+      }
+      if (impl->prompt_queue.len == 0) {
+        sl_prompt_queue_bell(impl);
+        return SL_OK;
+      }
+      impl->prompt_queue.items[impl->prompt_queue.len - 1].mode =
+          SL_PROMPT_QUEUE_MODE_STEER;
+      return SL_OK;
+    }
     if (impl->len != 0) {
       *submit = 1;
       return SL_OK;
@@ -4680,13 +4743,15 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     else
       key = sl_read_key(self);
     /* A watch completion may become ready while a key sequence is being
-     * decoded. Preserve a real key, especially an immediate-turn
-     * override; only release FIFO work on an otherwise idle iteration. */
+     * decoded. Preserve a real key; release FIFO work only on an otherwise
+     * idle iteration. */
     if (key == SL_KEY_NONE && queue_dispatch && impl->request_queue_dispatch &&
         impl->len == 0 &&
         impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-        impl->prompt_queue.len > 0) {
-      queued = sl_prompt_queue_take_raw(&impl->prompt_queue, 0);
+        sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
+      queued = sl_prompt_queue_take_raw(
+          &impl->prompt_queue,
+          sl_prompt_queue_first_queued(&impl->prompt_queue));
       if (!queued) {
         sl_set_error(self, "failed to dispatch queued prompt");
         failed = 1;
@@ -5096,8 +5161,9 @@ static char *sl_next_prompt_method(sl_t *self, const char *prompt,
     return NULL;
   if (sl_prompt_queue_enabled(impl) &&
       impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->prompt_queue.len > 0) {
-    result = sl_prompt_queue_take_raw(&impl->prompt_queue, 0);
+      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
+    result = sl_prompt_queue_take_raw(
+        &impl->prompt_queue, sl_prompt_queue_first_queued(&impl->prompt_queue));
     if (!result) {
       sl_set_error(self, "failed to dequeue prompt");
       sl_set_readline_status(self, SL_READLINE_ERROR);
@@ -5264,7 +5330,7 @@ static int sl_prompt_queue_peek_method(const sl_t *self, size_t index,
     sl_set_error((sl_t *)self, "prompt queue index is out of range");
     return SL_ERROR_INVALID;
   }
-  copy = sl_strdup(impl->prompt_queue.items[index]);
+  copy = sl_strdup(impl->prompt_queue.items[index].text);
   if (!copy) {
     sl_set_error((sl_t *)self, "failed to copy prompt queue entry");
     return SL_ERROR_NOMEM;
@@ -5309,7 +5375,7 @@ static int sl_prompt_queue_append_method(sl_t *self, const char *text) {
     sl_set_error(self, "prompt queue append requires nonempty text");
     return SL_ERROR_INVALID;
   }
-  rc = sl_prompt_queue_append_raw(impl, text);
+  rc = sl_prompt_queue_append_raw(impl, text, SL_PROMPT_QUEUE_MODE_QUEUED);
   if (rc == 1) {
     sl_set_error(self, "prompt queue is full");
     return SL_ERROR_FULL;
@@ -5363,6 +5429,36 @@ static int sl_prompt_queue_take_method(sl_t *self, size_t index, char **out) {
   return SL_OK;
 }
 
+static int sl_prompt_queue_get_mode_method(const sl_t *self, size_t index,
+                                           sl_prompt_queue_mode_t *out) {
+  const sl_impl_t *impl = sl_impl((sl_t *)self);
+  if (!impl || !out ||
+      !sl_prompt_queue_index_valid(index, impl->prompt_queue.len, 0)) {
+    sl_set_error((sl_t *)self, "invalid prompt queue mode query");
+    return SL_ERROR_INVALID;
+  }
+  *out = impl->prompt_queue.items[index].mode;
+  return SL_OK;
+}
+
+static int sl_prompt_queue_set_mode_method(sl_t *self, size_t index,
+                                           sl_prompt_queue_mode_t mode) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl || !sl_prompt_queue_enabled(impl) ||
+      !sl_prompt_queue_index_valid(index, impl->prompt_queue.len, 0) ||
+      (mode != SL_PROMPT_QUEUE_MODE_QUEUED &&
+       mode != SL_PROMPT_QUEUE_MODE_STEER)) {
+    sl_set_error(self, "invalid prompt queue mode update");
+    return SL_ERROR_INVALID;
+  }
+  impl->prompt_queue.items[index].mode = mode;
+  if (mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
+      impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+      impl->active_readline && impl->len == 0)
+    impl->request_queue_dispatch = 1;
+  return SL_OK;
+}
+
 static int sl_prompt_queue_clear_method(sl_t *self) {
   sl_impl_t *impl;
   impl = sl_impl(self);
@@ -5385,7 +5481,7 @@ static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
         self, "prompt queue draft enqueue requires an active nonempty editor");
     return SL_ERROR_INVALID;
   }
-  rc = sl_prompt_queue_append_raw(impl, impl->buf);
+  rc = sl_prompt_queue_append_raw(impl, impl->buf, SL_PROMPT_QUEUE_MODE_QUEUED);
   if (rc == 1) {
     sl_set_error(self, "prompt queue is full");
     return SL_ERROR_FULL;
@@ -5413,10 +5509,11 @@ sl_set_prompt_queue_delivery_method(sl_t *self,
     return SL_ERROR_INVALID;
   }
   if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) {
-    sl_set_error(self, "queued-turns delivery follows the status busy state");
-    return SL_ERROR_INVALID;
-  }
-  impl->prompt_queue.delivery = delivery;
+    impl->prompt_queue.host_controls_delivery =
+        delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL;
+    sl_prompt_queue_sync_queued_turns_delivery(impl);
+  } else
+    impl->prompt_queue.delivery = delivery;
   return SL_OK;
 }
 
@@ -5444,8 +5541,11 @@ sl_set_prompt_queue_profile_method(sl_t *self,
     return SL_ERROR_INVALID;
   }
   impl->prompt_queue.profile = profile;
-  if (profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS)
+  impl->prompt_queue.host_controls_delivery = 0;
+  if (profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) {
     impl->prompt_queue.stopped = 0;
+    impl->prompt_queue.delivery = SL_PROMPT_QUEUE_DELIVERY_AUTO;
+  }
   sl_prompt_queue_profile_keys(profile, &impl->prompt_queue.keys);
   sl_prompt_queue_sync_queued_turns_delivery(impl);
   return SL_OK;
@@ -5903,6 +6003,8 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->set_prompt_theme = sl_set_prompt_theme_method;
   self->set_statusline = sl_set_statusline_method;
   self->set_status_message = sl_set_status_message_method;
+  self->prompt_queue_get_mode = sl_prompt_queue_get_mode_method;
+  self->prompt_queue_set_mode = sl_prompt_queue_set_mode_method;
   self->set_status_elements = sl_set_status_elements_method;
   self->set_status_element = sl_set_status_element_method;
   self->set_status_busy = sl_set_status_busy_method;
@@ -6087,6 +6189,20 @@ int sl_prompt_queue_take(sl_t *self, size_t index, char **out) {
   if (!self || !self->prompt_queue_take)
     return SL_ERROR_INVALID;
   return self->prompt_queue_take(self, index, out);
+}
+
+int sl_prompt_queue_get_mode(const sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t *out) {
+  if (!self || !self->prompt_queue_get_mode)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_get_mode(self, index, out);
+}
+
+int sl_prompt_queue_set_mode(sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t mode) {
+  if (!self || !self->prompt_queue_set_mode)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_set_mode(self, index, mode);
 }
 
 int sl_prompt_queue_clear(sl_t *self) {

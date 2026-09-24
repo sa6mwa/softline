@@ -20,6 +20,8 @@ local prompt_methods = {
   "queue_append",
   "queue_replace",
   "queue_take",
+  "queue_mode",
+  "queue_set_mode",
   "queue_clear",
   "queue_draft",
   "set_queue_delivery",
@@ -110,7 +112,11 @@ if string.packsize("T") < 8 then
   assert_eq(status:queue_peek(1), "one", "overflowing queue index changed queue")
 end
 assert_eq(status:queue_peek(2), "two", "queue peek")
+assert_eq(status:queue_mode(2), softline.QUEUE_MODE_QUEUED, "default queue mode")
+assert(status:queue_set_mode(2, softline.QUEUE_MODE_STEER))
+assert_eq(status:queue_mode(2), softline.QUEUE_MODE_STEER, "steer queue mode")
 assert(status:queue_replace(2, "second"))
+assert_eq(status:queue_mode(2), softline.QUEUE_MODE_STEER, "replacement kept mode")
 assert_eq(status:queue_take(1), "one", "queue take")
 assert_eq(status:queue_count(), 2, "queue count after take")
 assert(status:set_queue_delivery("manual"))
@@ -122,7 +128,12 @@ assert(status:set_status_busy(true))
 assert_eq(status:queue_delivery(), "manual", "busy queued-turns delivery")
 assert(status:set_status_busy(false))
 assert_eq(status:queue_delivery(), "auto", "idle queued-turns delivery")
-assert(not status:set_queue_delivery("manual"))
+assert(status:set_queue_delivery("manual"))
+assert_eq(status:queue_delivery(), "manual", "host-controlled queued turns")
+assert(status:set_status_busy(true))
+assert(status:set_status_busy(false))
+assert_eq(status:queue_delivery(), "manual", "manual delivery survives idle")
+assert(status:set_queue_delivery("auto"))
 local keys = status:queue_keys()
 assert_eq(keys.enqueue_draft, softline.KEY_ENTER, "queued-turns enqueue key")
 assert_eq(keys.edit_newest, softline.KEY_ALT_E, "queued-turns edit key")
@@ -139,6 +150,8 @@ assert_eq(softline.PROMPT_SOURCE_NONE, 0, "no prompt source constant")
 assert_eq(softline.PROMPT_SOURCE_DIRECT, 1, "direct prompt source constant")
 assert_eq(softline.PROMPT_SOURCE_QUEUED, 2, "queued prompt source constant")
 assert_eq(softline.PROMPT_SOURCE_PROMOTED, 3, "promoted prompt source constant")
+assert_eq(softline.QUEUE_MODE_QUEUED, 0, "queued mode constant")
+assert_eq(softline.QUEUE_MODE_STEER, 1, "steer mode constant")
 assert_eq(softline.ERROR_FULL, -5, "queue full status constant")
 assert_eq(softline.PROMPT_THEME_PLAIN, 0, "plain prompt theme constant")
 assert_eq(softline.PROMPT_THEME_ACCENT, 1, "accent prompt theme constant")

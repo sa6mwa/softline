@@ -63,9 +63,8 @@ Currently implemented:
 - Chat-like prompts can opt into a bounded FIFO prompt queue with public C and
   Lua inspection/mutation APIs. The default profile keeps Tab queueing and
   Alt-E edit-newest behavior, while the queued-turns profile binds
-  Enter-to-queue and FIFO release to Softline's busy lifecycle. `next_prompt()`
-  can auto-deliver FIFO work or the default profile can leave it local for
-  explicit host delivery. The renderer ships
+  Enter-to-queue to Softline's busy lifecycle. Either profile can auto-deliver
+  ordinary queued work or leave it for explicit host delivery. The renderer ships
   default, plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun,
   Riced, and Synthwave prompt themes. Optional status lines use the selected
   palette. The chat examples add sent nonempty prompts to their history, so
@@ -111,10 +110,12 @@ responses mix headings, subheadings, italic, bold, code, and paragraphs while
 input remains editable.
 
 While available, Enter dispatches a turn; while its operation is running,
-Enter queues a follow-up in Softline. Alt-Enter
-always dispatches a nonempty draft, and Alt-Enter on an empty editor promotes
-the newest queued entry for immediate host delivery. Alt-E edits the newest
-queued draft. On completion, queued FIFO work automatically dispatches. The
+Enter queues a follow-up in Softline. While busy, Alt-Enter queues a steer
+entry or marks the newest queued entry as steer when the editor is empty. The
+example takes steers after a Markdown block boundary, then continues the
+response stream. While idle, Alt-Enter submits a draft or promotes the newest
+queued entry. Alt-E edits the newest queued draft. On completion, ordinary
+queued FIFO work is selected by the example at the turn boundary. The
 example uses the status spinner only as a presentation of its application-owned
 busy state. Escape or Ctrl-C returns cancellation to the application; the C chat
 example uses it to stop the active simulated operation, retain its queue, and keep the
@@ -261,28 +262,33 @@ are oldest-first and returned strings are released with `sl_free_string()`.
 ```c
 sl->set_prompt_queue(sl, 1, 64, 3);
 sl->set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS);
+sl->set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL);
 
 /* An operation starts: Enter now queues nonempty drafts. */
 sl->set_status_busy(sl, 1);
 
-/* An owner-thread completion callback returns to idle. If the editor is
- * empty, the active next_prompt() immediately receives one oldest queued
- * turn; starting that turn sets busy again, so later entries remain queued. */
+/* At a response seam, inspect modes and take a STEER entry if desired.
+ * At completion, return to idle and take a QUEUED entry for the next turn. */
 sl->set_status_busy(sl, 0);
 ```
 
 `SL_PROMPT_QUEUE_PROFILE_DEFAULT` preserves Tab, Alt-E, and automatic FIFO
 delivery by default. `SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS` is the native
 turn lifecycle preset: while `set_status_busy(sl, 1)` is active, Enter queues
-a nonempty draft; when it returns idle, Softline delivers exactly one oldest
-queued turn. Starting that turn sets busy again, so the remaining FIFO entries
-stay visibly queued until its completion. In idle mode, Enter submits normally
-and an empty Enter is ignored. Alt-Enter always submits a nonempty draft; on
-an empty draft it promotes the newest queued entry regardless of busy state.
-Both are returned to the application immediately, even while busy: a nonempty
-draft has `SL_PROMPT_SOURCE_DIRECT` and a promotion has
-`SL_PROMPT_SOURCE_PROMOTED`. Use `sl_set_prompt_queue_delivery()` only with
-the default profile for an explicit host-controlled delivery policy. Explicit
+a nonempty draft; with automatic delivery, returning idle delivers the oldest
+ordinary queued turn. Starting that turn sets busy again, so later entries
+stay visibly queued. In idle mode, Enter submits normally
+and an empty Enter is ignored. While busy, Alt-Enter queues a nonempty draft
+with `SL_PROMPT_QUEUE_MODE_STEER`; with an empty draft it marks the newest
+queued entry as steer. The queue preview labels these entries `S`. The host
+uses `sl_prompt_queue_get_mode()` to choose a steer entry and
+`sl_prompt_queue_take()` to consume it at a safe response seam. Ordinary
+queued entries retain `SL_PROMPT_QUEUE_MODE_QUEUED`. Set
+`SL_PROMPT_QUEUE_DELIVERY_MANUAL` to let the host choose both kinds of entry
+and when to take them; the C and Lua chat examples do this. With automatic
+delivery, ordinary queued entries are released when the operation becomes
+idle. In idle mode, Alt-Enter submits a nonempty draft or promotes the newest
+entry immediately. Explicit
 `sl_bind_key()` bindings always take precedence over these built-ins.
 Cancelling a queued-turns editor keeps queued drafts visible but stops automatic
 FIFO release; a subsequent direct submission or manual promotion resumes it.

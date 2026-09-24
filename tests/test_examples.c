@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { MAX_ROWS = 16, MAX_COLS = 96, RAW_CAP = 262144 };
+enum { MAX_ROWS = 40, MAX_COLS = 140, RAW_CAP = 262144 };
 static const char *const observed[] = {
     "A short answer", "Next step",           "A longer answer", "> draft",
     "> queued",       "Operation cancelled", "Q 1. queued"};
@@ -268,6 +268,16 @@ static int wait_raw(struct terminal *t, const char *needle, int ms) {
   return strstr(t->raw, needle) ? 0 : -1;
 }
 
+static int wait_raw_since(struct terminal *t, size_t mark, const char *needle,
+                          int ms) {
+  struct timespec deadline = deadline_after(ms);
+  while (mark <= t->raw_len && !strstr(t->raw + mark, needle) &&
+         before_deadline(&deadline))
+    if (term_read(t) < 0)
+      return -1;
+  return mark <= t->raw_len && strstr(t->raw + mark, needle) ? 0 : -1;
+}
+
 static int wait_raw_after(struct terminal *t, const char *first,
                           const char *second, int ms) {
   struct timespec deadline = deadline_after(ms);
@@ -347,6 +357,8 @@ static int finish(pid_t pid, int fd) {
       if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
         return 0;
       fprintf(stderr, "example child exited with status=%d\n", status);
+      fwrite(tail, 1, tail_len, stderr);
+      fputc('\n', stderr);
       return -1;
     }
     FD_ZERO(&fds);
@@ -395,6 +407,17 @@ static int finish(pid_t pid, int fd) {
   (void)waitpid(pid, &status, 0);
   close(fd);
   return -1;
+}
+
+static int cancel_and_exit(struct terminal *t, int fd, pid_t pid) {
+  size_t mark = t->raw_len;
+  if (write(fd, "\003", 1) != 1 ||
+      wait_raw_since(t, mark, "\033[?2004h", 3000) != 0 ||
+      write(fd, "exit\r", 5) != 5) {
+    term_dump(t);
+    return -1;
+  }
+  return finish(pid, fd);
 }
 
 static void test_simple(const char *path) {
@@ -497,8 +520,43 @@ static void test_chat_live_queue(const char *path) {
                     (!top_repaint || top_repaint > sync_end),
                 "native scroll repainted the output viewport");
   }
-  ASSERT_TRUE(write(fd, "exit\033\r", 6) == 6, "exit failed");
-  ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  PASS();
+}
+
+static void
+test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
+  int fd;
+  int note_row;
+  int quote_row;
+  int answer_row;
+  pid_t pid;
+  size_t output_mark;
+  struct terminal t;
+  TEST("chat keeps visible transcript and blank rows around rendered prompt");
+  pid = spawn(path, &fd, 120, 30);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 120, 30);
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(term_contains(&t, "Enter sends or queues"),
+              "introductory transcript missing");
+  output_mark = t.raw_len;
+  ASSERT_TRUE(write(fd, "hello\r", 6) == 6, "send failed");
+  ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
+              "response heading missing");
+  note_row = term_row_of(&t, "Enter sends or queues");
+  quote_row = term_row_of(&t, "> hello");
+  answer_row = term_row_of(&t, "A short answer");
+  ASSERT_TRUE(strstr(t.raw + output_mark, "\033[1;1H") == NULL,
+              "submission repainted the full terminal viewport");
+  ASSERT_TRUE(note_row >= 0 && quote_row > note_row &&
+                  answer_row > quote_row + 1,
+              "visible transcript or prompt spacing was lost");
+  ASSERT_TRUE(quote_row > 0 &&
+                  strspn(t.cells[quote_row - 1], " ") == (size_t)t.cols &&
+                  strspn(t.cells[quote_row + 1], " ") == (size_t)t.cols,
+              "rendered prompt lacks a blank row on each side");
+  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -544,7 +602,14 @@ static void test_chat_cancel(const char *path) {
   ASSERT_TRUE(write(fd, "\033\r", 2) == 2, "promotion failed");
   ASSERT_TRUE(wait_screen(&t, "> queued", 3000) == 0,
               "manual promotion missing");
-  ASSERT_TRUE(write(fd, "exit\033\r", 6) == 6, "exit failed");
+  ASSERT_TRUE(wait_screen(&t, "A longer answer", 3000) == 0,
+              "promoted operation did not start");
+  {
+    size_t mark = t.raw_len;
+    ASSERT_TRUE(wait_raw_since(&t, mark, "\033[32m+ ", 6000) == 0,
+                "promoted operation did not finish");
+  }
+  ASSERT_TRUE(write(fd, "exit\r", 5) == 5, "exit failed");
   ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
   PASS();
 }
@@ -574,47 +639,52 @@ static void test_chat_resizes_while_streaming(const char *path) {
               "draft lost after midstream resize");
   ASSERT_TRUE(wait_screen(&t, "Next step", 6000) == 0,
               "Markdown stopped after midstream resize");
-  ASSERT_TRUE(write(fd, "\025exit\033\r", 7) == 7, "exit failed");
-  ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
-static void test_chat_immediate_steer(const char *path) {
+static void test_chat_queued_steer(const char *path) {
   struct terminal t;
   int fd;
   pid_t pid;
-  TEST("chat Alt-Enter bypasses the busy queue immediately");
-  pid = spawn(path, &fd, 80, 14);
+  int first_heading_row;
+  int paragraph_row;
+  int steer_row;
+  int heading_row;
+  int valid_seam;
+  TEST("chat queues Alt-Enter and inserts steer at a Markdown seam");
+  pid = spawn(path, &fd, 120, 30);
   ASSERT_TRUE(pid > 0, "spawn failed");
-  term_init(&t, fd, 80, 14);
+  term_init(&t, fd, 120, 30);
   ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
   ASSERT_TRUE(write(fd, "work\r", 5) == 5, "initial send failed");
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "operation did not start");
-  ASSERT_TRUE(write(fd, "steer\033\r", 7) == 7, "immediate steer input failed");
-  ASSERT_TRUE(wait_screen(&t, "> steer", 3000) == 0,
-              "Alt-Enter did not dispatch while busy");
-  ASSERT_TRUE(wait_screen(&t, "Immediate input received", 3000) == 0,
-              "busy operation did not receive immediate input");
-  ASSERT_TRUE(!term_contains(&t, "Q 1. steer"), "immediate input was queued");
-  ASSERT_TRUE(write(fd, "ok", 2) == 2, "follow-up draft failed");
-  ASSERT_TRUE(wait_screen(&t, "> ok", 3000) == 0,
-              "editor did not accept input after immediate turn");
-  ASSERT_TRUE(write(fd, "\003", 1) == 1, "cancel failed");
-  ASSERT_TRUE(wait_screen(&t, "Operation cancelled", 3000) == 0,
-              "operation cancel missing");
-  {
-    int ready = 0;
-    int attempt;
-    for (attempt = 0; attempt < 20 && !ready; attempt++) {
-      ASSERT_TRUE(write(fd, "\025e", 2) == 2,
-                  "post-cancel editor probe failed");
-      ready = wait_screen(&t, "> e", 100) == 0;
-    }
-    ASSERT_TRUE(ready, "editor did not accept input after cancellation");
-  }
-  ASSERT_TRUE(write(fd, "xit\r", 4) == 4, "exit failed");
-  ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
+  ASSERT_TRUE(write(fd, "queued\rsteer\033\r", 14) == 14,
+              "queue and steer input failed");
+  ASSERT_TRUE(wait_screen(&t, "S 2. steer", 3000) == 0,
+              "steer mode was not shown in the queue");
+  ASSERT_TRUE(wait_screen(&t, "> steer", 5000) == 0,
+              "steer was not delivered at a seam");
+  ASSERT_TRUE(wait_screen(&t, "Next step", 6000) == 0,
+              "response did not continue after steer");
+  paragraph_row = term_row_of(&t, "Here is italic context");
+  steer_row = term_row_of(&t, "> steer");
+  heading_row = term_row_of(&t, "Next step");
+  first_heading_row = term_row_of(&t, "A short answer");
+  valid_seam =
+      first_heading_row >= 0 && paragraph_row >= 0 && steer_row >= 0 &&
+      heading_row >= 0 &&
+      ((steer_row > paragraph_row + 1 && heading_row > steer_row + 1) ||
+       (steer_row > first_heading_row + 1 && paragraph_row > steer_row + 1 &&
+        heading_row > paragraph_row + 1));
+  if (!valid_seam)
+    term_dump(&t);
+  ASSERT_TRUE(valid_seam,
+              "steer split a Markdown paragraph or lacked blank rows");
+  ASSERT_TRUE(term_contains(&t, "Q 1. queued"),
+              "ordinary queued turn was consumed at the steer seam");
+  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -657,6 +727,8 @@ static void test_chat_non_tty(const char *path) {
                   WEXITSTATUS(status) == 0,
               "child failed");
   ASSERT_TRUE(strstr(bytes, "> hello") != NULL, "quote missing");
+  ASSERT_TRUE(strcmp(bytes, "\n\n  > hello\n\n") == 0,
+              "renderer output lacks visible prompt separators");
   ASSERT_TRUE(strstr(bytes, "\033[") == NULL, "terminal controls in pipe");
   PASS();
 }
@@ -724,9 +796,10 @@ int main(int argc, char **argv) {
   printf("softline example integration tests\n");
   test_simple(argv[1]);
   test_chat_live_queue(argv[2]);
+  test_chat_preserves_transcript_and_prompt_spacing(argv[2]);
   test_chat_cancel(argv[2]);
   test_chat_resizes_while_streaming(argv[2]);
-  test_chat_immediate_steer(argv[2]);
+  test_chat_queued_steer(argv[2]);
   test_chat_non_tty(argv[2]);
   test_chat_piped_input_terminal_output(argv[2]);
   printf("%d/%d tests passed\n", tests_passed, tests_run);

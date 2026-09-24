@@ -255,15 +255,25 @@ typedef enum sl_prompt_queue_delivery {
   SL_PROMPT_QUEUE_DELIVERY_MANUAL = 1
 } sl_prompt_queue_delivery_t;
 
+/** Application-controlled delivery intent attached to each queued prompt. */
+typedef enum sl_prompt_queue_mode {
+  /** A normal follow-up turn, eligible for automatic idle delivery. */
+  SL_PROMPT_QUEUE_MODE_QUEUED = 0,
+  /** A host-selected turn to deliver at a safe seam. */
+  SL_PROMPT_QUEUE_MODE_STEER = 1
+} sl_prompt_queue_mode_t;
+
 /** Built-in prompt queue interaction mappings. */
 typedef enum sl_prompt_queue_profile {
   /** Tab enqueues and Alt-E edits the newest queued entry. */
   SL_PROMPT_QUEUE_PROFILE_DEFAULT = 0,
   /**
    * Turn-oriented queueing. While status is busy, Enter enqueues nonempty
-   * drafts. When status returns idle, next_prompt() delivers one oldest queued
-   * turn. Cancellation stops automatic release until the user submits or
-   * promotes a turn. Alt-Enter submits or promotes; Alt-E edits newest.
+   * drafts. In automatic delivery mode, idle next_prompt() delivers the oldest
+   * ordinary queued turn. While busy, Alt-Enter queues a steer entry; with an
+   * empty editor it marks the newest queued entry as steer. The host may take
+   * steer entries at safe response seams. Cancellation pauses automatic
+   * release; Alt-E edits newest.
    */
   SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS = 1
 } sl_prompt_queue_profile_t;
@@ -467,8 +477,8 @@ struct sl {
   int (*set_status_element)(sl_t *self, size_t index, const char *element);
   /** Set busy state; busy renders x (or a spinner), while idle uses the
    * configured marker, which defaults to green +. In the queued-turns profile
-   * with queueing enabled, busy also retains turns and idle releases one FIFO
-   * turn into an active next_prompt() call. */
+   * with automatic delivery, busy retains turns and idle releases one
+   * ordinary queued turn into an active next_prompt() call. */
   int (*set_status_busy)(sl_t *self, int busy);
   /** Enable or disable the 500ms /-\\| busy spinner. */
   int (*set_status_spinner)(sl_t *self, int enabled);
@@ -493,8 +503,8 @@ struct sl {
   /** Atomically queue the active nonempty draft and clear the editor. */
   int (*prompt_queue_enqueue_draft)(sl_t *self);
   /** Set automatic or host-controlled queued delivery for next_prompt(). This
-   * is the delivery policy for the default profile; queued-turns derives it
-   * from set_status_busy(). */
+   * also controls whether queued-turns releases ordinary entries on idle.
+   * Busy queued-turns always retains entries. */
   int (*set_prompt_queue_delivery)(sl_t *self,
                                    sl_prompt_queue_delivery_t delivery);
   /** Return this handle's queued delivery mode. */
@@ -538,6 +548,12 @@ struct sl {
   /** Set, replace, or clear the single-row message above the status line.
    * NULL or an empty string clears it. Text must be printable UTF-8. */
   int (*set_status_message)(sl_t *self, const char *message);
+  /** Read one queued entry's delivery intent. */
+  int (*prompt_queue_get_mode)(const sl_t *self, size_t index,
+                               sl_prompt_queue_mode_t *out);
+  /** Change one queued entry's delivery intent. */
+  int (*prompt_queue_set_mode)(sl_t *self, size_t index,
+                               sl_prompt_queue_mode_t mode);
 };
 
 /**
@@ -656,14 +672,22 @@ int sl_prompt_queue_replace(sl_t *self, size_t index, const char *text);
 /** Remove queue index and transfer its softline-allocated text through out. */
 int sl_prompt_queue_take(sl_t *self, size_t index, char **out);
 
+/** Inspect one queued entry's delivery intent. New entries are QUEUED. */
+int sl_prompt_queue_get_mode(const sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t *out);
+/** Change one entry's delivery intent; the host chooses when to take STEER. */
+int sl_prompt_queue_set_mode(sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t mode);
+
 /** Clear queued entries without changing the active editor draft. */
 int sl_prompt_queue_clear(sl_t *self);
 
 /** Queue the active nonempty draft and clear it atomically while editing. */
 int sl_prompt_queue_enqueue_draft(sl_t *self);
 
-/** Set automatic or manual queued delivery for the default profile.
- * queued-turns derives delivery from sl_set_status_busy(). */
+/** Set automatic or manual queued delivery. Busy queued-turns retains entries
+ * regardless of this setting; manual lets the host take entries at chosen
+ * seams and turn boundaries. */
 int sl_set_prompt_queue_delivery(sl_t *self,
                                  sl_prompt_queue_delivery_t delivery);
 
