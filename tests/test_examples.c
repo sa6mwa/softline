@@ -549,13 +549,49 @@ test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
   answer_row = term_row_of(&t, "A short answer");
   ASSERT_TRUE(strstr(t.raw + output_mark, "\033[1;1H") == NULL,
               "submission repainted the full terminal viewport");
-  ASSERT_TRUE(note_row >= 0 && quote_row > note_row &&
-                  answer_row > quote_row + 1,
+  ASSERT_TRUE(note_row >= 0 && quote_row == note_row + 2 &&
+                  answer_row == quote_row + 2,
               "visible transcript or prompt spacing was lost");
   ASSERT_TRUE(quote_row > 0 &&
                   strspn(t.cells[quote_row - 1], " ") == (size_t)t.cols &&
                   strspn(t.cells[quote_row + 1], " ") == (size_t)t.cols,
               "rendered prompt lacks a blank row on each side");
+  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  PASS();
+}
+
+static void test_chat_spacing_across_turns(const char *path) {
+  int fd;
+  pid_t pid;
+  struct terminal t;
+  TEST("chat keeps one empty row across consecutive response turns");
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "0", 1) == 0,
+              "failed to set fast stream delay");
+  pid = spawn(path, &fd, 120, 40);
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) == 0,
+              "failed to restore stream delay");
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 120, 40);
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(write(fd, "one\r", 4) == 4, "first send failed");
+  ASSERT_TRUE(wait_screen(&t, "Try another prompt.", 3000) == 0,
+              "first response missing");
+  ASSERT_TRUE(write(fd, "two\r", 4) == 4, "second send failed");
+  ASSERT_TRUE(wait_screen(&t, "The stream is still live.", 3000) == 0,
+              "second response missing");
+  ASSERT_TRUE(write(fd, "three\r", 6) == 6, "third send failed");
+  ASSERT_TRUE(wait_screen(&t, "A single line can be", 3000) == 0,
+              "third response missing");
+  ASSERT_TRUE(term_row_of(&t, "# A short answer") ==
+                      term_row_of(&t, "> one") + 2 &&
+                  term_row_of(&t, "> two") ==
+                      term_row_of(&t, "Try another prompt.") + 2 &&
+                  term_row_of(&t, "## A longer answer") ==
+                      term_row_of(&t, "> two") + 2 &&
+                  term_row_of(&t, "> three") ==
+                      term_row_of(&t, "The stream is still live.") + 2 &&
+                  term_row_of(&t, "# Notes") == term_row_of(&t, "> three") + 2,
+              "consecutive turns have extra blank rows");
   ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
@@ -675,15 +711,51 @@ static void test_chat_queued_steer(const char *path) {
   valid_seam =
       first_heading_row >= 0 && paragraph_row >= 0 && steer_row >= 0 &&
       heading_row >= 0 &&
-      ((steer_row > paragraph_row + 1 && heading_row > steer_row + 1) ||
-       (steer_row > first_heading_row + 1 && paragraph_row > steer_row + 1 &&
-        heading_row > paragraph_row + 1));
+      ((steer_row == paragraph_row + 2 && heading_row == steer_row + 2) ||
+       (steer_row == first_heading_row + 2 && paragraph_row == steer_row + 2 &&
+        heading_row == paragraph_row + 2));
   if (!valid_seam)
     term_dump(&t);
   ASSERT_TRUE(valid_seam,
               "steer split a Markdown paragraph or lacked blank rows");
   ASSERT_TRUE(term_contains(&t, "Q 1. queued"),
               "ordinary queued turn was consumed at the steer seam");
+  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  PASS();
+}
+
+static void test_chat_steer_after_paragraph(const char *path) {
+  int fd;
+  pid_t pid;
+  struct terminal t;
+  int paragraph_row;
+  int steer_row;
+  int heading_row;
+  TEST("chat inserts a late steer with one empty row at the paragraph seam");
+  pid = spawn(path, &fd, 120, 30);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 120, 30);
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(write(fd, "work\r", 5) == 5, "initial send failed");
+  ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
+              "operation did not start");
+  usleep(400000);
+  ASSERT_TRUE(write(fd, "late\033\r", 6) == 6, "late steer input failed");
+  ASSERT_TRUE(wait_screen(&t, "S 1. late", 3000) == 0,
+              "late steer was not queued");
+  ASSERT_TRUE(wait_screen(&t, "> late", 5000) == 0,
+              "late steer was not delivered");
+  ASSERT_TRUE(wait_screen(&t, "Next step", 6000) == 0,
+              "response did not continue after late steer");
+  paragraph_row = term_row_of(&t, "Here is italic context");
+  steer_row = term_row_of(&t, "> late");
+  heading_row = term_row_of(&t, "Next step");
+  if (paragraph_row < 0 || steer_row != paragraph_row + 2 ||
+      heading_row != steer_row + 2)
+    term_dump(&t);
+  ASSERT_TRUE(paragraph_row >= 0 && steer_row == paragraph_row + 2 &&
+                  heading_row == steer_row + 2,
+              "late steer has extra blank rows or split the paragraph");
   ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
@@ -712,7 +784,7 @@ static void test_chat_non_tty(const char *path) {
   }
   close(input[0]);
   close(output[1]);
-  ASSERT_TRUE(write(input[1], "hello\nexit\n", 11) == 11, "input failed");
+  ASSERT_TRUE(write(input[1], "hello\nok\nexit\n", 14) == 14, "input failed");
   close(input[1]);
   used = 0;
   while (used < sizeof(bytes) - 1) {
@@ -727,8 +799,8 @@ static void test_chat_non_tty(const char *path) {
                   WEXITSTATUS(status) == 0,
               "child failed");
   ASSERT_TRUE(strstr(bytes, "> hello") != NULL, "quote missing");
-  ASSERT_TRUE(strcmp(bytes, "\n\n  > hello\n\n") == 0,
-              "renderer output lacks visible prompt separators");
+  ASSERT_TRUE(strcmp(bytes, "\n\n  > hello\n\n  > ok\n\n") == 0,
+              "renderer output has more or fewer than one empty prompt row");
   ASSERT_TRUE(strstr(bytes, "\033[") == NULL, "terminal controls in pipe");
   PASS();
 }
@@ -797,9 +869,11 @@ int main(int argc, char **argv) {
   test_simple(argv[1]);
   test_chat_live_queue(argv[2]);
   test_chat_preserves_transcript_and_prompt_spacing(argv[2]);
+  test_chat_spacing_across_turns(argv[2]);
   test_chat_cancel(argv[2]);
   test_chat_resizes_while_streaming(argv[2]);
   test_chat_queued_steer(argv[2]);
+  test_chat_steer_after_paragraph(argv[2]);
   test_chat_non_tty(argv[2]);
   test_chat_piped_input_terminal_output(argv[2]);
   printf("%d/%d tests passed\n", tests_passed, tests_run);

@@ -38,6 +38,9 @@ struct chat_state {
   unsigned int turn_index;
   size_t response_bytes;
   char previous_response_char;
+  /* Track line endings across libmdf sink fragments and split ANSI SGR. */
+  int trailing_newlines;
+  int ansi_state;
   int (*prompt_hook)(const char *prompt,
                      int (*emit)(void *, const char *, size_t), void *userdata);
 };
@@ -47,22 +50,55 @@ static int dispatch_next_queued(struct chat_state *state);
 
 static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
   struct chat_state *state;
+  const char *written_bytes;
+  size_t written_length;
+  size_t i;
   ssize_t written;
   state = (struct chat_state *)userdata;
   if (!state || (!bytes && length > 0))
     return -1;
-  if (state->interactive)
-    return sl_output_stream_write(state->sl, bytes, length) == SL_OK ? 0 : -1;
-  while (length > 0) {
-    written = write(STDOUT_FILENO, bytes, length);
-    if (written < 0 && errno == EINTR)
-      continue;
-    if (written <= 0)
+  written_bytes = bytes;
+  written_length = length;
+  if (state->interactive) {
+    if (sl_output_stream_write(state->sl, bytes, length) != SL_OK)
       return -1;
-    bytes += written;
-    length -= (size_t)written;
+  } else {
+    while (length > 0) {
+      written = write(STDOUT_FILENO, bytes, length);
+      if (written < 0 && errno == EINTR)
+        continue;
+      if (written <= 0)
+        return -1;
+      bytes += written;
+      length -= (size_t)written;
+    }
+  }
+  for (i = 0; i < written_length; i++) {
+    unsigned char byte = (unsigned char)written_bytes[i];
+    if (state->ansi_state == 1) {
+      state->ansi_state = byte == '[' ? 2 : 0;
+      continue;
+    }
+    if (state->ansi_state == 2) {
+      if (byte >= 0x40 && byte <= 0x7e)
+        state->ansi_state = 0;
+      continue;
+    }
+    if (byte == 0x1b)
+      state->ansi_state = 1;
+    else if (byte == '\n') {
+      if (state->trailing_newlines < 2)
+        state->trailing_newlines++;
+    } else if (byte != '\r')
+      state->trailing_newlines = 0;
   }
   return 0;
+}
+
+static int ensure_one_blank_row(struct chat_state *state) {
+  static const char breaks[] = "\n\n";
+  int missing = 2 - state->trailing_newlines;
+  return missing > 0 ? sink_to_softline(state, breaks, (size_t)missing) : 0;
 }
 
 static int chat_margin_left(int columns) { return columns >= 5 ? 2 : 0; }
@@ -166,14 +202,12 @@ static int italic_quote_prompt(const char *prompt,
 }
 
 static int render_user_prompt(struct chat_state *state, const char *line) {
-  if (begin_prompt_document(state) != 0 ||
-      sink_to_softline(state, "\n\n", 2) != 0 ||
+  if (begin_prompt_document(state) != 0 || ensure_one_blank_row(state) != 0 ||
       state->prompt_hook(line, prompt_emit, state) != 0)
     return -1;
   if (finish_prompt_document(state) != 0)
     return -1;
-  /* Markdown blank lines separate blocks but are not emitted as blank rows. */
-  return sink_to_softline(state, "\n", 1);
+  return ensure_one_blank_row(state);
 }
 
 static int set_busy(struct chat_state *state, int busy) {
@@ -185,7 +219,18 @@ static int set_busy(struct chat_state *state, int busy) {
   return 0;
 }
 
-static int deliver_steers(struct chat_state *state) {
+static int finish_response_document(struct chat_state *state) {
+  if (!state->response_open)
+    return 0;
+  if (state->response_renderer->finish_document(state->response_renderer) !=
+      MDF_OK)
+    return -1;
+  state->response_open = 0;
+  state->response_documents++;
+  return 0;
+}
+
+static int deliver_steers(struct chat_state *state, int at_seam) {
   size_t index;
   sl_prompt_queue_mode_t mode;
   char *line;
@@ -196,6 +241,11 @@ static int deliver_steers(struct chat_state *state) {
       index++;
       continue;
     }
+    /* libmdf retains a block separator until the next block arrives. Close
+     * this response segment before inserting a separately rendered prompt. */
+    if (at_seam && finish_response_document(state) != 0)
+      return -1;
+    at_seam = 0;
     line = NULL;
     if (sl_prompt_queue_take(state->sl, index, &line) != SL_OK)
       return -1;
@@ -246,14 +296,8 @@ static int finish_operation(struct chat_state *state) {
       return -1;
     state->worker_pid = -1;
   }
-  if (state->response_open) {
-    if (state->response_renderer->finish_document(state->response_renderer) !=
-        MDF_OK)
-      return -1;
-    state->response_open = 0;
-    state->response_documents++;
-  }
-  if (deliver_steers(state) != 0 || set_busy(state, 0) != 0)
+  if (finish_response_document(state) != 0 || deliver_steers(state, 0) != 0 ||
+      set_busy(state, 0) != 0)
     return -1;
   return dispatch_next_queued(state);
 }
@@ -276,13 +320,8 @@ static int cancel_operation(struct chat_state *state) {
     }
     state->worker_pid = -1;
   }
-  if (state->response_open) {
-    if (state->response_renderer->finish_document(state->response_renderer) !=
-        MDF_OK)
-      return -1;
-    state->response_open = 0;
-    state->response_documents++;
-  }
+  if (finish_response_document(state) != 0)
+    return -1;
   return set_busy(state, 0);
 }
 
@@ -302,11 +341,17 @@ static int operation_watch(sl_t *sl, const sl_watch_event_t *event,
   amount = read(state->watch_fd, bytes, sizeof(bytes));
   if (amount > 0) {
     for (i = 0; i < amount; i++) {
+      if (!state->response_open) {
+        if (state->response_renderer->begin_document(
+                state->response_renderer) != MDF_OK)
+          return SL_ERROR_IO;
+        state->response_open = 1;
+      }
       if (state->response_renderer->feed(state->response_renderer, bytes + i,
                                          1) != MDF_OK)
         return SL_ERROR_IO;
       if (bytes[i] == '\n' && state->previous_response_char == '\n' &&
-          deliver_steers(state) != 0)
+          deliver_steers(state, 1) != 0)
         return SL_ERROR_IO;
       state->previous_response_char = bytes[i];
       state->response_bytes++;

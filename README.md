@@ -101,13 +101,13 @@ example dependency: libsoftline and its installed package remain independent
 of libmdf. The composer gives libmdf a two-column left margin and its default
 ANSI palette, updating both renderers' geometry on resize and dropping the
 margin on very narrow terminals. Each submitted prompt becomes a Markdown
-block quote in italics with blank lines around it, through a Markdown source
-hook before libmdf. The hook passes prompt text through as Markdown source, so
-libmdf interprets Markdown punctuation in the prompt. A worker emits one source
-character every 20 ms; the owner-thread watch callback feeds libmdf incrementally and
-forwards each sink fragment directly into a Softline output session. The
-responses mix headings, subheadings, italic, bold, code, and paragraphs while
-input remains editable.
+block quote in italics with one visible empty row on each side, through a
+Markdown source hook before libmdf. The hook passes prompt text through as
+Markdown source, so libmdf interprets Markdown punctuation in the prompt. A
+worker emits one source character every 20 ms; the owner-thread watch callback
+feeds libmdf incrementally and forwards each sink fragment directly into a
+Softline output session. The responses mix headings, subheadings, italic, bold,
+code, and paragraphs while input remains editable.
 
 While available, Enter dispatches a turn; while its operation is running,
 Enter queues a follow-up in Softline. While busy, Alt-Enter queues a steer
