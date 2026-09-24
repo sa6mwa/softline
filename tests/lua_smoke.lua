@@ -91,6 +91,12 @@ local status = assert(softline.new({
 }))
 assert(status:set_statusline(true, 15))
 assert(status:set_status_message("Thinking..."))
+assert(status:set_status_message_prefix("? "))
+assert(status:set_status_message_colors(softline.THEME_COLOR_MUTED,
+                                        softline.THEME_COLOR_ELEMENT_2))
+assert(status:set_status_message_prefix(""))
+assert(status:set_status_message_prefix(nil))
+assert(not status:set_status_message_colors(-1, softline.THEME_COLOR_MUTED))
 assert(status:set_status_message("Reasoning..."))
 assert(not status:set_status_message("two\nlines"))
 assert(status:set_status_message(nil))

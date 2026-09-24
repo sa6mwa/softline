@@ -320,6 +320,36 @@ typedef enum sl_prompt_theme {
   SL_PROMPT_THEME_DEFAULT = 9
 } sl_prompt_theme_t;
 
+/** Theme palette roles for the transient status message. */
+typedef enum sl_theme_color {
+  /** Subdued separator colour. */
+  SL_THEME_COLOR_MUTED = 0,
+  /** Secondary text colour. */
+  SL_THEME_COLOR_SECONDARY = 1,
+  /** Prompt marker colour. */
+  SL_THEME_COLOR_PROMPT = 2,
+  /** Queue marker colour. */
+  SL_THEME_COLOR_QUEUE = 3,
+  /** Editor input colour. */
+  SL_THEME_COLOR_INPUT = 4,
+  /** First status element colour. */
+  SL_THEME_COLOR_ELEMENT_0 = 5,
+  /** Second status element colour. */
+  SL_THEME_COLOR_ELEMENT_1,
+  /** Third status element colour. */
+  SL_THEME_COLOR_ELEMENT_2,
+  /** Fourth status element colour. */
+  SL_THEME_COLOR_ELEMENT_3,
+  /** Fifth status element colour. */
+  SL_THEME_COLOR_ELEMENT_4,
+  /** Sixth status element colour. */
+  SL_THEME_COLOR_ELEMENT_5,
+  /** Seventh status element colour. */
+  SL_THEME_COLOR_ELEMENT_6,
+  /** Eighth status element colour. */
+  SL_THEME_COLOR_ELEMENT_7
+} sl_theme_color_t;
+
 /** RGB colour for a separately styled quoted transcript prompt. */
 typedef struct sl_quote_color {
   unsigned char red;
@@ -559,7 +589,7 @@ struct sl {
    * renderer document. Incomplete ANSI/UTF-8 leaves it open and returns
    * SL_ERROR_INVALID so the caller may supply the missing bytes. */
   int (*output_stream_end)(sl_t *self);
-  /** Set, replace, or clear the single-row message above the status line.
+  /** Set, replace, or clear the wrapped message above the status line.
    * NULL or an empty string clears it. Text must be printable UTF-8. */
   int (*set_status_message)(sl_t *self, const char *message);
   /** Read one queued entry's delivery intent. */
@@ -577,6 +607,12 @@ struct sl {
   int (*set_quoted_prompt_prefix)(sl_t *self, const char *prefix);
   /** Override quoted-prompt RGB colours. NULL restores theme defaults. */
   int (*set_quoted_prompt_style)(sl_t *self, const sl_quote_style_t *style);
+  /** Set a printable single-line status prefix. NULL restores "! "; an
+   * empty string hides it. It appears only while a message is present. */
+  int (*set_status_message_prefix)(sl_t *self, const char *prefix);
+  /** Choose palette roles independently for prefix and italic message text. */
+  int (*set_status_message_colors)(sl_t *self, sl_theme_color_t prefix_color,
+                                   sl_theme_color_t text_color);
 };
 
 /**
@@ -738,10 +774,20 @@ int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
  * its first element. Status elements wrap between elements where possible. */
 int sl_set_statusline(sl_t *self, int enabled, size_t starting_element);
 
-/** Set, replace, or clear the italic, theme-faded message above the status
- * line. NULL or an empty string clears it. A long message is clipped to one
- * terminal row; text must be printable UTF-8 without control characters. */
+/** Set, replace, or clear the italic status message above the status line.
+ * The default prefix is "! ". NULL or an empty string clears the message.
+ * Long text wraps at words, with continuation rows indented to the display
+ * width of the prefix. Text must be printable single-line UTF-8 without
+ * control characters. */
 int sl_set_status_message(sl_t *self, const char *message);
+
+/** Set the status message prefix. NULL restores "! "; "" hides it. */
+int sl_set_status_message_prefix(sl_t *self, const char *prefix);
+
+/** Select theme palette roles for the prefix and italic message text.
+ * Defaults are MUTED and SECONDARY respectively. */
+int sl_set_status_message_colors(sl_t *self, sl_theme_color_t prefix_color,
+                                 sl_theme_color_t text_color);
 
 /** Replace all status-line elements. At most 32 elements are retained; longer
  * input is represented by the first 31 elements followed by `...`. Elements

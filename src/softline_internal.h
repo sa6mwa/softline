@@ -111,6 +111,9 @@ typedef struct sl_impl {
   int quoted_prompt_style_custom;
   sl_statusline_t statusline;
   char *status_message;
+  char *status_message_prefix;
+  sl_theme_color_t status_message_prefix_color;
+  sl_theme_color_t status_message_text_color;
   int history_index;
   char *history_edit;
   int bracketed_paste;

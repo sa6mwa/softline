@@ -250,6 +250,9 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->set_statusline != NULL, "set_statusline method missing");
   ASSERT_TRUE(sl->set_status_message != NULL,
               "set_status_message method missing");
+  ASSERT_TRUE(sl->set_status_message_prefix != NULL &&
+                  sl->set_status_message_colors != NULL,
+              "status message styling methods missing");
   ASSERT_TRUE(sl->set_status_elements != NULL,
               "set_status_elements method missing");
   ASSERT_TRUE(sl->set_status_element != NULL,
@@ -323,6 +326,23 @@ static void test_status_message_api(void) {
                   sl->set_status_message(sl, "Reasoning...") == SL_OK &&
                   sl_set_status_message(sl, "\xc3\xa5") == SL_OK,
               "valid status message rejected");
+  ASSERT_TRUE(sl_set_status_message_prefix(sl, "? ") == SL_OK &&
+                  sl_set_status_message_prefix(sl, "") == SL_OK &&
+                  sl->set_status_message_prefix(sl, NULL) == SL_OK &&
+                  sl_set_status_message_colors(sl, SL_THEME_COLOR_MUTED,
+                                               SL_THEME_COLOR_ELEMENT_2) ==
+                      SL_OK,
+              "valid status styling rejected");
+  ASSERT_TRUE(sl_set_status_message_prefix(sl, "bad\n") == SL_ERROR_INVALID &&
+                  sl_set_status_message_prefix(sl, "\033[31m") ==
+                      SL_ERROR_INVALID &&
+                  sl_set_status_message_colors(sl, (sl_theme_color_t)-1,
+                                               SL_THEME_COLOR_MUTED) ==
+                      SL_ERROR_INVALID &&
+                  sl_set_status_message_colors(sl, SL_THEME_COLOR_MUTED,
+                                               (sl_theme_color_t)99) ==
+                      SL_ERROR_INVALID,
+              "invalid status styling accepted");
   ASSERT_TRUE(sl_set_status_message(sl, "two\nlines") == SL_ERROR_INVALID &&
                   sl_set_status_message(sl, "\033[31m") == SL_ERROR_INVALID &&
                   sl_set_status_message(sl, "\xc3") == SL_ERROR_INVALID,
@@ -332,6 +352,116 @@ static void test_status_message_api(void) {
               "status message did not clear");
   sl_destroy(sl);
   PASS();
+}
+
+static void test_parser_only_stream_allows_geometry_changes(void) {
+#if SL_TEST_PTY
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  int input_pipe[2];
+  TEST("parser-only stream accepts geometry changes with TTY output");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0 &&
+                  pipe(input_pipe) == 0,
+              "mixed-TTY setup failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = input_pipe[0];
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_bounds(sl, 0, 0, 0, 0) == SL_OK &&
+                  sl_set_screen_width(sl, 20) == SL_OK &&
+                  sl_output_stream_write(sl, "ok", 2) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "parser-only stream failed after geometry change");
+  sl_destroy(sl);
+  close(input_pipe[0]);
+  close(input_pipe[1]);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#else
+  TEST("parser-only stream accepts geometry changes with TTY output");
+  PASS();
+#endif
+}
+
+struct full_editor_stream_probe {
+  int fired;
+  int setup_result;
+  int write_result;
+  size_t draft_length;
+};
+
+#if SL_TEST_PTY
+static size_t read_live_pty_output(int fd, char *bytes, size_t capacity);
+#endif
+
+static void full_editor_stream_idle(sl_t *sl, void *userdata) {
+  struct full_editor_stream_probe *probe;
+  char draft[301];
+  probe = (struct full_editor_stream_probe *)userdata;
+  if (probe->fired)
+    return;
+  probe->fired = 1;
+  memset(draft, 'x', sizeof(draft) - 1);
+  draft[sizeof(draft) - 1] = '\0';
+  probe->setup_result = sl_set_buffer(sl, draft);
+  if (probe->setup_result == SL_OK)
+    probe->setup_result = sl_set_status_message(
+        sl, "Hello world, this is a long status line, that continues on "
+            "multiple lines.");
+  if (probe->setup_result == SL_OK) {
+    probe->draft_length = strlen(sl_buffer(sl));
+    probe->write_result = sl_output_stream_write(sl, "AFTER", 5);
+  }
+  (void)sl_cancel(sl);
+}
+
+static void test_live_output_retains_row_with_full_editor(void) {
+#if SL_TEST_PTY
+  struct winsize ws;
+  struct full_editor_stream_probe probe;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+  TEST("live stream keeps an output row under a full editor and status");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_statusline(sl, 1, 0) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "full editor stream setup failed");
+  memset(&probe, 0, sizeof(probe));
+  ASSERT_TRUE(sl_set_idle_callback(sl, full_editor_stream_idle, &probe) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line == NULL && probe.fired && probe.setup_result == SL_OK &&
+                  probe.write_result == SL_OK && probe.draft_length == 300,
+              "full editor blocked live output or lost its draft");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(strstr(output, "AFTER") != NULL,
+              "live fragment missing after full editor render");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#else
+  TEST("live stream keeps an output row under a full editor and status");
+  PASS();
+#endif
 }
 
 static void test_free_function_wrappers_use_receiver_methods(void) {
@@ -1629,6 +1759,9 @@ static void test_quoted_prompt_output_api(void) {
           sl_set_screen_width(sl, 7) == SL_OK &&
           sl_output_stream_write_quoted_prompt(
               sl, "\xe7\x95\x8c\xe7\x95\x8c\xe7\x95\x8c") == SL_OK &&
+          sl_set_screen_width(sl, 3) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "\xe7\x95\x8c") ==
+              SL_ERROR_INVALID &&
           sl_output_stream_end(sl) == SL_OK,
       "quoted prompt output or validation failed");
   sl_destroy(sl);
@@ -2696,6 +2829,31 @@ static int set_status_busy_spinner_key(sl_t *sl, sl_key_t key, void *userdata,
   return SL_OK;
 }
 
+static int set_status_message_style_key(sl_t *sl, sl_key_t key, void *userdata,
+                                        sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_message_prefix(sl, "? ") != SL_OK ||
+      sl_set_status_message_colors(sl, SL_THEME_COLOR_ELEMENT_2,
+                                   SL_THEME_COLOR_MUTED) != SL_OK ||
+      sl_set_status_message(sl, "Changed") != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static int hide_status_message_prefix_key(sl_t *sl, sl_key_t key,
+                                          void *userdata,
+                                          sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_message_prefix(sl, "") != SL_OK ||
+      sl_set_status_message(sl, "Bare") != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
 static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
                                    size_t terminal_cap, char *result,
                                    size_t result_cap, int *exit_status) {
@@ -2739,7 +2897,9 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     cfg.status_busy = 0;
     sl = sl_create_with_config(&cfg);
     if (!sl ||
-        sl_set_status_message(sl, "abcdefghijklmnopqrstuvwxyz") != SL_OK ||
+        sl_set_status_message(
+            sl, "Hello world, this is a long status line, that continues on "
+                "multiple lines.") != SL_OK ||
         sl_set_status_elements(sl, elements,
                                sizeof(elements) / sizeof(elements[0])) != SL_OK)
       _exit(2);
@@ -2752,6 +2912,12 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'p'),
                     set_status_busy_spinner_key, NULL) != SL_OK)
       _exit(6);
+    if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'z'),
+                    set_status_message_style_key, NULL) != SL_OK)
+      _exit(7);
+    if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'y'),
+                    hide_status_message_prefix_key, NULL) != SL_OK)
+      _exit(8);
     line = sl_readline(sl, "status> ");
     if (!line)
       _exit(3);
@@ -2857,6 +3023,56 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
   if (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
                                     ? "\033[32m- "
                                     : "\033[38;2;57;255;20m- "))
+    return -1;
+  if (write(master_fd, "\033z", 2) != 2)
+    return -1;
+  tries = 0;
+  while (
+      !contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
+                                    ? "\033[35m? \033[0m\033[3;2;90mChanged"
+                                    : "\033[38;2;185;103;255m? "
+                                      "\033[0m\033[3;38;2;72;76;105mChanged") &&
+      tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(
+          terminal,
+          theme == SL_PROMPT_THEME_DEFAULT
+              ? "\033[35m? \033[0m\033[3;2;90mChanged"
+              : "\033[38;2;185;103;255m? \033[0m\033[3;38;2;72;76;105mChanged"))
+    return -1;
+  if (write(master_fd, "\033y", 2) != 2)
+    return -1;
+  tries = 0;
+  while (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
+                                       ? "\033[3;2;90mBare"
+                                       : "\033[3;38;2;72;76;105mBare") &&
+         tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
+                                    ? "\033[3;2;90mBare"
+                                    : "\033[3;38;2;72;76;105mBare"))
     return -1;
   if (write(master_fd, "ok\r", 3) != 3)
     return -1;
@@ -3769,10 +3985,16 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
                   !contains_bytes(terminal, "e31") &&
                   contains_bytes(terminal, "..."),
               "status line did not retain 31 elements plus ellipsis");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[3;38;2;") &&
-                  contains_bytes(terminal, "abcdefghijklmnopqrstuvwx") &&
-                  !contains_bytes(terminal, "abcdefghijklmnopqrstuvwxy"),
-              "status message did not stay italic and within one row");
+  ASSERT_TRUE(
+      contains_bytes(terminal, "\033[38;2;72;76;105m! \033[0m") &&
+          contains_bytes(terminal,
+                         "\033[3;38;2;172;164;184mHello world, this is a") &&
+          contains_bytes(terminal,
+                         "  \033[3;38;2;172;164;184mlong status line, that") &&
+          contains_bytes(terminal,
+                         "  \033[3;38;2;172;164;184mcontinues on multiple") &&
+          contains_bytes(terminal, "  \033[3;38;2;172;164;184mlines."),
+      "status message styles or word wrapping failed");
   ASSERT_TRUE(contains_after_bytes(terminal, "e7", "\n"),
               "status elements did not wrap between elements");
   PASS();
@@ -3801,8 +4023,13 @@ static void test_default_statusline_uses_ansi_palette(void) {
                   contains_bytes(terminal, "\033[90m : ") &&
                   !contains_bytes(terminal, "\033[38;2;"),
               "default status palette did not use ANSI colours");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[3;90mabcdefghijklmnopqrstuvwx"),
-              "default status message did not use faded italic treatment");
+  ASSERT_TRUE(
+      contains_bytes(terminal,
+                     "\033[2;90m! \033[0m\033[3;90mHello world, this is a") &&
+          contains_bytes(terminal, "  \033[3;90mlong status line, that") &&
+          contains_bytes(terminal, "  \033[3;90mcontinues on multiple") &&
+          contains_bytes(terminal, "  \033[3;90mlines."),
+      "default status colors or word wrapping failed");
   PASS();
 }
 
@@ -9415,18 +9642,24 @@ static void test_live_output_prompt_growth_preserves_history(void) {
   close(slave_fd);
   used = 0;
   output[0] = '\0';
-  for (tries = 0; tries < 20; tries++) {
+  for (tries = 0; tries < 100; tries++) {
     vt_init(&screen, 8, 20);
     vt_apply(&screen, output);
     if (vt_history_contains(&screen, "ONE") &&
         vt_history_contains(&screen, "TWO") && vt_contains(&screen, "THREE") &&
         vt_contains(&screen, "SEVEN") && vt_contains(&screen, "> "))
       break;
-    amount = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
-    ASSERT_TRUE(amount > 0 && used + (size_t)amount < sizeof(output),
-                "prompt growth output missing");
+    amount = read_some_with_timeout_ms(master_fd, chunk, sizeof(chunk), 50);
+    if (amount <= 0)
+      continue;
+    ASSERT_TRUE(used + (size_t)amount < sizeof(output),
+                "prompt growth output exceeded test buffer");
     append_terminal_bytes(output, &used, sizeof(output), chunk, amount);
   }
+  if (!vt_history_contains(&screen, "ONE") ||
+      !vt_history_contains(&screen, "TWO") || !vt_contains(&screen, "THREE") ||
+      !vt_contains(&screen, "SEVEN"))
+    vt_dump(&screen);
   ASSERT_TRUE(vt_history_contains(&screen, "ONE") &&
                   vt_history_contains(&screen, "TWO") &&
                   vt_contains(&screen, "THREE") &&
@@ -10324,6 +10557,8 @@ int main(void) {
   test_config_init();
   test_receiver_shell();
   test_status_message_api();
+  test_parser_only_stream_allows_geometry_changes();
+  test_live_output_retains_row_with_full_editor();
   test_free_function_wrappers_use_receiver_methods();
   test_prompt_queue_control_api();
   test_set_cursor_clamps_to_utf8_cluster_boundary();

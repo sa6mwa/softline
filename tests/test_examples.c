@@ -460,7 +460,7 @@ static void test_chat_live_queue(const char *path) {
   ASSERT_TRUE(strstr(t.raw, "\033[?1049h") == NULL, "alternate screen used");
   ASSERT_TRUE(write(fd, "first\r", 6) == 6, "first send failed");
   ASSERT_TRUE(wait_screen(&t, "> first", 3000) == 0, "quote missing");
-  ASSERT_TRUE(wait_screen(&t, "Thinking...", 3000) == 0,
+  ASSERT_TRUE(wait_screen(&t, "! Thinking...", 3000) == 0,
               "status message missing");
   ASSERT_TRUE(wait_screen(&t, "streaming demo", 3000) == 0,
               "status line missing while thinking");
@@ -473,7 +473,7 @@ static void test_chat_live_queue(const char *path) {
               "heading not streamed");
   ASSERT_TRUE(strstr(t.raw, "\033[0;3;96mfirst") != NULL,
               "quoted prompt did not use its italic accent style");
-  ASSERT_TRUE(wait_screen(&t, "Reasoning...", 3000) == 0,
+  ASSERT_TRUE(wait_screen(&t, "! Reasoning...", 3000) == 0,
               "status message did not update mid-stream");
   ASSERT_TRUE(write(fd, "draft", 5) == 5, "draft failed");
   ASSERT_TRUE(wait_screen(&t, "> draft", 3000) == 0,

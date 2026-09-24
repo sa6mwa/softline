@@ -839,7 +839,7 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
   int width;
   int height;
   impl = sl_impl(self);
-  if (!impl || !isatty(impl->output_fd))
+  if (!impl || !isatty(impl->input_fd) || !isatty(impl->output_fd))
     return 0;
   x = sl_box_left(impl);
   y = sl_box_top(impl);
@@ -2493,12 +2493,170 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   return 0;
 }
 
+static int sl_status_message_style(sl_prompt_theme_t theme,
+                                   sl_theme_color_t color, int italic,
+                                   char *style, size_t size) {
+  static const int ansi_elements[] = {36, 33, 35, 34, 32, 31, 37, 97};
+  const sl_theme_palette_t *palette;
+  const sl_rgb_t *rgb;
+  int ansi;
+  int dim;
+  int n;
+  palette = sl_theme_palette(theme);
+  if (theme == SL_PROMPT_THEME_DEFAULT || theme == SL_PROMPT_THEME_PLAIN) {
+    dim = color == SL_THEME_COLOR_MUTED;
+    if (color == SL_THEME_COLOR_MUTED || color == SL_THEME_COLOR_SECONDARY)
+      ansi = 90;
+    else if (color == SL_THEME_COLOR_PROMPT || color == SL_THEME_COLOR_INPUT)
+      ansi = 97;
+    else if (color == SL_THEME_COLOR_QUEUE)
+      ansi = 36;
+    else
+      ansi = ansi_elements[color - SL_THEME_COLOR_ELEMENT_0];
+    n = snprintf(style, size, "\033[%s%s%dm", italic ? "3;" : "",
+                 dim ? "2;" : "", ansi);
+  } else {
+    if (color == SL_THEME_COLOR_MUTED)
+      rgb = &palette->separator;
+    else if (color == SL_THEME_COLOR_SECONDARY)
+      rgb = &palette->queue_text;
+    else if (color == SL_THEME_COLOR_PROMPT)
+      rgb = &palette->prompt;
+    else if (color == SL_THEME_COLOR_QUEUE)
+      rgb = &palette->queue;
+    else if (color == SL_THEME_COLOR_INPUT)
+      rgb = &palette->input;
+    else
+      rgb = &palette->elements[color - SL_THEME_COLOR_ELEMENT_0];
+    n = snprintf(style, size, "\033[%s38;2;%u;%u;%um", italic ? "3;" : "",
+                 (unsigned int)rgb->red, (unsigned int)rgb->green,
+                 (unsigned int)rgb->blue);
+  }
+  return n > 0 && (size_t)n < size ? 0 : -1;
+}
+
+static int sl_status_message_append_part(sl_row_t *row, const char *text,
+                                         int width, const char *style) {
+  size_t pos;
+  size_t len;
+  if (sl_row_append(row, style, strlen(style)) != 0)
+    return -1;
+  len = strlen(text);
+  pos = 0;
+  while (pos < len) {
+    int cells;
+    size_t n;
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0 || (cells > 0 && row->cols + cells > width))
+      break;
+    if (sl_row_append_cells(row, text + pos, n, cells) != 0)
+      return -1;
+    pos += n;
+  }
+  return sl_row_append(row, "\033[0m", 4);
+}
+
+static int sl_status_message_new_row(sl_render_t *render, int indent,
+                                     const char *style) {
+  if (sl_row_append(&render->rows[render->count - 1], "\033[0m", 4) != 0 ||
+      sl_render_new_indented_row(render, indent, 0) != 0)
+    return -1;
+  return sl_row_append(&render->rows[render->count - 1], style, strlen(style));
+}
+
+static int sl_status_message_append_wrapped(sl_render_t *render,
+                                            const char *text, int width,
+                                            int indent, const char *style) {
+  size_t pos;
+  size_t len;
+  size_t word_end;
+  sl_row_t *row;
+  len = strlen(text);
+  pos = 0;
+  word_end = 0;
+  row = &render->rows[render->count - 1];
+  if (row->cols >= width && len > 0) {
+    if (sl_render_new_indented_row(render, indent, 0) != 0)
+      return -1;
+    row = &render->rows[render->count - 1];
+  }
+  if (sl_row_append(row, style, strlen(style)) != 0)
+    return -1;
+  while (pos < len) {
+    size_t n;
+    int cells;
+    row = &render->rows[render->count - 1];
+    if (text[pos] == ' ') {
+      size_t spaces;
+      size_t next_word;
+      int next_width;
+      spaces = 0;
+      while (pos + spaces < len && text[pos + spaces] == ' ')
+        spaces++;
+      next_word = sl_next_word_len(text, len, pos + spaces);
+      next_width = sl_word_width(text, len, pos + spaces, next_word);
+      if ((next_word > 0 && next_width <= width - indent &&
+           spaces + (size_t)next_width > (size_t)(width - row->cols)) ||
+          spaces > (size_t)(width - row->cols)) {
+        pos += spaces;
+        if (pos < len && sl_status_message_new_row(render, indent, style) != 0)
+          return -1;
+        continue;
+      }
+      if (sl_row_append_cells(row, text + pos, spaces, (int)spaces) != 0)
+        return -1;
+      pos += spaces;
+      continue;
+    }
+    if (sl_word_byte(text[pos]) && pos >= word_end) {
+      size_t word_len;
+      int word_width;
+      word_len = sl_next_word_len(text, len, pos);
+      word_end = pos + word_len;
+      word_width = sl_word_width(text, len, pos, word_len);
+      if (row->cols > indent && word_width <= width - indent &&
+          row->cols + word_width > width) {
+        if (sl_status_message_new_row(render, indent, style) != 0)
+          return -1;
+        row = &render->rows[render->count - 1];
+      }
+    }
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0)
+      return -1;
+    if (cells > width) {
+      if (row->cols >= width) {
+        if (sl_status_message_new_row(render, indent, style) != 0)
+          return -1;
+        row = &render->rows[render->count - 1];
+      }
+      if (sl_row_append_cells(row, "?", 1, 1) != 0)
+        return -1;
+      pos += n;
+      continue;
+    }
+    if (row->cols + cells > width) {
+      if (sl_status_message_new_row(render, indent, style) != 0)
+        return -1;
+      row = &render->rows[render->count - 1];
+    }
+    if (cells > width - row->cols)
+      return -1;
+    if (sl_row_append_cells(row, text + pos, n, cells) != 0)
+      return -1;
+    pos += n;
+  }
+  return sl_row_append(&render->rows[render->count - 1], "\033[0m", 4);
+}
+
 static int sl_render_append_status_message(sl_t *self, sl_render_t *render,
                                            int width) {
   sl_impl_t *impl;
-  const sl_theme_palette_t *palette;
-  char style[48];
-  int n;
+  sl_row_t *row;
+  char prefix_style[48];
+  char text_style[48];
+  const char *prefix;
+  int indent;
   impl = sl_impl(self);
   if (!impl || (!impl->statusline.enabled && !impl->status_message))
     return 0;
@@ -2506,20 +2664,22 @@ static int sl_render_append_status_message(sl_t *self, sl_render_t *render,
     return -1;
   if (!impl->status_message || !impl->status_message[0])
     return 0;
-  palette = sl_theme_palette(impl->prompt_theme);
-  if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT)
-    strcpy(style, "\033[3;90m");
-  else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
-    n = snprintf(style, sizeof(style), "\033[3;38;2;%u;%u;%um",
-                 (unsigned int)palette->separator.red,
-                 (unsigned int)palette->separator.green,
-                 (unsigned int)palette->separator.blue);
-    if (n <= 0 || n >= (int)sizeof(style))
-      return -1;
-  } else
-    strcpy(style, "\033[3m");
-  return sl_queue_row_append_preview(&render->rows[render->count - 1],
-                                     impl->status_message, width, style);
+  if (sl_status_message_style(impl->prompt_theme,
+                              impl->status_message_prefix_color, 0,
+                              prefix_style, sizeof(prefix_style)) != 0 ||
+      sl_status_message_style(impl->prompt_theme,
+                              impl->status_message_text_color, 1, text_style,
+                              sizeof(text_style)) != 0)
+    return -1;
+  row = &render->rows[render->count - 1];
+  prefix = impl->status_message_prefix ? impl->status_message_prefix : "! ";
+  if (sl_status_message_append_part(row, prefix, width, prefix_style) != 0)
+    return -1;
+  indent = sl_text_width(prefix, strlen(prefix));
+  if (indent > width - 2)
+    indent = width > 1 ? width - 2 : 0;
+  return sl_status_message_append_wrapped(render, impl->status_message, width,
+                                          indent, text_style);
 }
 
 static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
@@ -2858,6 +3018,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   visible = render->count;
   if (visible > height)
     visible = height;
+  if (impl->output_stream_active && height > 1 && visible >= height)
+    visible = height - 1;
   if (visible < 1)
     visible = 1;
   first = render->cursor_row - visible + 1;
@@ -3747,6 +3909,19 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
         self,
         "quoted prompt prefix leaves no room at the current output width");
     return SL_ERROR_INVALID;
+  }
+  for (pos = 0, len = strlen(text); pos < len;) {
+    int cells;
+    size_t n;
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0)
+      break;
+    if (text[pos] != '\n' && text[pos] != '\t' && cells > width - indent) {
+      sl_set_error(self,
+                   "quoted prompt glyph is wider than space after prefix");
+      return SL_ERROR_INVALID;
+    }
+    pos += n;
   }
   if (sl_quoted_prompt_styles(impl, prefix_style, sizeof(prefix_style),
                               text_style, sizeof(text_style)) != 0) {
@@ -5452,6 +5627,7 @@ static void sl_destroy_method(sl_t *self) {
     sl_statusline_clear(&impl->statusline);
     free(impl->quoted_prompt_prefix);
     free(impl->status_message);
+    free(impl->status_message_prefix);
     sl_render_store_clear(impl);
     sl_surface_destroy(impl->output_surface);
     free(impl->history_edit);
@@ -5939,6 +6115,46 @@ static int sl_set_status_message_method(sl_t *self, const char *message) {
   return SL_OK;
 }
 
+static int sl_set_status_message_prefix_method(sl_t *self, const char *prefix) {
+  sl_impl_t *impl;
+  char *copy;
+  impl = sl_impl(self);
+  if (!impl || !sl_statusline_text_valid(prefix)) {
+    sl_set_error(self,
+                 "status message prefix must be printable single-line UTF-8");
+    return SL_ERROR_INVALID;
+  }
+  copy = prefix ? sl_strdup(prefix) : NULL;
+  if (prefix && !copy) {
+    sl_set_error(self, "failed to allocate status message prefix");
+    return SL_ERROR_NOMEM;
+  }
+  free(impl->status_message_prefix);
+  impl->status_message_prefix = copy;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
+  return SL_OK;
+}
+
+static int sl_set_status_message_colors_method(sl_t *self,
+                                               sl_theme_color_t prefix_color,
+                                               sl_theme_color_t text_color) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || prefix_color < SL_THEME_COLOR_MUTED ||
+      prefix_color > SL_THEME_COLOR_ELEMENT_7 ||
+      text_color < SL_THEME_COLOR_MUTED ||
+      text_color > SL_THEME_COLOR_ELEMENT_7) {
+    sl_set_error(self, "invalid status message theme color");
+    return SL_ERROR_INVALID;
+  }
+  impl->status_message_prefix_color = prefix_color;
+  impl->status_message_text_color = text_color;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
+  return SL_OK;
+}
+
 static int sl_set_status_elements_method(sl_t *self,
                                          const char *const *elements,
                                          size_t count) {
@@ -6284,6 +6500,8 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
       sl_output_stream_write_quoted_prompt_method;
   self->set_quoted_prompt_prefix = sl_set_quoted_prompt_prefix_method;
   self->set_quoted_prompt_style = sl_set_quoted_prompt_style_method;
+  self->set_status_message_prefix = sl_set_status_message_prefix_method;
+  self->set_status_message_colors = sl_set_status_message_colors_method;
   self->bind_key = sl_bind_key_method;
   self->insert = sl_buf_insert_cstr;
   self->set_buffer = sl_buf_set_public;
@@ -6301,6 +6519,8 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->set_prompt_theme = sl_set_prompt_theme_method;
   self->set_statusline = sl_set_statusline_method;
   self->set_status_message = sl_set_status_message_method;
+  impl->status_message_prefix_color = SL_THEME_COLOR_MUTED;
+  impl->status_message_text_color = SL_THEME_COLOR_SECONDARY;
   self->prompt_queue_get_mode = sl_prompt_queue_get_mode_method;
   self->prompt_queue_set_mode = sl_prompt_queue_set_mode_method;
   self->set_status_elements = sl_set_status_elements_method;
@@ -6570,6 +6790,19 @@ int sl_set_status_message(sl_t *self, const char *message) {
   if (!self || !self->set_status_message)
     return SL_ERROR_INVALID;
   return self->set_status_message(self, message);
+}
+
+int sl_set_status_message_prefix(sl_t *self, const char *prefix) {
+  if (!self || !self->set_status_message_prefix)
+    return SL_ERROR_INVALID;
+  return self->set_status_message_prefix(self, prefix);
+}
+
+int sl_set_status_message_colors(sl_t *self, sl_theme_color_t prefix_color,
+                                 sl_theme_color_t text_color) {
+  if (!self || !self->set_status_message_colors)
+    return SL_ERROR_INVALID;
+  return self->set_status_message_colors(self, prefix_color, text_color);
 }
 
 int sl_set_status_elements(sl_t *self, const char *const *elements,

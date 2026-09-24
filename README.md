@@ -349,11 +349,17 @@ enabled. Elements wrap between elements when possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
 
-Enabling the status line reserves a single row immediately above it for a
+Enabling the status line reserves space immediately above it for a
 status message. `sl_set_status_message()` accepts printable single-line UTF-8,
-clips long text to that row, and redraws immediately while the editor is
-active. The row uses italic text and the selected theme's faded colour. Clearing
-the message leaves the row blank, so the status line and editor stay in place.
+wraps long text at words with continuation rows indented to the prefix width,
+and redraws immediately while the editor is
+active. The default prefix is `! ` in the theme's muted colour; the message
+text is italic in the theme's secondary colour. Use
+`sl_set_status_message_prefix(sl, "? ")` to change the prefix, `""` to hide it,
+or `NULL` to restore `! `. Use `sl_set_status_message_colors(sl, prefix_color,
+text_color)` to select palette roles independently, such as
+`SL_THEME_COLOR_MUTED` and `SL_THEME_COLOR_ELEMENT_2`. Clearing the message
+leaves the row blank, so the status line and editor stay in place.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.

@@ -811,6 +811,24 @@ static int softline_lua_set_status_message(lua_State *L) {
   return softline_lua_status(L, sl_set_status_message(handle->sl, message));
 }
 
+static int softline_lua_set_status_message_prefix(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *prefix;
+  handle = softline_lua_check(L, 1);
+  prefix = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+  return softline_lua_status(L,
+                             sl_set_status_message_prefix(handle->sl, prefix));
+}
+
+static int softline_lua_set_status_message_colors(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_set_status_message_colors(
+                                    handle->sl,
+                                    (sl_theme_color_t)luaL_checkinteger(L, 2),
+                                    (sl_theme_color_t)luaL_checkinteger(L, 3)));
+}
+
 static int softline_lua_set_status_elements(lua_State *L) {
   const char *elements[SL_STATUS_MAX_ELEMENTS];
   softline_lua_handle_t *handle;
@@ -1230,6 +1248,8 @@ static const luaL_Reg softline_lua_methods[] = {
     {"set_quoted_prompt_style", softline_lua_set_quoted_prompt_style},
     {"set_statusline", softline_lua_set_statusline},
     {"set_status_message", softline_lua_set_status_message},
+    {"set_status_message_prefix", softline_lua_set_status_message_prefix},
+    {"set_status_message_colors", softline_lua_set_status_message_colors},
     {"set_status_elements", softline_lua_set_status_elements},
     {"set_status_element", softline_lua_set_status_element},
     {"set_status_busy", softline_lua_set_status_busy},
@@ -1329,6 +1349,32 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "PROMPT_THEME_SYNTHWAVE");
   lua_pushinteger(L, SL_PROMPT_THEME_DEFAULT);
   lua_setfield(L, -2, "PROMPT_THEME_DEFAULT");
+  lua_pushinteger(L, SL_THEME_COLOR_MUTED);
+  lua_setfield(L, -2, "THEME_COLOR_MUTED");
+  lua_pushinteger(L, SL_THEME_COLOR_SECONDARY);
+  lua_setfield(L, -2, "THEME_COLOR_SECONDARY");
+  lua_pushinteger(L, SL_THEME_COLOR_PROMPT);
+  lua_setfield(L, -2, "THEME_COLOR_PROMPT");
+  lua_pushinteger(L, SL_THEME_COLOR_QUEUE);
+  lua_setfield(L, -2, "THEME_COLOR_QUEUE");
+  lua_pushinteger(L, SL_THEME_COLOR_INPUT);
+  lua_setfield(L, -2, "THEME_COLOR_INPUT");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_0);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_0");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_1);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_1");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_2);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_2");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_3);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_3");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_4);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_4");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_5);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_5");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_6);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_6");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_7);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_7");
   lua_pushinteger(L, SL_STATUS_MAX_ELEMENTS);
   lua_setfield(L, -2, "STATUS_MAX_ELEMENTS");
   lua_pushinteger(L, SL_KEY_CTRL_C);
