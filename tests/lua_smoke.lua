@@ -11,6 +11,7 @@ local prompt_methods = {
   "set_live_scroll_region",
   "output_stream_begin",
   "output_stream_write",
+  "output_stream_write_quoted_prompt",
   "output_stream_end",
   "set_prompt_queue",
   "queue_count",
@@ -31,8 +32,12 @@ local prompt_methods = {
   "set_queue_keys",
   "queue_keys",
   "set_prompt_theme",
+  "set_quoted_prompt_prefix",
+  "set_quoted_prompt_style",
   "set_statusline",
   "set_status_message",
+  "set_status_message_prefix",
+  "set_status_message_colors",
   "set_status_elements",
   "set_status_element",
   "set_status_busy",
@@ -159,6 +164,10 @@ assert_eq(softline.PROMPT_SOURCE_PROMOTED, 3, "promoted prompt source constant")
 assert_eq(softline.QUEUE_MODE_QUEUED, 0, "queued mode constant")
 assert_eq(softline.QUEUE_MODE_STEER, 1, "steer mode constant")
 assert_eq(softline.ERROR_FULL, -5, "queue full status constant")
+assert_eq(softline.ERROR, -1, "generic error status constant")
+assert_eq(softline.ERROR_INVALID, -2, "invalid argument status constant")
+assert_eq(softline.ERROR_NOMEM, -3, "allocation status constant")
+assert_eq(softline.ERROR_IO, -4, "I/O status constant")
 assert_eq(softline.PROMPT_THEME_PLAIN, 0, "plain prompt theme constant")
 assert_eq(softline.PROMPT_THEME_ACCENT, 1, "accent prompt theme constant")
 assert_eq(softline.PROMPT_THEME_DRACULA, 2, "dracula prompt theme constant")
@@ -179,6 +188,12 @@ assert_eq(softline.KEY_DOWN, 1001, "Down key constant")
 assert_eq(softline.KEY_CTRL_ENTER, 1022, "Ctrl-Enter key constant")
 assert_eq(softline.KEY_ALT_ENTER, 1023, "Alt-Enter key constant")
 assert_eq(softline.KEY_ALT_E, 4096 + string.byte("e"), "Alt-E key constant")
+assert_eq(softline.KEY_NONE, 0, "disabled key constant")
+assert_eq(softline.KEY_CTRL_R, 18, "reverse-search key constant")
+assert_eq(softline.KEY_F1, 1012, "function key constant")
+assert_eq(softline.KEY_F10, 1021, "last function key constant")
+assert_eq(softline.KEY_ALT_BASE, 4096, "Alt-letter base constant")
+assert_eq(softline.KEY_ALT_M, 4205, "Alt-M key constant")
 status:close()
 
 print("lua softline smoke passed")

@@ -198,8 +198,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   finishing an external renderer document. If the last write left an ANSI or
   UTF-8 sequence incomplete, it returns `nil, status` and keeps the session
   open so the missing bytes can be supplied. Only one session may be open per
-  editor. All three methods run on the Lua/editor owner thread; foreign
-  producers should notify a watched descriptor instead of calling Lua.
+  editor. Output-session and quoted-prompt methods run on the Lua/editor owner
+  thread; foreign producers should notify a watched descriptor instead of
+  calling Lua.
 - `sl:set_bounds(x, y, width, height)` and `sl:set_screen_width(width)` may be
   called while a session is streaming or a prompt is being edited. Softline
   immediately redraws its visible output and prompt inside the new geometry;
@@ -208,8 +209,14 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:last_error()` returns the last handle-owned diagnostic string, or `nil`.
 - `sl:close()` destroys the handle.
 
-Fallible methods other than `readline()` return `true` on success or
-`nil, status` on failure. Status constants exported by the module are:
+Fallible setter and operation methods return `true` on success or
+`nil, status` on failure; getters and prompt reads return their documented
+values. The module exports the C status, prompt-source,
+queue-mode, theme, theme-colour, watch-event, and key constants. Queue delivery
+and profile use the documented Lua strings instead of C enum integers.
+
+`KEY_NONE` disables a configurable queue action. For Alt-letter bindings
+without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 
 - `softline.READLINE_NONE`
 - `softline.READLINE_SUBMITTED`
@@ -218,6 +225,10 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.READLINE_INTERRUPTED`
 - `softline.READLINE_ERROR`
 - `softline.OK`
+- `softline.ERROR`
+- `softline.ERROR_INVALID`
+- `softline.ERROR_NOMEM`
+- `softline.ERROR_IO`
 - `softline.PROMPT_SOURCE_NONE`
 - `softline.PROMPT_SOURCE_DIRECT`
 - `softline.PROMPT_SOURCE_QUEUED`
@@ -239,9 +250,34 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.PROMPT_THEME_RICED`
 - `softline.PROMPT_THEME_SYNTHWAVE`
 - `softline.PROMPT_THEME_DEFAULT`
+- `softline.THEME_COLOR_MUTED`
+- `softline.THEME_COLOR_SECONDARY`
+- `softline.THEME_COLOR_PROMPT`
+- `softline.THEME_COLOR_QUEUE`
+- `softline.THEME_COLOR_INPUT`
+- `softline.THEME_COLOR_ELEMENT_0`
+- `softline.THEME_COLOR_ELEMENT_1`
+- `softline.THEME_COLOR_ELEMENT_2`
+- `softline.THEME_COLOR_ELEMENT_3`
+- `softline.THEME_COLOR_ELEMENT_4`
+- `softline.THEME_COLOR_ELEMENT_5`
+- `softline.THEME_COLOR_ELEMENT_6`
+- `softline.THEME_COLOR_ELEMENT_7`
 - `softline.STATUS_MAX_ELEMENTS`
+- `softline.KEY_NONE`
+- `softline.KEY_CTRL_A`
+- `softline.KEY_CTRL_B`
 - `softline.KEY_CTRL_C`
+- `softline.KEY_CTRL_D`
+- `softline.KEY_CTRL_E`
+- `softline.KEY_CTRL_F`
+- `softline.KEY_CTRL_J`
+- `softline.KEY_CTRL_K`
+- `softline.KEY_CTRL_R`
+- `softline.KEY_CTRL_U`
+- `softline.KEY_CTRL_W`
 - `softline.KEY_ESCAPE`
+- `softline.KEY_BACKSPACE`
 - `softline.KEY_TAB`
 - `softline.KEY_ENTER`
 - `softline.KEY_CTRL_ENTER`
@@ -250,7 +286,29 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.KEY_CTRL_P`
 - `softline.KEY_UP`
 - `softline.KEY_DOWN`
+- `softline.KEY_LEFT`
+- `softline.KEY_RIGHT`
+- `softline.KEY_HOME`
+- `softline.KEY_END`
+- `softline.KEY_DELETE`
+- `softline.KEY_ALT_B`
+- `softline.KEY_ALT_F`
+- `softline.KEY_UNKNOWN`
+- `softline.KEY_PASTE_BEGIN`
+- `softline.KEY_PASTE_END`
+- `softline.KEY_F1`
+- `softline.KEY_F2`
+- `softline.KEY_F3`
+- `softline.KEY_F4`
+- `softline.KEY_F5`
+- `softline.KEY_F6`
+- `softline.KEY_F7`
+- `softline.KEY_F8`
+- `softline.KEY_F9`
+- `softline.KEY_F10`
 - `softline.KEY_ALT_E`
+- `softline.KEY_ALT_BASE`
+- `softline.KEY_ALT_M`
 - `softline.KEY_ACTION_PASS`
 - `softline.KEY_ACTION_HANDLED`
 - `softline.KEY_ACTION_SUBMIT`
@@ -259,7 +317,8 @@ Fallible methods other than `readline()` return `true` on success or
 
 ## Examples
 
-The repository ships Lua examples equivalent to the C examples:
+The repository ships Lua examples for simple prompts and queued chat turns.
+The Lua chat example demonstrates queue delivery without libmdf:
 
 ```sh
 make lua-test

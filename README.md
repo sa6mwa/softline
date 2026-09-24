@@ -100,10 +100,11 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 example dependency: libsoftline and its installed package remain independent
 of libmdf. The composer gives libmdf a two-column left margin and its default
 ANSI palette, updating both renderers' geometry on resize and dropping the
-margin on very narrow terminals. Each submitted prompt becomes a Markdown
-block quote in italics with one visible empty row on each side, through a
-Markdown source hook before libmdf. The hook passes prompt text through as
-Markdown source, so libmdf interprets Markdown punctuation in the prompt. A
+margin on very narrow terminals. Softline's quoted-prompt helper writes each
+submitted prompt directly into the output session as a literal, italic quote.
+It repeats the configurable `> ` prefix after wrapping and supplies the line
+breaks needed for one visible empty row on each side. Markdown punctuation in
+the prompt stays literal; only response text goes through libmdf. A
 worker emits one source character every 20 ms; the owner-thread watch callback
 feeds libmdf incrementally and forwards each sink fragment directly into a
 Softline output session. The responses mix headings, subheadings, italic, bold,
@@ -254,12 +255,14 @@ entry and restores it to the editor. Explicit key bindings continue to override
 these defaults. Prompt appearance is renderer-owned so it remains safe with
 layout: `default` uses only standard ANSI colours: a bold bright-white marker,
 normal terminal-colour input, subdued dark-gray queue text and separators,
-standard-colour status elements, and red/green busy markers. `plain` is
-uncoloured; `accent`, Dracula, Gruvbox, monochrome, monogreen, Outrun, Riced,
-and Synthwave use their embedded palettes. The selected theme applies to every
-interactive prompt, including normal readline prompts, status lines, and queue
-panels. Prompt markers reset before typed text; monochrome and monogreen
-additionally colour typed text as defined by their palettes.
+standard-colour status elements, and red/green busy markers. `plain` keeps the
+editor and queue uncoloured while quoted prompts and status messages use
+neutral ANSI styling. `accent`, Dracula, Gruvbox, monochrome, monogreen,
+Outrun, Riced, and Synthwave use their embedded palettes. The selected theme
+applies to every interactive prompt, including normal readline prompts,
+status lines, and queue panels. Prompt markers reset before typed text;
+monochrome and monogreen additionally colour typed text as defined by their
+palettes.
 
 ### Queue control API
 

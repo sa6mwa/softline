@@ -352,15 +352,20 @@ typedef enum sl_theme_color {
 
 /** RGB colour for a separately styled quoted transcript prompt. */
 typedef struct sl_quote_color {
+  /** Red channel, 0..255. */
   unsigned char red;
+  /** Green channel, 0..255. */
   unsigned char green;
+  /** Blue channel, 0..255. */
   unsigned char blue;
 } sl_quote_color_t;
 
 /** Override colours for quoted prompts. The prefix is dimmed and the prompt
  * text is italic regardless of the selected colours. */
 typedef struct sl_quote_style {
+  /** Dimmed prefix colour. */
   sl_quote_color_t prefix;
+  /** Italic prompt-text colour. */
   sl_quote_color_t text;
 } sl_quote_style_t;
 
@@ -579,8 +584,9 @@ struct sl {
    * session may be open per handle. Output occupies the bounds above the
    * prompt; without explicit bounds the prompt is pinned to the bottom. */
   int (*output_stream_begin)(sl_t *self);
-  /** Forward exactly length bytes into the open session. A write boundary has
-   * no newline, document, or flush semantics. bytes may be NULL only when
+  /** Forward exactly length bytes into the open session. Complete parsed
+   * input is visible before return; a write boundary adds no newline or
+   * document boundary. bytes may be NULL only when
    * length is zero. Input must be printable UTF-8, LF/CR/Tab, or ANSI SGR;
    * unsupported terminal controls fail with SL_ERROR_INVALID. TTY viewport
    * clusters longer than 128 bytes also fail without splitting the cell. */
@@ -589,8 +595,10 @@ struct sl {
    * renderer document. Incomplete ANSI/UTF-8 leaves it open and returns
    * SL_ERROR_INVALID so the caller may supply the missing bytes. */
   int (*output_stream_end)(sl_t *self);
-  /** Set, replace, or clear the wrapped message above the status line.
-   * NULL or an empty string clears it. Text must be printable UTF-8. */
+  /** Set, replace, or clear the italic message above the status line.
+   * The default prefix is "! "; long text wraps at words with continuation
+   * rows indented to the prefix width. NULL or an empty string clears it.
+   * Text must be printable single-line UTF-8. */
   int (*set_status_message)(sl_t *self, const char *message);
   /** Read one queued entry's delivery intent. */
   int (*prompt_queue_get_mode)(const sl_t *self, size_t index,
@@ -598,9 +606,11 @@ struct sl {
   /** Change one queued entry's delivery intent. */
   int (*prompt_queue_set_mode)(sl_t *self, size_t index,
                                sl_prompt_queue_mode_t mode);
-  /** Write a submitted prompt into the open output stream as a wrapped quote.
-   * Add only the line breaks needed for one empty row on either side.
-   */
+  /** Write literal submitted text into the open stream as a themed, italic
+   * quote. Repeat the prefix on each wrapped row and add only the line breaks
+   * needed for one empty row on either side. Preceding bytes must form a
+   * complete ANSI/UTF-8 sequence; text may contain printable UTF-8, LF, and
+   * Tab. */
   int (*output_stream_write_quoted_prompt)(sl_t *self, const char *text);
   /** Set a nonempty, printable, single-line UTF-8 quote prefix. NULL restores
    * the default "> ". The prefix is repeated on each visible wrapped row. */

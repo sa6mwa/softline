@@ -44,6 +44,15 @@ fail. Existing finite `sl_print_above()` remains available; narrow or offset
 bounds use the same bounded viewport while full-width finite output may retain
 VT scrolling. It cannot be interleaved with an open live session.
 
+The quoted-prompt helper writes submitted text literally into an open session
+between external renderer segments. It wraps at the current output width,
+repeats a configurable prefix on each visible row, styles the prefix and
+italic text independently, and adds only missing line breaks for one empty
+row on either side. Prompt text does not pass through libmdf. The optional
+status message sits above the status line, may change during a live session,
+and wraps continuation rows under its configurable first-row prefix. Both
+features are exposed through the C receiver/free functions and Lua methods.
+
 ## Terminal ownership and geometry
 
 The output session and editor prompt have one serial terminal owner. The

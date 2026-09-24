@@ -122,11 +122,12 @@ the queue and clears the editor; Tab on an empty editor does nothing. Alt-E
 removes the most recent queue entry and restores it to the active editor for
 editing.
 
-`next_prompt()` is the dispatch boundary. It removes an existing queue entry in
-FIFO order before opening the editor, reporting `SL_PROMPT_SOURCE_QUEUED`; when
-the queue is empty it acts like `readline()` and reports
-`SL_PROMPT_SOURCE_DIRECT` for submitted text. Existing `readline()` callers
-remain direct-only.
+`next_prompt()` is the dispatch boundary. With automatic delivery it removes
+the oldest ordinary queued entry before opening the editor and reports
+`SL_PROMPT_SOURCE_QUEUED`. With manual delivery the host selects entries by
+mode and takes them at safe seams or turn boundaries. An editor submission
+reports `SL_PROMPT_SOURCE_DIRECT`; promotion of a queued entry reports
+`SL_PROMPT_SOURCE_PROMOTED`. Existing `readline()` callers remain direct-only.
 
 While an editor is active, the renderer owns a queue panel above it. The panel
 shows a total count plus a capped oldest-first preview list, and supports all
@@ -143,7 +144,9 @@ and optional status line always share the active layout. The built-in `default`
 theme uses only standard 16-colour ANSI sequences: a bold bright-white marker,
 normal terminal-colour input, subdued dark-gray queue text and separators,
 standard-colour status elements, and red/green busy markers. `plain` is
-uncoloured; the remaining named themes use their embedded palettes.
+uncoloured for the editor and queue, while quoted prompts and status messages
+use neutral ANSI styling. The remaining named themes use their embedded
+palettes.
 
 Status lines are opt-in rows between queue previews and the editor. A theme has
 eight element colours. `statusline_start_element` selects the first palette
@@ -154,12 +157,24 @@ a green `+` by default; callers can supply another printable ASCII marker or
 `'\0'` for a blank reserved slot. Busy shows a red `x`, or a red 500ms
 `/-\\|` spinner when both busy and spinner are enabled.
 
+An optional status message sits immediately above the status line. The default
+`! ` prefix uses the theme's muted colour and the italic message uses its
+secondary colour. The host may update or clear it during an active output
+session. Long text wraps at words and continuation rows are indented to the
+display width of the configurable prefix. The C and Lua APIs expose separate
+theme colour choices for the prefix and message text.
+
 ## Current Extension Points
 
 Persistent output is renderer-agnostic. The C and Lua APIs expose begin,
 write, and end, and the C chat example composes libmdf externally. See
 [the composition contract](softline-mdf-stream-design.md). Softline does not
 link libmdf or own its document lifecycle.
+
+The C and Lua APIs also expose a quoted-prompt writer for an open output
+session. It wraps literal submitted text, repeats a configurable prefix on
+each visible row, and adds only the line breaks needed for one empty row on
+either side. The quote prefix and italic text have independent colours.
 
 ### Key Bindings
 
@@ -214,11 +229,12 @@ sequences can cross writes; ending with an incomplete sequence fails and keeps
 the session open. Narrow and offset boxes never use a full-row VT scroll
 region, so their output does not touch outside columns.
 
-For an unbounded prompt, output uses normal clear-and-redraw scrollback by
-default. Set `live_scroll_region = 1` in `sl_config_t` or call
-`sl_set_live_scroll_region()` to opt into a cursor-position probe once the
-prompt reaches the terminal bottom. When supported, softline temporarily
-scrolls the full-width region above the retained prompt, avoiding a prompt
+For finite `print_above()` output on an unbounded prompt, rendering uses
+normal clear-and-redraw scrollback by default. Set `live_scroll_region = 1` in
+`sl_config_t` or call `sl_set_live_scroll_region()` to opt into a
+cursor-position probe once the prompt reaches the terminal bottom. When
+supported, softline temporarily scrolls the full-width region above the
+retained prompt, avoiding a prompt
 repaint while keeping queue, status, wrapping, and resize reflow aligned to the
 bottom. The terminal scroll region is reset on every completion, cancellation,
 error, and handle teardown. If the terminal does not answer the probe, output

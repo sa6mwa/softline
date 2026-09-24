@@ -21,56 +21,27 @@ release_docs = [
 ]
 
 lua_readme = root / "lua" / "README.md"
-lua_methods = [
-    "readline",
-    "history_add",
-    "history_set_max_len",
-    "history_save",
-    "history_load",
-    "set_bounds",
-    "set_screen_width",
-    "insert",
-    "set_buffer",
-    "buffer",
-    "cursor",
-    "set_cursor",
-    "submit",
-    "cancel",
-    "bind_key",
-    "print_above",
-    "last_readline_status",
-    "last_error",
-    "close",
-]
-lua_constants = [
-    "READLINE_NONE",
-    "READLINE_SUBMITTED",
-    "READLINE_EOF",
-    "READLINE_CANCELLED",
-    "READLINE_INTERRUPTED",
-    "READLINE_ERROR",
-    "OK",
-    "KEY_CTRL_C",
-    "KEY_ACTION_PASS",
-    "KEY_ACTION_HANDLED",
-    "KEY_ACTION_SUBMIT",
-    "KEY_ACTION_CANCEL",
-    "KEY_ACTION_INTERRUPT",
-]
+lua_binding = root / "lua" / "softline_lua.c"
+header = root / "include" / "softline" / "softline.h"
 
 decl_patterns = [
     re.compile(r"^\s*typedef struct sl sl_t;"),
+    re.compile(r"^\s*typedef unsigned long sl_watch_id_t;"),
     re.compile(r"^\s*typedef (?:void|int) \(\*sl_[a-z0-9_]+_t\)\("),
     re.compile(r"^\s*typedef enum sl_[a-z0-9_]+ \{"),
     re.compile(r"^\s*(?:SL|SOFTLINE)_[A-Z0-9_]+(?:\s*=|\s|$)"),
-    re.compile(r"^\s*typedef struct sl_config \{"),
-    re.compile(r"^\s*(?:int|size_t)\s+[a-z][a-z0-9_]*;"),
+    re.compile(r"^\s*typedef struct sl_[a-z0-9_]+ \{"),
+    re.compile(
+        r"^\s*(?:int|size_t|unsigned int|unsigned char|char|sl_[a-z0-9_]+_t)"
+        r"\s+[a-z][a-z0-9_]*;"
+    ),
     re.compile(r"^\s*struct sl \{"),
+    re.compile(r"^\s*void \*impl;"),
     re.compile(r"^\s*.*\(\*[a-z][a-z0-9_]*\)\("),
     re.compile(
         r"^\s*(?:char \*|const char \*|void|int|size_t|sl_t \*|sl_readline_status_t)\s+sl_[a-z0-9_]+\("
     ),
-    re.compile(r"^\s*#define SOFTLINE_VERSION(?:_[A-Z]+)?\b"),
+    re.compile(r"^\s*#define (?:SOFTLINE_VERSION(?:_[A-Z]+)?|SL_STATUS_MAX_ELEMENTS)\b"),
 ]
 
 
@@ -121,15 +92,149 @@ for path in release_docs:
         failures.append(f"{path.relative_to(root)}: stale unreleased wording")
 
 lua_text = lua_readme.read_text(encoding="utf-8")
-for method in lua_methods:
-    if f"sl:{method}" not in lua_text:
-        failures.append(f"{lua_readme.relative_to(root)}: missing Lua method doc sl:{method}")
-for constant in lua_constants:
+header_text = header.read_text(encoding="utf-8")
+binding_text = lua_binding.read_text(encoding="utf-8")
+receiver = re.search(r"struct sl \{(.*?)\n\};", header_text, re.DOTALL)
+registry = re.search(
+    r"static const luaL_Reg softline_lua_methods\[\] = \{(.*?)\{NULL, NULL\}\};",
+    binding_text,
+    re.DOTALL,
+)
+if not receiver or not registry:
+    failures.append("cannot locate C receiver or Lua method registry")
+else:
+    receiver_methods = set(
+        re.findall(r"\(\*([a-z][a-z0-9_]*)\)\(", receiver.group(1))
+    )
+    for method in sorted(receiver_methods):
+        if not re.search(rf"\bsl_{method}\s*\(", header_text):
+            failures.append(
+                f"{header.relative_to(root)}: missing free-function wrapper sl_{method}()"
+            )
+    bound_list = re.findall(
+        r'\{"([a-z][a-z0-9_]*)",\s*softline_lua_[a-z0-9_]+\}',
+        registry.group(1),
+    )
+    bound_methods = set(bound_list)
+    if len(bound_list) != len(bound_methods):
+        failures.append("Lua method registry contains duplicate names")
+    aliases = {
+        "destroy": "close",
+        "prompt_queue_count": "queue_count",
+        "prompt_queue_capacity": "queue_capacity",
+        "prompt_queue_peek": "queue_peek",
+        "prompt_queue_insert": "queue_insert",
+        "prompt_queue_append": "queue_append",
+        "prompt_queue_replace": "queue_replace",
+        "prompt_queue_take": "queue_take",
+        "prompt_queue_get_mode": "queue_mode",
+        "prompt_queue_set_mode": "queue_set_mode",
+        "prompt_queue_clear": "queue_clear",
+        "prompt_queue_enqueue_draft": "queue_draft",
+        "set_prompt_queue_delivery": "set_queue_delivery",
+        "get_prompt_queue_delivery": "queue_delivery",
+        "set_prompt_queue_profile": "set_queue_profile",
+        "get_prompt_queue_profile": "queue_profile",
+        "set_prompt_queue_keys": "set_queue_keys",
+        "get_prompt_queue_keys": "queue_keys",
+    }
+    # Lua strings are GC-managed, so C's free_string() needs no Lua method.
+    expected = {
+        aliases.get(name, name) for name in receiver_methods - {"free_string"}
+    }
+    for method in sorted(expected - bound_methods):
+        failures.append(
+            f"{lua_binding.relative_to(root)}: missing C receiver counterpart {method}"
+        )
+    for method in sorted(bound_methods - expected):
+        failures.append(
+            f"{lua_binding.relative_to(root)}: undocumented Lua-only method {method}"
+        )
+    for method in sorted(bound_methods):
+        if not re.search(rf"`sl:{re.escape(method)}\(", lua_text):
+            failures.append(
+                f"{lua_readme.relative_to(root)}: missing Lua method doc sl:{method}()"
+            )
+
+config = re.search(
+    r"typedef struct sl_config \{(.*?)\} sl_config_t;", header_text, re.DOTALL
+)
+config_parser = re.search(
+    r"static void softline_lua_config\(.*?\) \{(.*?)\n\}",
+    binding_text,
+    re.DOTALL,
+)
+if not config or not config_parser:
+    failures.append("cannot locate C config or Lua config parser")
+else:
+    config_fields = set(
+        re.findall(
+            r"\b(?:int|size_t|char|sl_prompt_theme_t)\s+([a-z][a-z0-9_]*);",
+            config.group(1),
+        )
+    )
+    lua_fields = set(
+        re.findall(
+            r'lua_getfield\(L, index, "([a-z][a-z0-9_]*)"\)',
+            config_parser.group(1),
+        )
+    )
+    for field in sorted(config_fields - lua_fields):
+        failures.append(
+            f"{lua_binding.relative_to(root)}: missing config field {field}"
+        )
+    for field in sorted(lua_fields - config_fields):
+        failures.append(
+            f"{lua_binding.relative_to(root)}: unknown config field {field}"
+        )
+    for field in sorted(config_fields):
+        if f"`{field}`" not in lua_text:
+            failures.append(
+                f"{lua_readme.relative_to(root)}: missing config doc {field}"
+            )
+if not re.search(r'\{"new",\s*softline_lua_new\}', binding_text):
+    failures.append(f"{lua_binding.relative_to(root)}: missing softline.new()")
+
+exported = dict(
+    re.findall(
+        r'lua_pushinteger\(L,\s*(SL_[A-Z0-9_]+)\);\s*'
+        r'lua_setfield\(L, -2, "([A-Z0-9_]+)"\);',
+        binding_text,
+    )
+)
+for enum_name in (
+    "watch_events", "key", "key_action", "status", "readline_status",
+    "prompt_source", "prompt_queue_mode", "prompt_theme", "theme_color",
+):
+    enum = re.search(
+        rf"typedef enum sl_{enum_name} \{{(.*?)\}} sl_{enum_name}_t;",
+        header_text,
+        re.DOTALL,
+    )
+    if not enum:
+        failures.append(f"{header.relative_to(root)}: cannot locate sl_{enum_name} enum")
+        continue
+    for symbol in re.findall(r"\b(SL_[A-Z0-9_]+)\s*(?:=|,)", enum.group(1)):
+        public_name = symbol[3:].replace("PROMPT_QUEUE_MODE_", "QUEUE_MODE_", 1)
+        if exported.get(symbol) != public_name:
+            failures.append(
+                f"{lua_binding.relative_to(root)}: missing Lua constant {public_name}"
+            )
+for symbol in ("SL_STATUS_MAX_ELEMENTS",):
+    if exported.get(symbol) != symbol[3:]:
+        failures.append(f"{lua_binding.relative_to(root)}: missing Lua constant {symbol}")
+for constant in sorted(exported.values()):
     if f"softline.{constant}" not in lua_text:
-        failures.append(f"{lua_readme.relative_to(root)}: missing Lua constant doc softline.{constant}")
+        failures.append(
+            f"{lua_readme.relative_to(root)}: missing Lua constant doc softline.{constant}"
+        )
 
 if failures:
     raise SystemExit("ERROR: public documentation gaps:\n" + "\n".join(failures))
 
-print("Public header documentation tests passed.")
+print(
+    "Public header docs and Lua API parity passed "
+    f"({len(receiver_methods)} receiver methods, "
+    f"{len(config_fields)} config fields, {len(exported)} constants)."
+)
 PY
