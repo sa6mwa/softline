@@ -53,9 +53,10 @@ terminal rectangle, is supported. With no explicit bounds, a live session
 pins the prompt to the terminal bottom for its lifetime. A bounded display
 retains at most its visible viewport and partial terminal escape/UTF-8 state;
 it never retains or replays the complete response. A full-width main-screen
-session scrolls output into native terminal history; narrow or offset bounds
-continue to clip to the viewport. Newly received bytes are
-rendered immediately. Viewport state exists only so Softline can repaint the
+session whose bounds reach the physical terminal bottom scrolls output into
+native terminal history, including rows displaced by prompt growth. Shorter,
+narrow, or offset bounds continue to clip to the viewport. Newly received
+bytes are rendered immediately. Viewport state exists only so Softline can repaint the
 visible rectangle after scrolling, prompt growth, or a resize. It is not a
 producer-to-consumer staging buffer.
 

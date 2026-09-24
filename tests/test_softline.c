@@ -1251,6 +1251,8 @@ struct vt_screen {
   int scroll_top;
   int scroll_bottom;
   char cells[24][120];
+  unsigned int history_count;
+  char history[64][120];
 };
 
 static void vt_clear(struct vt_screen *screen) {
@@ -1268,6 +1270,7 @@ static void vt_clear(struct vt_screen *screen) {
 }
 
 static void vt_init(struct vt_screen *screen, int rows, int cols) {
+  memset(screen, 0, sizeof(*screen));
   screen->rows = rows > 24 ? 24 : rows;
   screen->cols = cols > 119 ? 119 : cols;
   vt_clear(screen);
@@ -1281,10 +1284,26 @@ static void vt_scroll_region(struct vt_screen *screen, int top, int bottom) {
     bottom = screen->rows - 1;
   if (bottom < top)
     return;
+  if (top == 0 && bottom == screen->rows - 1) {
+    memcpy(screen->history[screen->history_count % 64u], screen->cells[0],
+           (size_t)screen->cols + 1);
+    screen->history_count++;
+  }
   for (r = top + 1; r <= bottom; r++)
     memcpy(screen->cells[r - 1], screen->cells[r], (size_t)screen->cols + 1);
   memset(screen->cells[bottom], ' ', (size_t)screen->cols);
   screen->cells[bottom][screen->cols] = '\0';
+}
+
+static int vt_history_contains(const struct vt_screen *screen,
+                               const char *needle) {
+  unsigned int count;
+  unsigned int i;
+  count = screen->history_count < 64u ? screen->history_count : 64u;
+  for (i = 0; i < count; i++)
+    if (strstr(screen->history[i], needle))
+      return 1;
+  return 0;
 }
 
 static void vt_scroll(struct vt_screen *screen) {
@@ -1490,7 +1509,7 @@ static ssize_t read_some_with_timeout_ms(int fd, char *buf, size_t cap,
 }
 
 static void test_redirected_live_output_validates_stream(void) {
-  static const char expected[] = "\xc3\xa4\033[31mX\xf0\x80\x80";
+  static const char expected[] = "\xc3\xa4\033[31mX\xf0\x80\x80\xc2Z";
   sl_config_t cfg;
   sl_t *sl;
   int output[2];
@@ -1516,8 +1535,11 @@ static void test_redirected_live_output_validates_stream(void) {
                   sl_output_stream_write(sl, "\xf0\x80\x80\x80", 4) ==
                       SL_ERROR_INVALID &&
                   sl_output_stream_write(sl, "\x80", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xc2\x9b", 2) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "Z", 1) == SL_OK &&
                   sl_output_stream_end(sl) == SL_OK,
-              "redirected stream accepted malformed UTF-8");
+              "redirected stream accepted malformed UTF-8 or a C1 control");
   sl_destroy(sl);
   close(output[1]);
   amount = read(output[0], bytes, sizeof(bytes));
@@ -8594,10 +8616,12 @@ static void test_live_output_stream_chunk_protocol(void) {
   ASSERT_TRUE(sl_output_stream_write(sl, "\xf0\x80\x80\x80", 4) ==
                       SL_ERROR_INVALID &&
                   sl_output_stream_write(sl, "\x80", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xc2", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "\x9b", 1) == SL_ERROR_INVALID &&
                   sl_output_stream_write(sl, "\xc3", 1) == SL_OK &&
                   sl_output_stream_write(sl, "x", 1) == SL_ERROR_INVALID &&
                   sl_output_stream_write(sl, "R", 1) == SL_OK,
-              "malformed UTF-8 left the live parser unusable");
+              "malformed UTF-8 or C1 control left the live parser unusable");
   ASSERT_TRUE(sl->output_stream_end(sl) == SL_OK, "receiver end failed");
   ASSERT_TRUE(sl_output_stream_write(sl, "x", 1) == SL_ERROR_INVALID &&
                   sl_output_stream_end(sl) == SL_ERROR_INVALID,
@@ -8697,6 +8721,116 @@ static size_t read_live_pty_output(int fd, char *bytes, size_t capacity) {
   }
   bytes[used] = '\0';
   return used;
+}
+
+static void test_live_output_short_full_width_box_uses_viewport(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("short full-width box keeps streamed rows inside its viewport");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 4) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FIRST\nSECOND\nTHIRD", 18) ==
+                      SL_OK,
+              "short-box stream failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 8, 20);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST") && vt_contains(&screen, "SECOND") &&
+                  vt_contains(&screen, "THIRD") &&
+                  !contains_bytes(output, "\033[?2026h"),
+              "short box used physical scroll or lost a row");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_prompt_growth_preserves_history(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  pid_t pid;
+  char output[32768];
+  char chunk[2048];
+  size_t used;
+  ssize_t amount;
+  int tries;
+  int status;
+
+  TEST("prompt growth scrolls displaced transcript into native history");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    close(master_fd);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+        sl_output_stream_write(
+            sl, "ONE\nTWO\nTHREE\nFOUR\nFIVE\nSIX\nSEVEN",
+            strlen("ONE\nTWO\nTHREE\nFOUR\nFIVE\nSIX\nSEVEN")) != SL_OK ||
+        sl_set_statusline(sl, 1, 0) != SL_OK)
+      _exit(2);
+    line = sl_readline(sl, "> ");
+    if (!line)
+      _exit(3);
+    sl_free_string(sl, line);
+    if (sl_output_stream_end(sl) != SL_OK)
+      _exit(4);
+    sl_destroy(sl);
+    close(slave_fd);
+    _exit(0);
+  }
+  close(slave_fd);
+  used = 0;
+  output[0] = '\0';
+  for (tries = 0; tries < 20; tries++) {
+    vt_init(&screen, 8, 20);
+    vt_apply(&screen, output);
+    if (vt_contains(&screen, "SEVEN") && vt_contains(&screen, "> "))
+      break;
+    amount = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(amount > 0 && used + (size_t)amount < sizeof(output),
+                "prompt growth output missing");
+    append_terminal_bytes(output, &used, sizeof(output), chunk, amount);
+  }
+  ASSERT_TRUE(vt_history_contains(&screen, "ONE") &&
+                  vt_history_contains(&screen, "TWO") &&
+                  vt_contains(&screen, "THREE") &&
+                  vt_contains(&screen, "SEVEN"),
+              "prompt growth discarded transcript rows");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "prompt growth child failed");
+  close(master_fd);
+  PASS();
 }
 
 static void test_live_output_error_resets_terminal_style(void) {
@@ -8957,6 +9091,16 @@ static void test_live_output_cluster_limit(void) {
   PASS();
 }
 #else
+static void test_live_output_short_full_width_box_uses_viewport(void) {
+  TEST("short full-width box keeps streamed rows inside its viewport");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_prompt_growth_preserves_history(void) {
+  TEST("prompt growth scrolls displaced transcript into native history");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_stream_across_narrow_bounds(void) {
   TEST("live output continues one row while typing and changing narrow bounds");
   printf("SKIP\n");
@@ -9509,6 +9653,8 @@ int main(void) {
   test_watch_lifecycle_reports_terminal_events();
   test_redirected_live_output_validates_stream();
   test_live_output_stream_across_narrow_bounds();
+  test_live_output_short_full_width_box_uses_viewport();
+  test_live_output_prompt_growth_preserves_history();
   test_live_output_stream_chunk_protocol();
   test_live_output_error_resets_terminal_style();
   test_live_output_stream_changes_unbounded_width();

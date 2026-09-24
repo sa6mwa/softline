@@ -161,8 +161,9 @@ chunks from a callback and writes them through the region above the prompt.
 Full-width bounds can use terminal scrolling. Narrow or offset bounds use a
 bounded cell viewport, not a VT scroll region that would alter outside columns.
 A persistent `sl_output_stream_*()` session accepts later chunks without
-waiting for EOF. Full-width sessions scroll the main terminal, preserving
-native scrollback; narrow or offset sessions use the bounded viewport.
+waiting for EOF. Full-width sessions that reach the physical terminal bottom
+scroll the main terminal, preserving native scrollback; shorter, narrow, or
+offset sessions use the bounded viewport.
 Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
 bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
 in softline. Bounded rendering keeps a retained view of the visible editor

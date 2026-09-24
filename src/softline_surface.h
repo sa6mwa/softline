@@ -13,8 +13,14 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
 /* A parser-only session for redirected output; keeps only ANSI/UTF-8 state. */
 sl_surface_t *sl_surface_create_validator(void);
 void sl_surface_destroy(sl_surface_t *surface);
+/* after_native_scroll means the caller already scrolled the displaced top
+ * rows into terminal history; the remaining cells are physically aligned. */
 int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
-                      int height);
+                      int height, int after_native_scroll);
+/* Report the current viewport and the physical terminal height observed when
+ * it was created or last resized. */
+void sl_surface_geometry(const sl_surface_t *surface, int *x, int *y,
+                         int *width, int *height, int *terminal_rows);
 /* Returns 0 on success, -1 for output/allocation failure, -2 for invalid
  * input bytes or a viewport too small for the next glyph. */
 int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length);

@@ -603,10 +603,17 @@ static void test_chat_immediate_steer(const char *path) {
   ASSERT_TRUE(write(fd, "\003", 1) == 1, "cancel failed");
   ASSERT_TRUE(wait_screen(&t, "Operation cancelled", 3000) == 0,
               "operation cancel missing");
-  ASSERT_TRUE(wait_raw_after(&t, "Operation cancelled.",
-                             "\033[14;1H\033[1;97m> ", 3000) == 0,
-              "editor prompt did not redraw after cancellation");
-  ASSERT_TRUE(write(fd, "\025exit\033\r", 7) == 7, "exit failed");
+  {
+    int ready = 0;
+    int attempt;
+    for (attempt = 0; attempt < 20 && !ready; attempt++) {
+      ASSERT_TRUE(write(fd, "\025e", 2) == 2,
+                  "post-cancel editor probe failed");
+      ready = wait_screen(&t, "> e", 100) == 0;
+    }
+    ASSERT_TRUE(ready, "editor did not accept input after cancellation");
+  }
+  ASSERT_TRUE(write(fd, "xit\r", 4) == 4, "exit failed");
   ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
   PASS();
 }

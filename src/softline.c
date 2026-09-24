@@ -630,6 +630,13 @@ static int sl_terminal_columns(sl_impl_t *impl) {
   return 80;
 }
 
+static int sl_terminal_rows(sl_impl_t *impl) {
+  struct winsize ws;
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+    return (int)ws.ws_row;
+  return 24;
+}
+
 static int sl_output_pinned(const sl_impl_t *impl) {
   return impl && impl->output_stream_active && !impl->bounded;
 }
@@ -771,7 +778,8 @@ static int sl_native_history_scroll(void *userdata, int after) {
   return 0;
 }
 
-static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
+static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
+                                       int after_native_scroll) {
   sl_impl_t *impl;
   int x;
   int y;
@@ -792,13 +800,15 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
                           sl_codepoint_width, sl_surface_cluster_width);
     if (!impl->output_surface)
       return -1;
-  } else if (sl_surface_resize(impl->output_surface, x, y, width, height) !=
-             0) {
+  } else if (sl_surface_resize(impl->output_surface, x, y, width, height,
+                               after_native_scroll) != 0) {
     return -1;
   }
   sl_surface_set_scroll_hook(impl->output_surface,
                              impl->output_stream_active && x == 0 && y == 0 &&
-                                     width >= sl_terminal_columns(impl)
+                                     width >= sl_terminal_columns(impl) &&
+                                     sl_box_bottom(impl) ==
+                                         sl_terminal_rows(impl) - 1
                                  ? sl_native_history_scroll
                                  : NULL,
                              self);
@@ -2763,6 +2773,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   int rc;
   int height;
   int width;
+  int native_scroll_rows;
+  int sync_open;
   char input_style[32];
   int input_styled;
   impl = sl_impl(self);
@@ -2809,20 +2821,51 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   if (cursor_row >= visible)
     cursor_row = visible - 1;
   top = sl_prompt_top(impl, visible);
+  native_scroll_rows = 0;
+  sync_open = 0;
   if ((impl->output_stream_active || impl->output_surface) &&
       (!impl->output_surface ||
        !sl_surface_matches(impl->output_surface, sl_box_left(impl),
                            sl_box_top(impl), width, top - sl_box_top(impl)))) {
+    if (impl->output_stream_active && impl->output_surface &&
+        sl_box_left(impl) == 0 && sl_box_top(impl) == 0 &&
+        width >= sl_terminal_columns(impl) &&
+        sl_box_bottom(impl) == sl_terminal_rows(impl) - 1) {
+      int old_x;
+      int old_y;
+      int old_width;
+      int old_height;
+      int old_terminal_rows;
+      sl_surface_geometry(impl->output_surface, &old_x, &old_y, &old_width,
+                          &old_height, &old_terminal_rows);
+      if (old_x == 0 && old_y == 0 && old_width == width &&
+          old_terminal_rows == sl_terminal_rows(impl) && old_height > top)
+        native_scroll_rows = old_height - top;
+    }
+    if (native_scroll_rows > 0) {
+      if (sl_wstr(impl->output_fd, "\033[?2026h") != 0)
+        return -1;
+      sync_open = 1;
+    }
     if (impl->rendered_rows > 0 && sl_render_clear_active(self) != 0)
-      return -1;
-    if (sl_output_surface_reconcile(self, top) != 0) {
+      goto resize_failed;
+    for (i = 0; i < native_scroll_rows; i++) {
+      if (sl_write_cursor_pos(impl->output_fd, sl_terminal_rows(impl) - 1, 0) !=
+              0 ||
+          sl_wstr(impl->output_fd, "\r\n") != 0)
+        goto resize_failed;
+    }
+    if (sl_output_surface_reconcile(self, top, native_scroll_rows > 0) != 0) {
       sl_set_error(self, "failed to resize live output surface");
-      return -1;
+      goto resize_failed;
     }
   }
   if (sl_render_visible_equal(impl, render, first, visible, cursor_row,
-                              render->cursor_col, top))
+                              render->cursor_col, top)) {
+    if (sync_open)
+      return sl_wstr(impl->output_fd, "\033[?2026l");
     return 0;
+  }
   old_rows = impl->rendered_rows;
   old_top = impl->rendered_top_row;
   current_row = old_rows > 0 && old_top == top ? impl->rendered_cursor_row : -1;
@@ -2931,7 +2974,14 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   }
   if (rc != 0)
     (void)sl_show_cursor(impl);
+  if (sync_open && sl_wstr(impl->output_fd, "\033[?2026l") != 0)
+    rc = -1;
   return rc;
+
+resize_failed:
+  if (sync_open)
+    (void)sl_wstr(impl->output_fd, "\033[?2026l");
+  return -1;
 }
 
 static int sl_render_apply(sl_t *self, const char *prompt) {
@@ -3244,7 +3294,7 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
   impl = sl_impl(self);
   if (!impl || !callback)
     return SL_ERROR_INVALID;
-  if (sl_output_surface_reconcile(self, prompt_top) != 0) {
+  if (sl_output_surface_reconcile(self, prompt_top, 0) != 0) {
     sl_set_error(self, "failed to size output viewport");
     return SL_ERROR_IO;
   }
@@ -3409,7 +3459,8 @@ static int sl_output_stream_begin_method(sl_t *self) {
   } else if (impl->active_prompt) {
     if (sl_render_apply(self, impl->active_prompt) != 0)
       goto failed;
-  } else if (sl_output_surface_reconcile(self, sl_prompt_top(impl, 1)) != 0) {
+  } else if (sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) !=
+             0) {
     sl_set_error(self, "failed to create live output surface");
     goto failed;
   }
@@ -3460,7 +3511,7 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
   if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
     return SL_ERROR_IO;
   if ((!impl->active_prompt || !impl->output_surface) &&
-      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1)) != 0) {
+      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
     sl_set_error(self, "failed to resize live output surface");
     return SL_ERROR_IO;
   }
@@ -5076,7 +5127,7 @@ static int sl_set_screen_width_method(sl_t *self, int width) {
     return SL_ERROR_IO;
   }
   if (!impl->active_prompt && impl->output_surface &&
-      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1)) != 0) {
+      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
     sl_set_error(self, "failed to resize live output after changing width");
     return SL_ERROR_IO;
   }
@@ -5606,7 +5657,7 @@ static int sl_set_bounds_method(sl_t *self, int x, int y, int width,
     return SL_ERROR_IO;
   }
   if (!impl->active_prompt && impl->output_surface &&
-      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1)) != 0) {
+      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
     sl_set_error(self, "failed to resize live output after changing bounds");
     return SL_ERROR_IO;
   }

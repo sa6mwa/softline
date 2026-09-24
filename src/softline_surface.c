@@ -42,6 +42,7 @@ struct sl_surface {
   int y;
   int width;
   int height;
+  int terminal_rows;
   int col;
   sl_surface_cell_t *cells;
   sl_surface_style_t style;
@@ -482,7 +483,8 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
     if ((surface->utf8_need == 2 && cp < 0x80ul) ||
         (surface->utf8_need == 3 && cp < 0x800ul) ||
         (surface->utf8_need == 4 && cp < 0x10000ul) ||
-        (cp >= 0xd800ul && cp <= 0xdffful) || cp > 0x10fffful) {
+        (cp >= 0x80ul && cp <= 0x9ful) || (cp >= 0xd800ul && cp <= 0xdffful) ||
+        cp > 0x10fffful) {
       surface->utf8_need = 0;
       surface->utf8_len = 0;
       return -2;
@@ -541,6 +543,7 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
                                 int (*cell_width)(unsigned long),
                                 int (*cluster_width)(const char *, size_t)) {
   sl_surface_t *surface;
+  struct winsize terminal;
   size_t count;
   if (fd < 0 || x < 0 || y < 0 || width < 1 || height < 0 || !cell_width ||
       !cluster_width)
@@ -564,6 +567,8 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
   surface->y = y;
   surface->width = width;
   surface->height = height;
+  if (ioctl(fd, TIOCGWINSZ, &terminal) == 0)
+    surface->terminal_rows = (int)terminal.ws_row;
   surface->cell_width = cell_width;
   surface->cluster_width = cluster_width;
   return surface;
@@ -590,8 +595,24 @@ int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
          surface->width == width && surface->height == height;
 }
 
+void sl_surface_geometry(const sl_surface_t *surface, int *x, int *y,
+                         int *width, int *height, int *terminal_rows) {
+  if (!surface)
+    return;
+  if (x)
+    *x = surface->x;
+  if (y)
+    *y = surface->y;
+  if (width)
+    *width = surface->width;
+  if (height)
+    *height = surface->height;
+  if (terminal_rows)
+    *terminal_rows = surface->terminal_rows;
+}
+
 int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
-                      int height) {
+                      int height, int after_native_scroll) {
   sl_surface_cell_t *new_cells;
   struct winsize terminal;
   size_t count;
@@ -644,7 +665,7 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
     clear_height = 0;
   else if (clear_height > (int)terminal.ws_row - surface->y)
     clear_height = (int)terminal.ws_row - surface->y;
-  if (clear_width > 0 && clear_height > 0 &&
+  if (!after_native_scroll && clear_width > 0 && clear_height > 0 &&
       sl_surface_clear_rect(surface, surface->x, surface->y, clear_width,
                             clear_height) != 0) {
     free(new_cells);
@@ -656,9 +677,11 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   surface->y = y;
   surface->width = width;
   surface->height = height;
+  surface->terminal_rows = (int)terminal.ws_row;
   if (surface->col > width)
     surface->col = width;
-  return sl_surface_repaint(surface);
+  surface->draw_valid = 0;
+  return after_native_scroll ? 0 : sl_surface_repaint(surface);
 }
 
 int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length) {
