@@ -26,6 +26,8 @@ struct terminal {
   unsigned int seen;
   char cells[MAX_ROWS][MAX_COLS + 1];
   char raw[RAW_CAP];
+  unsigned int scrolls;
+  char history[128][MAX_COLS + 1];
 };
 
 static int tests_run, tests_passed;
@@ -69,6 +71,8 @@ static void term_init(struct terminal *t, int fd, int cols, int rows) {
 
 static void term_scroll(struct terminal *t) {
   int row;
+  memcpy(t->history[t->scrolls % 128u], t->cells[0], (size_t)t->cols + 1);
+  t->scrolls++;
   for (row = 1; row < t->rows; row++)
     memcpy(t->cells[row - 1], t->cells[row], (size_t)t->cols + 1);
   memset(t->cells[t->rows - 1], ' ', (size_t)t->cols);
@@ -204,6 +208,23 @@ static int term_contains(const struct terminal *t, const char *needle) {
     if (strstr(t->cells[row], needle))
       return 1;
   return 0;
+}
+
+static int term_history_contains(const struct terminal *t, const char *needle) {
+  unsigned int i;
+  unsigned int count = t->scrolls < 128u ? t->scrolls : 128u;
+  for (i = 0; i < count; i++)
+    if (strstr(t->history[i], needle))
+      return 1;
+  return 0;
+}
+
+static int term_row_of(const struct terminal *t, const char *needle) {
+  int row;
+  for (row = 0; row < t->rows; row++)
+    if (strstr(t->cells[row], needle))
+      return row;
+  return -1;
 }
 
 static struct timespec deadline_after(int milliseconds) {
@@ -416,8 +437,21 @@ static void test_chat_live_queue(const char *path) {
   ASSERT_TRUE(strstr(t.raw, "\033[?1049h") == NULL, "alternate screen used");
   ASSERT_TRUE(write(fd, "first\r", 6) == 6, "first send failed");
   ASSERT_TRUE(wait_screen(&t, "> first", 3000) == 0, "quote missing");
+  ASSERT_TRUE(wait_screen(&t, "Thinking...", 3000) == 0,
+              "status message missing");
+  ASSERT_TRUE(wait_screen(&t, "streaming demo", 3000) == 0,
+              "status line missing while thinking");
+  ASSERT_TRUE(term_row_of(&t, "Thinking...") <
+                  term_row_of(&t, "streaming demo"),
+              "status message is not above the status line");
+  ASSERT_TRUE(strstr(t.raw, "\033[3;") != NULL,
+              "italic status or prompt treatment missing");
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "heading not streamed");
+  ASSERT_TRUE(strstr(t.raw, "\033[0;3;34mfirst") != NULL,
+              "libmdf did not render the submitted prompt in italics");
+  ASSERT_TRUE(wait_screen(&t, "Reasoning...", 3000) == 0,
+              "status message did not update mid-stream");
   ASSERT_TRUE(write(fd, "draft", 5) == 5, "draft failed");
   ASSERT_TRUE(wait_screen(&t, "> draft", 3000) == 0,
               "editing blocked during stream");
@@ -438,6 +472,31 @@ static void test_chat_live_queue(const char *path) {
               "first queued turn not dispatched");
   ASSERT_TRUE(wait_screen(&t, "A longer answer", 6000) == 0,
               "queued turn did not start next operation");
+  {
+    struct timespec history_deadline = deadline_after(6000);
+    while (!term_history_contains(&t, "> first") &&
+           before_deadline(&history_deadline))
+      if (term_read(&t) < 0)
+        break;
+  }
+  if (!(t.scrolls > 0 && term_history_contains(&t, "> first"))) {
+    unsigned int hi;
+    fprintf(stderr, "native scrolls: %u\n", t.scrolls);
+    for (hi = 0; hi < t.scrolls && hi < 128u; hi++)
+      fprintf(stderr, "history %u: |%s|\n", hi, t.history[hi]);
+    term_dump(&t);
+    FAIL("first prompt was not preserved in terminal scrollback");
+  }
+  {
+    const char *sync_start = strstr(t.raw, "\033[?2026h");
+    const char *sync_end =
+        sync_start ? strstr(sync_start, "\033[?2026l") : NULL;
+    const char *top_repaint =
+        sync_start ? strstr(sync_start, "\033[1;1H") : NULL;
+    ASSERT_TRUE(sync_start && sync_end &&
+                    (!top_repaint || top_repaint > sync_end),
+                "native scroll repainted the output viewport");
+  }
   ASSERT_TRUE(write(fd, "exit\033\r", 6) == 6, "exit failed");
   ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
   PASS();
@@ -476,6 +535,8 @@ static void test_chat_cancel(const char *path) {
   ASSERT_TRUE(write(fd, "\003", 1) == 1, "cancel failed");
   ASSERT_TRUE(wait_screen(&t, "Operation cancelled", 3000) == 0,
               "operation not cancelled");
+  ASSERT_TRUE(term_row_of(&t, "Reasoning...") < 0,
+              "status message was not cleared after cancellation");
   if (wait_screen(&t, "Q 1. queued", 3000) != 0) {
     term_dump(&t);
     FAIL("cancel unexpectedly dequeued turn");
@@ -536,16 +597,16 @@ static void test_chat_immediate_steer(const char *path) {
   ASSERT_TRUE(wait_screen(&t, "Immediate input received", 3000) == 0,
               "busy operation did not receive immediate input");
   ASSERT_TRUE(!term_contains(&t, "Q 1. steer"), "immediate input was queued");
-  ASSERT_TRUE(wait_raw_after(&t, "Immediate input received while busy.",
-                             "\033[?2004h", 3000) == 0,
-              "editor did not resume after immediate input");
+  ASSERT_TRUE(write(fd, "ok", 2) == 2, "follow-up draft failed");
+  ASSERT_TRUE(wait_screen(&t, "> ok", 3000) == 0,
+              "editor did not accept input after immediate turn");
   ASSERT_TRUE(write(fd, "\003", 1) == 1, "cancel failed");
   ASSERT_TRUE(wait_screen(&t, "Operation cancelled", 3000) == 0,
               "operation cancel missing");
-  ASSERT_TRUE(wait_raw_after(&t, "Operation cancelled", "\033[?2004h", 3000) ==
-                  0,
-              "editor did not resume after cancellation");
-  ASSERT_TRUE(write(fd, "exit\033\r", 6) == 6, "exit failed");
+  ASSERT_TRUE(wait_raw_after(&t, "Operation cancelled.",
+                             "\033[14;1H\033[1;97m> ", 3000) == 0,
+              "editor prompt did not redraw after cancellation");
+  ASSERT_TRUE(write(fd, "\025exit\033\r", 7) == 7, "exit failed");
   ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
   PASS();
 }

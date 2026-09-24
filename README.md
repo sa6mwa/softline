@@ -102,8 +102,10 @@ example dependency: libsoftline and its installed package remain independent
 of libmdf. The composer gives libmdf a two-column left margin and its default
 ANSI palette, updating both renderers' geometry on resize and dropping the
 margin on very narrow terminals. Each submitted prompt becomes a Markdown
-block quote with blank lines around it. A worker emits one source character
-every 20 ms; the owner-thread watch callback feeds libmdf incrementally and
+block quote in italics with blank lines around it, through a Markdown source
+hook before libmdf. The hook passes prompt text through as Markdown source, so
+libmdf interprets Markdown punctuation in the prompt. A worker emits one source
+character every 20 ms; the owner-thread watch callback feeds libmdf incrementally and
 forwards each sink fragment directly into a Softline output session. The
 responses mix headings, subheadings, italic, bold, code, and paragraphs while
 input remains editable.
@@ -145,10 +147,10 @@ and Lua examples accept
 `SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
 expose that as `THEME=...`. The simple and chat examples default to `default`;
-`make run-chat` supplies Gruvbox. The C live output session always uses its
-bounded viewport, so the `-sr` convenience targets do not change that output
-layout. `SOFTLINE_LIVE_SCROLL_REGION=1` remains available to the Lua chat
-example for finite `print_above()` calls.
+`make run-chat` supplies Gruvbox. The C live output session uses the main
+terminal's scrollback for a full-width prompt; the `-sr` convenience targets
+do not change that output layout. `SOFTLINE_LIVE_SCROLL_REGION=1` remains
+available to the Lua chat example for finite `print_above()` calls.
 
 ## Bounded prompts
 
@@ -158,8 +160,9 @@ the prompt grows upward as input wraps while `sl_print_above()` pulls streamed
 chunks from a callback and writes them through the region above the prompt.
 Full-width bounds can use terminal scrolling. Narrow or offset bounds use a
 bounded cell viewport, not a VT scroll region that would alter outside columns.
-A persistent `sl_output_stream_*()` session uses that viewport at all bounds
-and accepts later chunks without waiting for EOF.
+A persistent `sl_output_stream_*()` session accepts later chunks without
+waiting for EOF. Full-width sessions scroll the main terminal, preserving
+native scrollback; narrow or offset sessions use the bounded viewport.
 Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
 bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
 in softline. Bounded rendering keeps a retained view of the visible editor
@@ -180,9 +183,9 @@ do not answer the cursor-position report continue with clear-and-redraw.
 
 For a persistent bottom prompt, use bounded mode in either the normal or
 alternate screen. Softline never enters or leaves the alternate screen itself.
-The live viewport retains only visible terminal cells and partial parser state,
-not the whole response; scrolled-off content is not recoverable through a
-Softline scrollback API.
+The live viewport retains only visible terminal cells and partial parser state.
+Full-width main-screen sessions scroll those cells into native terminal
+scrollback. Softline does not keep its own transcript history.
 
 ## Persistent output session
 
@@ -312,6 +315,9 @@ static const char *const status[] = {
 
 sl->set_statusline(sl, 1, 0);
 sl->set_status_elements(sl, status, 4);
+sl->set_status_message(sl, "Thinking..."); /* update during live output */
+sl->set_status_message(sl, "Reasoning...");
+sl->set_status_message(sl, NULL);          /* clear */
 sl->set_status_idle_marker(sl, '-');  /* optional green idle marker */
 sl->set_status_busy(sl, 1);    /* x by default, or /-\\| with spinner enabled */
 sl->set_status_spinner(sl, 1);
@@ -325,6 +331,12 @@ off by default, and advances every 500ms only when both spinner and busy are
 enabled. Elements wrap between elements when possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
+
+Enabling the status line reserves a single row immediately above it for a
+status message. `sl_set_status_message()` accepts printable single-line UTF-8,
+clips long text to that row, and redraws immediately while the editor is
+active. The row uses italic text and the selected theme's faded colour. Clearing
+the message leaves the row blank, so the status line and editor stay in place.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.

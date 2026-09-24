@@ -199,6 +199,9 @@ static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
 static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
                              unsigned long *codepoint);
 static int sl_render_clear_active(sl_t *self);
+static int sl_render_apply(sl_t *self, const char *prompt);
+static int sl_write_cursor_pos(int fd, int row, int col);
+static int sl_wstr(int fd, const char *s);
 static int sl_try_pin_scroll_region(sl_t *self);
 static int sl_codepoint_width(unsigned long cp);
 static int sl_surface_cluster_width(const char *bytes, size_t length);
@@ -741,6 +744,33 @@ static int sl_prompt_top(sl_impl_t *impl, int prompt_rows) {
   return top;
 }
 
+/* A full-width live session uses the terminal's main-screen scrollback. Keep
+ * the editor off the physical screen while scrolling, then redraw it. */
+static int sl_native_history_scroll(void *userdata, int after) {
+  sl_t *self;
+  sl_impl_t *impl;
+  self = (sl_t *)userdata;
+  impl = sl_impl(self);
+  if (!impl)
+    return -1;
+  if (after) {
+    int rc;
+    rc = impl->active_prompt ? sl_render_apply(self, impl->active_prompt) : 0;
+    if (sl_wstr(impl->output_fd, "\033[?2026l") != 0)
+      return -1;
+    return rc;
+  }
+  if (sl_wstr(impl->output_fd, "\033[?2026h") != 0 ||
+      sl_render_clear_active(self) != 0 ||
+      sl_write_cursor_pos(impl->output_fd, sl_terminal_height(impl) - 1, 0) !=
+          0 ||
+      sl_wstr(impl->output_fd, "\r\n") != 0) {
+    (void)sl_wstr(impl->output_fd, "\033[?2026l");
+    return -1;
+  }
+  return 0;
+}
+
 static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
   sl_impl_t *impl;
   int x;
@@ -760,9 +790,19 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
     impl->output_surface =
         sl_surface_create(impl->output_fd, x, y, width, height,
                           sl_codepoint_width, sl_surface_cluster_width);
-    return impl->output_surface ? 0 : -1;
+    if (!impl->output_surface)
+      return -1;
+  } else if (sl_surface_resize(impl->output_surface, x, y, width, height) !=
+             0) {
+    return -1;
   }
-  return sl_surface_resize(impl->output_surface, x, y, width, height);
+  sl_surface_set_scroll_hook(impl->output_surface,
+                             impl->output_stream_active && x == 0 && y == 0 &&
+                                     width >= sl_terminal_columns(impl)
+                                 ? sl_native_history_scroll
+                                 : NULL,
+                             self);
+  return 0;
 }
 
 static int sl_enable_raw(sl_t *self) {
@@ -2394,6 +2434,35 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   return 0;
 }
 
+static int sl_render_append_status_message(sl_t *self, sl_render_t *render,
+                                           int width) {
+  sl_impl_t *impl;
+  const sl_theme_palette_t *palette;
+  char style[48];
+  int n;
+  impl = sl_impl(self);
+  if (!impl || (!impl->statusline.enabled && !impl->status_message))
+    return 0;
+  if (sl_render_new_row_at(render, 0, 0) != 0)
+    return -1;
+  if (!impl->status_message || !impl->status_message[0])
+    return 0;
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT)
+    strcpy(style, "\033[3;90m");
+  else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+    n = snprintf(style, sizeof(style), "\033[3;38;2;%u;%u;%um",
+                 (unsigned int)palette->separator.red,
+                 (unsigned int)palette->separator.green,
+                 (unsigned int)palette->separator.blue);
+    if (n <= 0 || n >= (int)sizeof(style))
+      return -1;
+  } else
+    strcpy(style, "\033[3m");
+  return sl_queue_row_append_preview(&render->rows[render->count - 1],
+                                     impl->status_message, width, style);
+}
+
 static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
                                         int width) {
   sl_impl_t *impl;
@@ -2479,6 +2548,8 @@ static int sl_render_build(sl_t *self, const char *prompt,
   if (width < 1)
     width = 1;
   if (sl_render_append_queue_panel(self, render, width) != 0)
+    return -1;
+  if (sl_render_append_status_message(self, render, width) != 0)
     return -1;
   if (sl_render_append_statusline(self, render, width) != 0)
     return -1;
@@ -4970,6 +5041,7 @@ static void sl_destroy_method(sl_t *self) {
     sl_history_clear(&impl->history);
     sl_prompt_queue_clear_raw(&impl->prompt_queue);
     sl_statusline_clear(&impl->statusline);
+    free(impl->status_message);
     sl_render_store_clear(impl);
     sl_surface_destroy(impl->output_surface);
     free(impl->history_edit);
@@ -5366,6 +5438,26 @@ static int sl_set_statusline_method(sl_t *self, int enabled,
   return SL_OK;
 }
 
+static int sl_set_status_message_method(sl_t *self, const char *message) {
+  sl_impl_t *impl;
+  char *copy;
+  impl = sl_impl(self);
+  if (!impl || !sl_statusline_text_valid(message)) {
+    sl_set_error(self, "status message must be printable single-line UTF-8");
+    return SL_ERROR_INVALID;
+  }
+  copy = message && message[0] ? sl_strdup(message) : NULL;
+  if (message && message[0] && !copy) {
+    sl_set_error(self, "failed to allocate status message");
+    return SL_ERROR_NOMEM;
+  }
+  free(impl->status_message);
+  impl->status_message = copy;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
+  return SL_OK;
+}
+
 static int sl_set_status_elements_method(sl_t *self,
                                          const char *const *elements,
                                          size_t count) {
@@ -5723,6 +5815,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->set_prompt_queue = sl_set_prompt_queue_method;
   self->set_prompt_theme = sl_set_prompt_theme_method;
   self->set_statusline = sl_set_statusline_method;
+  self->set_status_message = sl_set_status_message_method;
   self->set_status_elements = sl_set_status_elements_method;
   self->set_status_element = sl_set_status_element_method;
   self->set_status_busy = sl_set_status_busy_method;
@@ -5970,6 +6063,12 @@ int sl_set_statusline(sl_t *self, int enabled, size_t starting_element) {
   if (!self || !self->set_statusline)
     return SL_ERROR_INVALID;
   return self->set_statusline(self, enabled, starting_element);
+}
+
+int sl_set_status_message(sl_t *self, const char *message) {
+  if (!self || !self->set_status_message)
+    return SL_ERROR_INVALID;
+  return self->set_status_message(self, message);
 }
 
 int sl_set_status_elements(sl_t *self, const char *const *elements,

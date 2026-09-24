@@ -99,6 +99,7 @@ typedef struct sl_impl {
   sl_prompt_queue_t prompt_queue;
   sl_prompt_theme_t prompt_theme;
   sl_statusline_t statusline;
+  char *status_message;
   int history_index;
   char *history_edit;
   int bracketed_paste;

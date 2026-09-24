@@ -50,6 +50,7 @@ sl_set_status_elements
 sl_set_status_idle_marker
 sl_set_status_spinner
 sl_set_statusline
+sl_set_status_message
 sl_submit
 sl_watch_add
 sl_watch_clear

@@ -128,6 +128,9 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:set_statusline(enabled, starting_element)` enables the optional status
   line and chooses the palette slot for its first element. Themes provide
   eight element colours, and subsequent elements cycle through those colours.
+- `sl:set_status_message(text)` sets or updates a single italic, theme-faded
+  row immediately above the status line. Pass `nil` or `""` to clear it.
+  The message may be changed while an output session is streaming.
 - `sl:set_status_elements(elements)` replaces all status elements. At most 32
   are retained; longer input uses the first 31 followed by `...`. The limit is
   exported as `STATUS_MAX_ELEMENTS`. Elements must be valid UTF-8 and cannot

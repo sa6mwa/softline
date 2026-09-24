@@ -30,6 +30,7 @@ local prompt_methods = {
   "queue_keys",
   "set_prompt_theme",
   "set_statusline",
+  "set_status_message",
   "set_status_elements",
   "set_status_element",
   "set_status_busy",
@@ -87,6 +88,10 @@ local status = assert(softline.new({
   live_scroll_region = true,
 }))
 assert(status:set_statusline(true, 15))
+assert(status:set_status_message("Thinking..."))
+assert(status:set_status_message("Reasoning..."))
+assert(not status:set_status_message("two\nlines"))
+assert(status:set_status_message(nil))
 assert(status:set_live_scroll_region(true))
 assert(status:set_live_scroll_region(false))
 assert(status:set_status_elements({ "model", "context" }))

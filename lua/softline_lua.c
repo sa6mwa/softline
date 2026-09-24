@@ -737,6 +737,14 @@ static int softline_lua_set_statusline(lua_State *L) {
                            (size_t)luaL_checkinteger(L, 3)));
 }
 
+static int softline_lua_set_status_message(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *message;
+  handle = softline_lua_check(L, 1);
+  message = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+  return softline_lua_status(L, sl_set_status_message(handle->sl, message));
+}
+
 static int softline_lua_set_status_elements(lua_State *L) {
   const char *elements[SL_STATUS_MAX_ELEMENTS];
   softline_lua_handle_t *handle;
@@ -1144,6 +1152,7 @@ static const luaL_Reg softline_lua_methods[] = {
     {"queue_keys", softline_lua_queue_keys},
     {"set_prompt_theme", softline_lua_set_prompt_theme},
     {"set_statusline", softline_lua_set_statusline},
+    {"set_status_message", softline_lua_set_status_message},
     {"set_status_elements", softline_lua_set_status_elements},
     {"set_status_element", softline_lua_set_status_element},
     {"set_status_busy", softline_lua_set_status_busy},

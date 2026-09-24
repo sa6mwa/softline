@@ -26,5 +26,8 @@ int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,
 int sl_surface_complete(const sl_surface_t *surface);
 int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
                        int height);
+/* Called before and after a visible viewport row is scrolled away. */
+void sl_surface_set_scroll_hook(sl_surface_t *surface, int (*hook)(void *, int),
+                                void *userdata);
 
 #endif

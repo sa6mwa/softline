@@ -36,6 +36,9 @@ struct chat_state {
   pid_t worker_pid;
   int busy;
   unsigned int turn_index;
+  size_t response_bytes;
+  int (*prompt_hook)(const char *prompt,
+                     int (*emit)(void *, const char *, size_t), void *userdata);
 };
 
 static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
@@ -125,34 +128,50 @@ static int render_note(struct chat_state *state, const char *note) {
   return finish_prompt_document(state);
 }
 
-static int render_user_prompt(struct chat_state *state, const char *line) {
+static int prompt_emit(void *userdata, const char *bytes, size_t length) {
+  struct chat_state *state = (struct chat_state *)userdata;
+  return state->prompt_renderer->feed(state->prompt_renderer, bytes, length) ==
+                 MDF_OK
+             ? 0
+             : -1;
+}
+
+/* The hook only transforms Markdown source. The renderer remains owned by the
+ * example and can be replaced without changing Softline's output API. */
+static int italic_quote_prompt(const char *prompt,
+                               int (*emit)(void *, const char *, size_t),
+                               void *userdata) {
   const char *part;
-  const char *newline;
-  if (begin_prompt_document(state) != 0 ||
-      state->prompt_renderer->feed(state->prompt_renderer, "\n> ", 3) != MDF_OK)
+  const char *at;
+  if (emit(userdata, "\n\n> *", 5) != 0)
     return -1;
-  part = line;
-  while ((newline = strchr(part, '\n')) != NULL) {
-    if (newline > part &&
-        state->prompt_renderer->feed(state->prompt_renderer, part,
-                                     (size_t)(newline - part)) != MDF_OK)
-      return -1;
-    if (state->prompt_renderer->feed(state->prompt_renderer, "\n> ", 3) !=
-        MDF_OK)
-      return -1;
-    part = newline + 1;
+  part = prompt;
+  for (at = prompt; *at; at++) {
+    if (*at == '\n') {
+      if (at > part && emit(userdata, part, (size_t)(at - part)) != 0)
+        return -1;
+      if (emit(userdata, "\n> ", 3) != 0)
+        return -1;
+      part = at + 1;
+    }
   }
-  if ((part[0] != '\0' &&
-       state->prompt_renderer->feed(state->prompt_renderer, part,
-                                    strlen(part)) != MDF_OK) ||
-      state->prompt_renderer->feed(state->prompt_renderer, "\n\n", 2) != MDF_OK)
+  if ((at > part && emit(userdata, part, (size_t)(at - part)) != 0) ||
+      emit(userdata, "*\n\n", 3) != 0)
+    return -1;
+  return 0;
+}
+
+static int render_user_prompt(struct chat_state *state, const char *line) {
+  if (begin_prompt_document(state) != 0 ||
+      state->prompt_hook(line, prompt_emit, state) != 0)
     return -1;
   return finish_prompt_document(state);
 }
 
 static int set_busy(struct chat_state *state, int busy) {
   if (sl_set_status_spinner(state->sl, busy) != SL_OK ||
-      sl_set_status_busy(state->sl, busy) != SL_OK)
+      sl_set_status_busy(state->sl, busy) != SL_OK ||
+      sl_set_status_message(state->sl, busy ? "Thinking..." : NULL) != SL_OK)
     return -1;
   state->busy = busy;
   return 0;
@@ -252,6 +271,10 @@ static int operation_watch(sl_t *sl, const sl_watch_event_t *event,
       if (state->response_renderer->feed(state->response_renderer, bytes + i,
                                          1) != MDF_OK)
         return SL_ERROR_IO;
+      state->response_bytes++;
+      if (state->response_bytes == 15 &&
+          sl_set_status_message(state->sl, "Reasoning...") != SL_OK)
+        return SL_ERROR_IO;
     }
     return SL_OK;
   }
@@ -275,6 +298,7 @@ static int start_operation(struct chat_state *state) {
                                            state->response_renderer) != MDF_OK)
     return -1;
   state->response_open = 1;
+  state->response_bytes = 0;
   answer =
       response_templates[state->turn_index++ % (sizeof(response_templates) /
                                                 sizeof(response_templates[0]))];
@@ -387,6 +411,7 @@ int main(void) {
   int cancelled_busy;
 
   memset(&state, 0, sizeof(state));
+  state.prompt_hook = italic_quote_prompt;
   state.watch_fd = -1;
   state.worker_pid = -1;
   interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);

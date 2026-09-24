@@ -58,6 +58,8 @@ struct sl_surface {
   int draw_row;
   int draw_col;
   sl_surface_style_t draw_style;
+  int (*scroll_hook)(void *, int);
+  void *scroll_userdata;
 };
 
 static int sl_surface_write_all(int fd, const char *bytes, size_t length) {
@@ -216,6 +218,9 @@ static int sl_surface_scroll(sl_surface_t *surface) {
   size_t row_cells;
   if (surface->height <= 0 || surface->width <= 0)
     return -1;
+  if (surface->scroll_hook &&
+      surface->scroll_hook(surface->scroll_userdata, 0) != 0)
+    return -1;
   row_cells = (size_t)surface->width;
   if (surface->height > 1)
     memmove(surface->cells, surface->cells + row_cells,
@@ -223,7 +228,22 @@ static int sl_surface_scroll(sl_surface_t *surface) {
                 sizeof(*surface->cells));
   memset(surface->cells + row_cells * (size_t)(surface->height - 1), 0,
          row_cells * sizeof(*surface->cells));
-  return sl_surface_repaint(surface);
+  surface->draw_valid = 0;
+  /* The main terminal has already shifted these same cells. Repainting its
+   * viewport would clear and redraw the transcript on every newline. */
+  if (!surface->scroll_hook && sl_surface_repaint(surface) != 0)
+    return -1;
+  return surface->scroll_hook
+             ? surface->scroll_hook(surface->scroll_userdata, 1)
+             : 0;
+}
+
+void sl_surface_set_scroll_hook(sl_surface_t *surface, int (*hook)(void *, int),
+                                void *userdata) {
+  if (!surface)
+    return;
+  surface->scroll_hook = hook;
+  surface->scroll_userdata = userdata;
 }
 
 static int sl_surface_put(sl_surface_t *surface, const char *bytes,

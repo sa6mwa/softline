@@ -52,7 +52,9 @@ transcript lives above the prompt inside the bounds established by
 terminal rectangle, is supported. With no explicit bounds, a live session
 pins the prompt to the terminal bottom for its lifetime. A bounded display
 retains at most its visible viewport and partial terminal escape/UTF-8 state;
-it never retains or replays the complete response. Newly received bytes are
+it never retains or replays the complete response. A full-width main-screen
+session scrolls output into native terminal history; narrow or offset bounds
+continue to clip to the viewport. Newly received bytes are
 rendered immediately. Viewport state exists only so Softline can repaint the
 visible rectangle after scrolling, prompt growth, or a resize. It is not a
 producer-to-consumer staging buffer.
@@ -100,9 +102,10 @@ events. The core and Lua libraries do not import libmdf.
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
 - The C chat example composes a libmdf incremental renderer with the generic
   session. The composer configures default palette and a two-column
-  left margin, renders a submitted prompt as a Markdown block quote with
-  blank lines around it, and emits varied Markdown response text one source
-  character per 20 ms while the user may type, queue, promote, and cancel.
+  left margin, passes a submitted prompt through an italic Markdown blockquote
+  source hook with blank lines around it, and emits varied Markdown response
+  text one source character per 20 ms while the user may type, queue, promote,
+  and cancel.
 - The Lua facade tests the generic session lifecycle and byte forwarding;
   the separate Lua chat example remains a plain queued-turn demonstration.
 - Packaging and artifact checks prove that libsoftline, its Lua facade, and

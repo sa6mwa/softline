@@ -535,6 +535,9 @@ struct sl {
    * renderer document. Incomplete ANSI/UTF-8 leaves it open and returns
    * SL_ERROR_INVALID so the caller may supply the missing bytes. */
   int (*output_stream_end)(sl_t *self);
+  /** Set, replace, or clear the single-row message above the status line.
+   * NULL or an empty string clears it. Text must be printable UTF-8. */
+  int (*set_status_message)(sl_t *self, const char *message);
 };
 
 /**
@@ -687,6 +690,11 @@ int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
 /** Enable or disable the status line and choose the palette index used for
  * its first element. Status elements wrap between elements where possible. */
 int sl_set_statusline(sl_t *self, int enabled, size_t starting_element);
+
+/** Set, replace, or clear the italic, theme-faded message above the status
+ * line. NULL or an empty string clears it. A long message is clipped to one
+ * terminal row; text must be printable UTF-8 without control characters. */
+int sl_set_status_message(sl_t *self, const char *message);
 
 /** Replace all status-line elements. At most 32 elements are retained; longer
  * input is represented by the first 31 elements followed by `...`. Elements

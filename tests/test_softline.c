@@ -248,6 +248,8 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->set_prompt_queue != NULL, "set_prompt_queue method missing");
   ASSERT_TRUE(sl->set_prompt_theme != NULL, "set_prompt_theme method missing");
   ASSERT_TRUE(sl->set_statusline != NULL, "set_statusline method missing");
+  ASSERT_TRUE(sl->set_status_message != NULL,
+              "set_status_message method missing");
   ASSERT_TRUE(sl->set_status_elements != NULL,
               "set_status_elements method missing");
   ASSERT_TRUE(sl->set_status_element != NULL,
@@ -309,6 +311,26 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->last_readline_status(sl) == SL_READLINE_NONE,
               "initial readline status mismatch");
   sl->destroy(sl);
+  PASS();
+}
+
+static void test_status_message_api(void) {
+  sl_t *sl;
+  TEST("status message accepts updates and clear, rejects controls");
+  sl = sl_create();
+  ASSERT_TRUE(sl != NULL, "create failed");
+  ASSERT_TRUE(sl_set_status_message(sl, "Thinking...") == SL_OK &&
+                  sl->set_status_message(sl, "Reasoning...") == SL_OK &&
+                  sl_set_status_message(sl, "\xc3\xa5") == SL_OK,
+              "valid status message rejected");
+  ASSERT_TRUE(sl_set_status_message(sl, "two\nlines") == SL_ERROR_INVALID &&
+                  sl_set_status_message(sl, "\033[31m") == SL_ERROR_INVALID &&
+                  sl_set_status_message(sl, "\xc3") == SL_ERROR_INVALID,
+              "invalid status message accepted");
+  ASSERT_TRUE(sl_set_status_message(sl, NULL) == SL_OK &&
+                  sl_set_status_message(sl, "") == SL_OK,
+              "status message did not clear");
+  sl_destroy(sl);
   PASS();
 }
 
@@ -2529,6 +2551,7 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     cfg.status_busy = 0;
     sl = sl_create_with_config(&cfg);
     if (!sl ||
+        sl_set_status_message(sl, "abcdefghijklmnopqrstuvwxyz") != SL_OK ||
         sl_set_status_elements(sl, elements,
                                sizeof(elements) / sizeof(elements[0])) != SL_OK)
       _exit(2);
@@ -3558,6 +3581,10 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
                   !contains_bytes(terminal, "e31") &&
                   contains_bytes(terminal, "..."),
               "status line did not retain 31 elements plus ellipsis");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[3;38;2;") &&
+                  contains_bytes(terminal, "abcdefghijklmnopqrstuvwx") &&
+                  !contains_bytes(terminal, "abcdefghijklmnopqrstuvwxy"),
+              "status message did not stay italic and within one row");
   ASSERT_TRUE(contains_after_bytes(terminal, "e7", "\n"),
               "status elements did not wrap between elements");
   PASS();
@@ -3586,6 +3613,8 @@ static void test_default_statusline_uses_ansi_palette(void) {
                   contains_bytes(terminal, "\033[90m : ") &&
                   !contains_bytes(terminal, "\033[38;2;"),
               "default status palette did not use ANSI colours");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[3;90mabcdefghijklmnopqrstuvwx"),
+              "default status message did not use faded italic treatment");
   PASS();
 }
 
@@ -9376,6 +9405,7 @@ int main(void) {
 
   test_config_init();
   test_receiver_shell();
+  test_status_message_api();
   test_free_function_wrappers_use_receiver_methods();
   test_prompt_queue_control_api();
   test_set_cursor_clamps_to_utf8_cluster_boundary();
