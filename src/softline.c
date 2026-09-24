@@ -771,6 +771,7 @@ static int sl_native_history_scroll(void *userdata, int after) {
       sl_render_clear_active(self) != 0 ||
       sl_write_cursor_pos(impl->output_fd, sl_terminal_height(impl) - 1, 0) !=
           0 ||
+      sl_wstr(impl->output_fd, "\033[2K") != 0 ||
       sl_wstr(impl->output_fd, "\r\n") != 0) {
     (void)sl_wstr(impl->output_fd, "\033[?2026l");
     return -1;

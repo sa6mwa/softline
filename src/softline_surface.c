@@ -318,7 +318,7 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
       return -2;
   }
   if (cells == 0)
-    cells = 1;
+    return -2;
   if (cells > surface->width)
     return -2;
   if (surface->col + cells > surface->width) {
