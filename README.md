@@ -204,8 +204,10 @@ sl->output_stream_end(sl);
 
 Each write is visible before it returns, including while `next_prompt()` is
 active. Chunk boundaries add no content or document semantics; ANSI SGR and
-UTF-8 sequences may cross calls. End rejects an incomplete sequence. The
-composer updates Softline geometry (`set_bounds` or `set_screen_width`) and
+UTF-8 sequences may cross calls. End rejects an incomplete sequence. Softline
+clears completed editor rows when a turn is submitted during an open session;
+applications can render the submitted text into the transcript. The composer
+updates Softline geometry (`set_bounds` or `set_screen_width`) and
 renderer width on the owner thread when the terminal changes; neither library
 owns the other's margins. Softline immediately reconciles the transcript and
 editable prompt within its new bounds. A watched FD is the usual way to

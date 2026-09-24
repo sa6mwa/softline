@@ -3095,7 +3095,8 @@ static int sl_render_finish(sl_t *self, int queue_dispatch) {
     return 0;
   }
   if (sl_bounded_mode(impl)) {
-    if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
+    if (impl->output_stream_active ||
+        (queue_dispatch && sl_prompt_queue_enabled(impl))) {
       if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
         (void)sl_show_cursor(impl);
         return -1;

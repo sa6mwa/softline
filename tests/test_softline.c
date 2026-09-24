@@ -8723,6 +8723,67 @@ static size_t read_live_pty_output(int fd, char *bytes, size_t capacity) {
   return used;
 }
 
+struct live_submit_state {
+  int fired;
+  int status;
+};
+
+static void live_submit_draft_idle(sl_t *sl, void *userdata) {
+  struct live_submit_state *state;
+  state = (struct live_submit_state *)userdata;
+  if (state->fired)
+    return;
+  state->fired = 1;
+  state->status = sl_set_buffer(sl, "draft");
+  if (state->status == SL_OK)
+    state->status = sl_submit(sl);
+}
+
+static void test_live_output_after_readline_submit_clears_editor(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct live_submit_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+
+  TEST("live output after readline submission excludes old editor cells");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
+              "live stream setup failed");
+  memset(&state, 0, sizeof(state));
+  ASSERT_TRUE(sl_set_idle_callback(sl, live_submit_draft_idle, &state) == SL_OK,
+              "idle submit setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line && strcmp(line, "draft") == 0 && state.fired &&
+                  state.status == SL_OK,
+              "live readline submission failed");
+  sl_free_string(sl, line);
+  ASSERT_TRUE(sl_output_stream_write(sl, "\nX", 2) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "post-submit live output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 8, 20);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "X") && !vt_contains(&screen, "draft"),
+              "completed editor text leaked into the live transcript");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
 struct native_scroll_probe {
   int master_fd;
   int output_fd;
@@ -9225,6 +9286,11 @@ static void test_live_output_cluster_limit(void) {
   PASS();
 }
 #else
+static void test_live_output_after_readline_submit_clears_editor(void) {
+  TEST("live output after readline submission excludes old editor cells");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_disables_native_scroll_after_widening(void) {
   TEST("widening terminal disables native scroll for fixed-width bounds");
   printf("SKIP\n");
@@ -9797,6 +9863,7 @@ int main(void) {
   test_watch_lifecycle_reports_terminal_events();
   test_redirected_live_output_validates_stream();
   test_live_output_stream_across_narrow_bounds();
+  test_live_output_after_readline_submit_clears_editor();
   test_live_output_disables_native_scroll_after_widening();
   test_live_output_native_scroll_resets_prompt_style();
   test_live_output_short_full_width_box_uses_viewport();
