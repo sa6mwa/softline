@@ -3673,6 +3673,7 @@ static int sl_output_stream_begin_method(sl_t *self) {
   impl->output_stream_active = 1;
   impl->output_trailing_newlines = 0;
   impl->output_ansi_state = 0;
+  impl->output_pending_len = 0;
   if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
     impl->output_surface = sl_surface_create_validator();
     if (!impl->output_surface) {
@@ -3720,6 +3721,20 @@ static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
   }
 }
 
+static int sl_output_flush_redirected(sl_t *self, const char *bytes,
+                                      size_t length) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (length == 0)
+    return SL_OK;
+  if (sl_write_all(impl->output_fd, bytes, length) != 0) {
+    sl_set_error(self, "failed to write live output");
+    return SL_ERROR_IO;
+  }
+  sl_output_track_tail(impl, bytes, length);
+  return SL_OK;
+}
+
 static int sl_output_stream_write_method(sl_t *self, const char *bytes,
                                          size_t length) {
   sl_impl_t *impl;
@@ -3733,29 +3748,55 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
   if (length == 0)
     return SL_OK;
   if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
-    size_t offset;
-    offset = 0;
-    while (offset < length) {
-      size_t span;
+    char ready[4096];
+    size_t ready_len;
+    size_t i;
+    ready_len = 0;
+    for (i = 0; i < length; i++) {
       size_t accepted;
-      span = length - offset > 4096 ? 4096 : length - offset;
-      result = sl_surface_validate(impl->output_surface, bytes + offset, span,
-                                   &accepted);
-      if (accepted > 0 &&
-          sl_write_all(impl->output_fd, bytes + offset, accepted) != 0) {
-        sl_set_error(self, "failed to write live output");
-        return SL_ERROR_IO;
-      }
-      sl_output_track_tail(impl, bytes + offset, accepted);
-      offset += accepted;
+      result =
+          sl_surface_validate(impl->output_surface, bytes + i, 1, &accepted);
       if (result != 0) {
+        impl->output_pending_len = 0;
+        if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+          return SL_ERROR_IO;
         sl_set_error(
             self,
             "live output contains an unsupported or invalid byte sequence");
         return SL_ERROR_INVALID;
       }
+      if (impl->output_pending_len > 0 ||
+          !sl_surface_complete(impl->output_surface)) {
+        if (impl->output_pending_len >= sizeof(impl->output_pending)) {
+          impl->output_pending_len = 0;
+          sl_surface_reset_partial(impl->output_surface);
+          if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+            return SL_ERROR_IO;
+          sl_set_error(self, "live output escape sequence is too long");
+          return SL_ERROR_INVALID;
+        }
+        impl->output_pending[impl->output_pending_len++] = bytes[i];
+        if (!sl_surface_complete(impl->output_surface))
+          continue;
+        if (impl->output_pending_len > sizeof(ready) - ready_len) {
+          if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+            return SL_ERROR_IO;
+          ready_len = 0;
+        }
+        memcpy(ready + ready_len, impl->output_pending,
+               impl->output_pending_len);
+        ready_len += impl->output_pending_len;
+        impl->output_pending_len = 0;
+      } else {
+        if (ready_len == sizeof(ready)) {
+          if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+            return SL_ERROR_IO;
+          ready_len = 0;
+        }
+        ready[ready_len++] = bytes[i];
+      }
     }
-    return SL_OK;
+    return sl_output_flush_redirected(self, ready, ready_len);
   }
   if (sl_box_left(impl) >= sl_terminal_columns(impl) ||
       sl_box_top(impl) >= sl_terminal_rows(impl) ||

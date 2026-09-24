@@ -92,6 +92,9 @@ typedef struct sl_impl {
   int output_stream_active;
   int output_trailing_newlines;
   int output_ansi_state;
+  /* Hold at most ESC [, 128 CSI bytes, and a terminator across writes. */
+  char output_pending[132];
+  size_t output_pending_len;
   sl_surface_t *output_surface;
   int cursor_position_probe;
   int dynamic_width;

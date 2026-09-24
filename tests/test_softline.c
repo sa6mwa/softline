@@ -361,6 +361,10 @@ static void test_parser_only_stream_allows_geometry_changes(void) {
   int master_fd;
   int slave_fd;
   int input_pipe[2];
+  char output[64];
+  ssize_t output_len;
+  fd_set readfds;
+  struct timeval timeout;
   TEST("parser-only stream accepts geometry changes with TTY output");
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0 &&
                   pipe(input_pipe) == 0,
@@ -372,9 +376,20 @@ static void test_parser_only_stream_allows_geometry_changes(void) {
   ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
                   sl_set_bounds(sl, 0, 0, 0, 0) == SL_OK &&
                   sl_set_screen_width(sl, 20) == SL_OK &&
-                  sl_output_stream_write(sl, "ok", 2) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[2", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "J", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "H", 1) == SL_OK &&
                   sl_output_stream_end(sl) == SL_OK,
               "parser-only stream failed after geometry change");
+  FD_ZERO(&readfds);
+  FD_SET(master_fd, &readfds);
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+  ASSERT_TRUE(select(master_fd + 1, &readfds, NULL, NULL, &timeout) == 1,
+              "parser-only stream emitted no output");
+  output_len = read(master_fd, output, sizeof(output));
+  ASSERT_TRUE(output_len == 1 && output[0] == 'H',
+              "parser-only stream emitted an incomplete terminal command");
   sl_destroy(sl);
   close(input_pipe[0]);
   close(input_pipe[1]);
@@ -1668,7 +1683,7 @@ static ssize_t read_some_with_timeout_ms(int fd, char *buf, size_t cap,
 }
 
 static void test_redirected_live_output_validates_stream(void) {
-  static const char expected[] = "\xc3\xa4\033[31mX\xf0\x80\x80\xc2Z";
+  static const char expected[] = "\xc3\xa4\033[31mXZH";
   sl_config_t cfg;
   sl_t *sl;
   int output[2];
@@ -1699,6 +1714,12 @@ static void test_redirected_live_output_validates_stream(void) {
                   sl_output_stream_write(sl, "Z", 1) == SL_OK &&
                   sl_output_stream_end(sl) == SL_OK,
               "redirected stream accepted malformed UTF-8 or a C1 control");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[2", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "J", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "H", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "invalid ANSI sequence leaked into subsequent output");
   sl_destroy(sl);
   close(output[1]);
   amount = read(output[0], bytes, sizeof(bytes));
