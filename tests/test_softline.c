@@ -4223,7 +4223,7 @@ static void test_bounded_print_above_supports_narrow_surface(void) {
   int status;
   int rc;
 
-  TEST("bounded print_above confines output to a narrow surface");
+  TEST("narrow print_above clears stale cells and recovers after partial ANSI");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 20;
   ws.ws_row = 5;
@@ -4248,10 +4248,21 @@ static void test_bounded_print_above_supports_narrow_surface(void) {
       _exit(2);
     if (sl->set_bounds(sl, 5, 0, 10, 5) != SL_OK)
       _exit(3);
-    stream.text = "hello\n";
+    if (write(slave_fd, "\033[4;6HOLD-TEXT", 14) != 14)
+      _exit(4);
+    stream.text = "Hi\n";
     stream.sent = 0;
     rc = sl->print_above(sl, one_chunk_once_stream, &stream);
-    written = snprintf(msg, sizeof(msg), "%d", rc);
+    stream.text = "\033[31";
+    stream.sent = 0;
+    rc = rc == SL_OK && sl->print_above(sl, one_chunk_once_stream, &stream) ==
+                            SL_ERROR_INVALID
+             ? SL_OK
+             : SL_ERROR;
+    stream.text = "OK\n";
+    stream.sent = 0;
+    written = snprintf(msg, sizeof(msg), "%d:%d", rc,
+                       sl->print_above(sl, one_chunk_once_stream, &stream));
     if (written > 0)
       (void)write(result_pipe[1], msg, (size_t)written);
     sl->destroy(sl);
@@ -4290,11 +4301,14 @@ static void test_bounded_print_above_supports_narrow_surface(void) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
-  ASSERT_TRUE(strcmp(result, "0") == 0, "narrow print_above failed");
+  ASSERT_TRUE(strcmp(result, "0:0") == 0,
+              "finite print did not recover from incomplete ANSI");
   vt_init(&screen, 5, 20);
   vt_apply(&screen, terminal);
-  ASSERT_TRUE(vt_contains(&screen, "hello"),
-              "narrow print_above did not render content");
+  ASSERT_TRUE(vt_contains(&screen, "Hi") && vt_contains(&screen, "OK"),
+              "narrow print_above did not render both calls");
+  ASSERT_TRUE(!vt_contains(&screen, "HiD-TEXT"),
+              "stale terminal text remained under the first output row");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[1;4r"),
               "narrow print_above emitted full-row scroll region");
   PASS();

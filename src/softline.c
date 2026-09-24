@@ -3341,6 +3341,8 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
     sl_set_error(self, "output ends in an incomplete ANSI or UTF-8 sequence");
     result = SL_ERROR_INVALID;
   }
+  if (result != SL_OK)
+    sl_surface_reset_partial(impl->output_surface);
   if (impl->active_prompt && impl->rendered_rows > 0 &&
       sl_write_cursor_pos(impl->output_fd,
                           impl->rendered_top_row + impl->rendered_cursor_row,

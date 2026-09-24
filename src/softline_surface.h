@@ -30,6 +30,8 @@ int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,
                         size_t *accepted);
 /* A partial SGR or UTF-8 sequence keeps the session open until completed. */
 int sl_surface_complete(const sl_surface_t *surface);
+/* Drop a partial sequence after a finite print fails; keep completed style. */
+void sl_surface_reset_partial(sl_surface_t *surface);
 int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
                        int height);
 /* Called before and after a visible viewport row is scrolled away. */

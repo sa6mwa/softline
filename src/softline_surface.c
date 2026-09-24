@@ -571,6 +571,13 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
     surface->terminal_rows = (int)terminal.ws_row;
   surface->cell_width = cell_width;
   surface->cluster_width = cluster_width;
+  /* The cells start blank, so the row receiving the first byte must agree
+   * with them even when the terminal already contains older text. */
+  if (height > 0 &&
+      sl_surface_clear_rect(surface, x, y + height - 1, width, 1) != 0) {
+    sl_surface_destroy(surface);
+    return NULL;
+  }
   return surface;
 }
 
@@ -729,4 +736,13 @@ int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,
 
 int sl_surface_complete(const sl_surface_t *surface) {
   return surface && surface->parser == 0 && surface->utf8_need == 0;
+}
+
+void sl_surface_reset_partial(sl_surface_t *surface) {
+  if (!surface)
+    return;
+  surface->parser = 0;
+  surface->csi_len = 0;
+  surface->utf8_len = 0;
+  surface->utf8_need = 0;
 }
