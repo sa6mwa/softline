@@ -60,6 +60,52 @@ def test_queued_exit(root):
             proc.wait(timeout=5.0)
 
 
+def test_eof_with_queued_work(root):
+    master, slave = pty.openpty()
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    proc = subprocess.Popen(
+        ["lua", os.path.join(root, "examples", "chat.lua")],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        output = bytearray()
+        read_until(master, output, b"> ")
+        os.write(master, b"start\r")
+        read_until(master, output, b"[turn] start\r\n")
+        os.write(master, b"followup\r")
+        read_until(master, output, b"Q 1.")
+        eof_offset = len(output)
+        os.write(master, b"\x04")
+        if proc.wait(timeout=10.0) != 0:
+            raise AssertionError("Lua chat failed to exit on EOF")
+        while True:
+            ready, _, _ = select.select([master], [], [], 0.1)
+            if not ready:
+                break
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output.extend(chunk)
+        if b"[queued] followup" in output[eof_offset:]:
+            raise AssertionError("shutdown dispatched queued work")
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5.0)
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {sys.argv[0]} REPO_ROOT")
@@ -115,6 +161,7 @@ def main():
             os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=5.0)
     test_queued_exit(root)
+    test_eof_with_queued_work(root)
 
 
 if __name__ == "__main__":

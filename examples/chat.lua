@@ -225,7 +225,7 @@ end
 local ok, err = pcall(run)
 if sl then
   if worker then
-    pcall(finish_operation)
+    pcall(cancel_operation)
   end
   sl:close()
 end
