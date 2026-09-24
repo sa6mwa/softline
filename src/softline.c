@@ -707,7 +707,11 @@ static int sl_bounded_scroll_spans_full_width(sl_impl_t *impl) {
 
 static int sl_clear_box_tail(sl_impl_t *impl, int from_col) {
   int remaining;
+  int physical;
   remaining = sl_box_width(impl) - from_col;
+  physical = sl_terminal_columns(impl) - sl_box_left(impl) - from_col;
+  if (remaining > physical)
+    remaining = physical;
   if (remaining <= 0)
     return 0;
   return sl_write_spaces(impl->output_fd, remaining);
@@ -3137,6 +3141,9 @@ static int sl_render_clear_active(sl_t *self) {
     if (sl_hide_cursor(impl) != 0)
       return -1;
     for (i = 0; i < impl->rendered_rows; i++) {
+      if (impl->rendered_top_row + i < 0 ||
+          impl->rendered_top_row + i >= sl_terminal_rows(impl))
+        continue;
       if (sl_write_cursor_pos(impl->output_fd, impl->rendered_top_row + i,
                               sl_box_left(impl)) != 0 ||
           sl_clear_bounded_row(impl) != 0)

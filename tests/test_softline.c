@@ -4679,6 +4679,120 @@ static void test_bounded_redraw_clears_only_box_width(void) {
   PASS();
 }
 
+struct resized_prompt_clear_state {
+  int master_fd;
+  int slave_fd;
+  int fired;
+  int status;
+};
+
+static size_t read_live_pty_output(int fd, char *bytes, size_t capacity);
+
+static void resized_prompt_clear_idle(sl_t *sl, void *userdata) {
+  struct resized_prompt_clear_state *state;
+  struct winsize ws;
+  state = (struct resized_prompt_clear_state *)userdata;
+  if (state->fired)
+    return;
+  state->fired = 1;
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  state->status = ioctl(state->master_fd, TIOCSWINSZ, &ws) == 0 &&
+                          write(state->slave_fd, "\033[7;1HGUARD", 11) == 11 &&
+                          sl_set_bounds(sl, 5, 1, 0, 5) == SL_OK
+                      ? 0
+                      : -1;
+  if (state->status == 0 && write(state->slave_fd, "\033[7;1HEND1", 10) != 10)
+    state->status = -1;
+  ws.ws_col = 40;
+  if (state->status == 0 && (ioctl(state->master_fd, TIOCSWINSZ, &ws) != 0 ||
+                             sl_set_bounds(sl, 5, 1, 30, 5) != SL_OK))
+    state->status = -1;
+  ws.ws_col = 20;
+  if (state->status == 0 &&
+      (ioctl(state->master_fd, TIOCSWINSZ, &ws) != 0 ||
+       write(state->slave_fd, "\033[7;1HGUARD", 11) != 11 ||
+       sl_set_screen_width(sl, 0) != SL_OK))
+    state->status = -1;
+  if (sl_submit(sl) != SL_OK)
+    state->status = -1;
+}
+
+static void test_active_bounded_prompt_clear_clips_after_shrink(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct resized_prompt_clear_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+  const char *cursor;
+  const char *end;
+  const char *second;
+
+  TEST("active bounded prompt clear respects physical terminal shrink");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 5, 1, 30, 5) == SL_OK,
+              "fixed prompt setup failed");
+  memset(&state, 0, sizeof(state));
+  state.master_fd = master_fd;
+  state.slave_fd = slave_fd;
+  ASSERT_TRUE(sl_set_idle_callback(sl, resized_prompt_clear_idle, &state) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "p> ");
+  ASSERT_TRUE(line && state.fired && state.status == 0,
+              "active bounds and width updates failed");
+  sl_free_string(sl, line);
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "resize output missing");
+  cursor = strstr(output, "GUARD");
+  ASSERT_TRUE(cursor != NULL, "outside-cell seed missing");
+  end = strstr(cursor, "END1");
+  second = end ? strstr(end, "\033[7;1HGUARD") : NULL;
+  ASSERT_TRUE(end && second, "resize phases missing");
+  while (cursor < end) {
+    if (*cursor == ' ') {
+      size_t spaces;
+      spaces = strspn(cursor, " ");
+      ASSERT_TRUE(spaces <= 15, "old prompt clear exceeded physical width");
+      cursor += spaces;
+    } else {
+      cursor++;
+    }
+  }
+  cursor = second;
+  while (*cursor) {
+    if (*cursor == ' ') {
+      size_t spaces;
+      spaces = strspn(cursor, " ");
+      ASSERT_TRUE(spaces <= 15, "width setter clear exceeded physical width");
+      cursor += spaces;
+    } else {
+      cursor++;
+    }
+  }
+  vt_init(&screen, 8, 20);
+  vt_apply(&screen, second);
+  ASSERT_TRUE(vt_contains(&screen, "GUARD"),
+              "old prompt clear overwrote cells outside the box");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
 static void test_bounded_wrapped_shrink_clears_continuation_tail(void) {
   char terminal[8192];
   char result[256];
@@ -9836,6 +9950,11 @@ static void test_bounded_redraw_clears_only_box_width(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_active_bounded_prompt_clear_clips_after_shrink(void) {
+  TEST("active bounded prompt clear respects physical terminal shrink");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_bounded_wrapped_shrink_clears_continuation_tail(void) {
   TEST("bounded wrapped shrink clears continuation row tail");
   printf("SKIP\n");
@@ -10111,6 +10230,7 @@ int main(void) {
   test_config_zero_bounds_start_at_terminal_bottom();
   test_dynamic_bounds_origin_uses_remaining_terminal_area();
   test_bounded_redraw_clears_only_box_width();
+  test_active_bounded_prompt_clear_clips_after_shrink();
   test_bounded_wrapped_shrink_clears_continuation_tail();
   test_bounded_viewport_follows_cursor();
   test_print_above_pulls_stream_chunks();
