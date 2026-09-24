@@ -68,10 +68,10 @@ live scroll regions, status lines, and spinners are off; the theme is
   clears and disables history.
 - `sl:history_save(filename)` writes history with owner-only permissions.
 - `sl:history_load(filename)` loads history entries into the handle.
-- `sl:set_bounds(x, y, width, height)` enables bounded prompt rendering; zero
-  width or height uses dynamic terminal bounds.
-- `sl:set_screen_width(width)` sets normal prompt wrapping width; `0` returns
-  to terminal-width probing.
+- `sl:set_bounds(x, y, width, height)` sets prompt and output geometry; zero
+  width or height follows terminal bounds.
+- `sl:set_screen_width(width)` sets prompt and output wrapping width; `0`
+  returns to terminal-width probing.
 - `sl:set_live_scroll_region(enabled)` opts an unbounded prompt into
   bottom-pinned scroll-region output after it reaches the terminal bottom.
   It is disabled by default.
@@ -153,7 +153,8 @@ live scroll regions, status lines, and spinners are off; the theme is
   `nil` as `value` to clear it.
 - `sl:set_status_busy(busy)` selects the red busy `x` or spinner marker. With
   the `queued_turns` profile and queueing enabled, it is also the native turn
-  lifecycle signal: busy retains turns; idle releases one oldest queued turn.
+  lifecycle signal: busy retains turns; idle releases one oldest ordinary turn
+  only when automatic queue delivery is selected.
 - `sl:set_status_spinner(enabled)` enables the 500ms `/ - \\ |` busy spinner.
 - `sl:set_status_idle_marker(marker)` selects a one-byte printable ASCII green
   idle marker; it defaults to `+`. Pass `nil` to leave the reserved two-column
