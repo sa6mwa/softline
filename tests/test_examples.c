@@ -14,7 +14,12 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { MAX_ROWS = 40, MAX_COLS = 140, RAW_CAP = 262144 };
+enum {
+  MAX_ROWS = 40,
+  MAX_COLS = 140,
+  RAW_CAP = 262144,
+  CHAT_READY_TIMEOUT_MS = 15000
+};
 static const char *const observed[] = {
     "A short answer", "Next step",           "A longer answer", "> draft",
     "> queued",       "Operation cancelled", "Q 1. queued"};
@@ -450,7 +455,7 @@ static void test_chat_live_queue(const char *path) {
   pid = spawn(path, &fd, 80, 14);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 80, 14);
-  if (wait_raw(&t, "\033[?2004h", 4000) != 0) {
+  if (wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) != 0) {
     int status = 0;
     term_dump(&t);
     fprintf(stderr, "child status: waitpid=%ld status=%d\n",
@@ -527,7 +532,8 @@ static void test_chat_queued_exit(const char *path) {
   pid = spawn(path, &fd, 80, 14);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 80, 14);
-  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
   ASSERT_TRUE(write(fd, "first\r", 6) == 6, "first send failed");
   ASSERT_TRUE(wait_screen(&t, "! Thinking...", 3000) == 0,
               "response did not start");
@@ -551,7 +557,8 @@ test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
   pid = spawn(path, &fd, 120, 30);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 120, 30);
-  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
   ASSERT_TRUE(term_contains(&t, "Enter sends or queues"),
               "introductory transcript missing");
   output_mark = t.raw_len;
@@ -588,7 +595,8 @@ static void test_chat_spacing_across_turns(const char *path) {
               "failed to restore stream delay");
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 120, 40);
-  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
   ASSERT_TRUE(write(fd, "one\r", 4) == 4, "first send failed");
   ASSERT_TRUE(wait_screen(&t, "Try another prompt.", 3000) == 0,
               "first response missing");
@@ -626,7 +634,7 @@ static void test_chat_cancel(const char *path) {
   pid = spawn(path, &fd, 80, 14);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 80, 14);
-  if (wait_raw(&t, "\033[?2004h", 4000) != 0) {
+  if (wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) != 0) {
     int status = 0;
     term_dump(&t);
     fprintf(stderr, "child status: waitpid=%ld status=%d\n",
@@ -681,7 +689,8 @@ static void test_chat_resizes_while_streaming(const char *path) {
   pid = spawn(path, &fd, 80, 14);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 80, 14);
-  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
   ASSERT_TRUE(write(fd, "resize\r", 7) == 7, "send failed");
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "stream did not start");
@@ -714,7 +723,8 @@ static void test_chat_queued_steer(const char *path) {
   pid = spawn(path, &fd, 120, 30);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 120, 30);
-  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
   ASSERT_TRUE(write(fd, "work\r", 5) == 5, "initial send failed");
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "operation did not start");
@@ -766,11 +776,13 @@ static void test_chat_steer_after_paragraph(const char *path) {
   pid = spawn(path, &fd, 120, 30);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 120, 30);
-  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
   ASSERT_TRUE(write(fd, "work\r", 5) == 5, "initial send failed");
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "operation did not start");
-  usleep(400000);
+  ASSERT_TRUE(wait_screen(&t, "Here is italic", 6000) == 0,
+              "paragraph did not start before late steer");
   ASSERT_TRUE(write(fd, "late\033\r", 6) == 6, "late steer input failed");
   ASSERT_TRUE(wait_screen(&t, "S 1. late", 3000) == 0,
               "late steer was not queued");
