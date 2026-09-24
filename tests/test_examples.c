@@ -524,6 +524,25 @@ static void test_chat_live_queue(const char *path) {
   PASS();
 }
 
+static void test_chat_queued_exit(const char *path) {
+  int fd;
+  pid_t pid;
+  struct terminal t;
+  TEST("queued exit ends chat after the active response");
+  pid = spawn(path, &fd, 80, 14);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 80, 14);
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", 4000) == 0, "editor missing");
+  ASSERT_TRUE(write(fd, "first\r", 6) == 6, "first send failed");
+  ASSERT_TRUE(wait_screen(&t, "! Thinking...", 3000) == 0,
+              "response did not start");
+  ASSERT_TRUE(write(fd, "exit\r", 5) == 5, "queued exit failed");
+  ASSERT_TRUE(wait_screen(&t, "Q 1. exit", 3000) == 0,
+              "exit was not queued while busy");
+  ASSERT_TRUE(finish(pid, fd) == 0, "queued exit did not terminate chat");
+  PASS();
+}
+
 static void
 test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
   int fd;
@@ -882,6 +901,7 @@ int main(int argc, char **argv) {
   printf("softline example integration tests\n");
   test_simple(argv[1]);
   test_chat_live_queue(argv[2]);
+  test_chat_queued_exit(argv[2]);
   test_chat_preserves_transcript_and_prompt_spacing(argv[2]);
   test_chat_spacing_across_turns(argv[2]);
   test_chat_cancel(argv[2]);

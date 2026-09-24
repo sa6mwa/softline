@@ -22,6 +22,7 @@ end
 local interactive = is_interactive_terminal()
 local sl
 local busy = false
+local exit_requested = false
 local worker
 local worker_pid
 local watch_id
@@ -134,6 +135,11 @@ dispatch_next_queued = function()
   for index = 1, sl:queue_count() do
     if sl:queue_mode(index) == softline.QUEUE_MODE_QUEUED then
       local line = assert(sl:queue_take(index))
+      if line == "exit" then
+        exit_requested = true
+        assert(sl:cancel())
+        return
+      end
       assert(sl:history_add(line))
       print_message({ "[queued] ", line, "\n" })
       start_operation()
@@ -178,6 +184,9 @@ local function run()
 
   while true do
     local line, source_or_status = sl:next_prompt()
+    if exit_requested then
+      break
+    end
     if line then
       if line == "exit" then
         break

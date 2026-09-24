@@ -29,6 +29,37 @@ def read_until(fd, data, needle, start=0, timeout=10.0):
     raise AssertionError(f"missing {needle!r} in terminal output {bytes(data)!r}")
 
 
+def test_queued_exit(root):
+    master, slave = pty.openpty()
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    proc = subprocess.Popen(
+        ["lua", os.path.join(root, "examples", "chat.lua")],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        output = bytearray()
+        read_until(master, output, b"> ")
+        os.write(master, b"start\r")
+        read_until(master, output, b"[turn] start\r\n")
+        os.write(master, b"exit\r")
+        read_until(master, output, b"Q 1.")
+        if proc.wait(timeout=10.0) != 0:
+            raise AssertionError(f"queued exit failed: {bytes(output)!r}")
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5.0)
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {sys.argv[0]} REPO_ROOT")
@@ -83,6 +114,7 @@ def main():
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=5.0)
+    test_queued_exit(root)
 
 
 if __name__ == "__main__":

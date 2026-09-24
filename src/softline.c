@@ -3585,6 +3585,8 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
     content_top = sl_box_top(impl);
     content_bottom = prompt_top - 1;
     if (content_bottom >= content_top) {
+      if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
+        return sl_write_stream(self, callback, userdata);
       if (!sl_bounded_scroll_spans_full_width(impl) || impl->output_surface)
         return sl_print_above_surface(self, callback, userdata, prompt_top);
       if (impl->auto_scroll_pinned && impl->active_prompt &&
@@ -3834,6 +3836,8 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
   }
   result = sl_surface_write(impl->output_surface, bytes, length, &accepted);
   sl_output_track_tail(impl, bytes, accepted);
+  if (result == -2)
+    impl->output_ansi_state = 0;
   if (impl->active_prompt && impl->rendered_rows > 0 &&
       sl_write_cursor_pos(impl->output_fd,
                           impl->rendered_top_row + impl->rendered_cursor_row,

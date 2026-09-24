@@ -35,6 +35,7 @@ struct chat_state {
   sl_watch_id_t watch_id;
   pid_t worker_pid;
   int busy;
+  int exit_requested;
   unsigned int turn_index;
   size_t response_bytes;
   char previous_response_char;
@@ -351,6 +352,11 @@ static int dispatch_next_queued(struct chat_state *state) {
     line = NULL;
     if (sl_prompt_queue_take(state->sl, index, &line) != SL_OK)
       return -1;
+    if (strcmp(line, "exit") == 0) {
+      sl_free_string(state->sl, line);
+      state->exit_requested = 1;
+      return sl_cancel(state->sl) == SL_OK ? 0 : -1;
+    }
     if (sl_history_add(state->sl, line) != SL_OK ||
         render_user_prompt(state, line) != 0 || start_operation(state) != 0) {
       sl_free_string(state->sl, line);
@@ -478,6 +484,11 @@ int main(void) {
   for (;;) {
     source = SL_PROMPT_SOURCE_NONE;
     line = sl_next_prompt(state.sl, NULL, &source);
+    if (state.exit_requested) {
+      if (line)
+        sl_free_string(state.sl, line);
+      break;
+    }
     if (!line) {
       status = sl_last_readline_status(state.sl);
       if (status == SL_READLINE_CANCELLED ||

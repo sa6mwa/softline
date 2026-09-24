@@ -1355,6 +1355,36 @@ static void test_print_above_uses_lf_for_non_tty_output(void) {
   PASS();
 }
 
+static void test_bounded_print_above_with_redirected_output(void) {
+  int out_pipe[2];
+  sl_config_t cfg;
+  sl_t *sl;
+  char out[64];
+  ssize_t n;
+  struct one_chunk_once stream;
+
+  TEST("bounded print_above writes finite output with redirected descriptors");
+  ASSERT_TRUE(pipe(out_pipe) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = out_pipe[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL, "create failed");
+  ASSERT_TRUE(sl_set_bounds(sl, 1, 0, 20, 5) == SL_OK, "offset bounds failed");
+  stream.text = "alpha\nbeta\n";
+  stream.sent = 0;
+  ASSERT_TRUE(sl->print_above(sl, one_chunk_once_stream, &stream) == SL_OK,
+              "offset print_above failed");
+  sl->destroy(sl);
+  close(out_pipe[1]);
+  n = read(out_pipe[0], out, sizeof(out) - 1);
+  ASSERT_TRUE(n >= 0, "read output failed");
+  out[n] = '\0';
+  close(out_pipe[0]);
+  ASSERT_TRUE(strcmp(out, "alpha\nbeta\n") == 0,
+              "redirected finite output was changed or lost");
+  PASS();
+}
+
 static void test_bounded_print_above_without_space_is_error(void) {
   int out_pipe[2];
   sl_config_t cfg;
@@ -1875,48 +1905,56 @@ static void test_quote_spacing_after_partial_invalid_write(void) {
   int master_fd;
   int slave_fd;
   int abc_row;
+  int x_row;
   int quote_row;
   int row;
   char output[8192];
-  TEST("quote keeps blank-row separation after a partial invalid write");
+  TEST("quote keeps blank-row separation after rejected output bytes");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 30;
-  ws.ws_row = 8;
+  ws.ws_row = 12;
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
               "openpty failed");
   sl_config_init(&cfg);
   cfg.input_fd = slave_fd;
   cfg.output_fd = slave_fd;
   sl = sl_create_with_config(&cfg);
-  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 7) == SL_OK &&
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 11) == SL_OK &&
                   sl_output_stream_begin(sl) == SL_OK &&
                   sl_output_stream_write(sl, "\n\n", 2) == SL_OK &&
                   sl_output_stream_write(sl, "abc\0", 4) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\n\n", 2) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[2J", 4) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "X", 1) == SL_OK &&
                   sl_output_stream_write_quoted_prompt(sl, "hello") == SL_OK &&
                   sl_output_stream_end(sl) == SL_OK,
               "partial write recovery failed");
   (void)read_live_pty_output(master_fd, output, sizeof(output));
-  vt_init(&screen, 8, 30);
+  vt_init(&screen, 12, 30);
   vt_apply(&screen, output);
   abc_row = -1;
+  x_row = -1;
   quote_row = -1;
   for (row = 0; row < screen.rows; row++) {
     if (strstr(screen.cells[row], "abc"))
       abc_row = row;
+    if (strstr(screen.cells[row], "X"))
+      x_row = row;
     if (strstr(screen.cells[row], "> hello"))
       quote_row = row;
   }
-  if (abc_row < 0 || quote_row < abc_row + 2)
+  if (abc_row < 0 || x_row < abc_row + 2 || quote_row < x_row + 2)
     vt_dump(&screen);
-  ASSERT_TRUE(abc_row >= 0 && quote_row >= abc_row + 2 &&
-                  !strstr(screen.cells[abc_row], "> hello"),
+  ASSERT_TRUE(abc_row >= 0 && x_row >= abc_row + 2 && quote_row >= x_row + 2 &&
+                  !strstr(screen.cells[x_row], "> hello"),
               "quoted prompt joined partially accepted output");
   sl_destroy(sl);
   close(slave_fd);
   close(master_fd);
   PASS();
 #else
-  TEST("quote keeps blank-row separation after a partial invalid write");
+  TEST("quote keeps blank-row separation after rejected output bytes");
   PASS();
 #endif
 }
@@ -10658,6 +10696,7 @@ int main(void) {
   test_history_rejects_oversized_entries();
   test_stream_failures_are_reported();
   test_print_above_uses_lf_for_non_tty_output();
+  test_bounded_print_above_with_redirected_output();
   test_bounded_print_above_without_space_is_error();
   test_pty_enter_and_ctrl_j();
   test_pty_readline_uses_default_prompt();
