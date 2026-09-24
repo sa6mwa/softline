@@ -3535,7 +3535,10 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
       result = SL_ERROR_INVALID;
       break;
     }
-    status = sl_surface_write(impl->output_surface, bytes, length);
+    {
+      size_t accepted;
+      status = sl_surface_write(impl->output_surface, bytes, length, &accepted);
+    }
     if (status != 0) {
       sl_set_error(self, status == -2 ? "invalid output byte sequence"
                                       : "failed to render output bytes");
@@ -3720,6 +3723,7 @@ static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
 static int sl_output_stream_write_method(sl_t *self, const char *bytes,
                                          size_t length) {
   sl_impl_t *impl;
+  size_t accepted;
   int result;
   impl = sl_impl(self);
   if (!impl || !impl->output_stream_active || (!bytes && length > 0)) {
@@ -3787,7 +3791,8 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
     sl_set_error(self, "failed to hide cursor for live output");
     return SL_ERROR_IO;
   }
-  result = sl_surface_write(impl->output_surface, bytes, length);
+  result = sl_surface_write(impl->output_surface, bytes, length, &accepted);
+  sl_output_track_tail(impl, bytes, accepted);
   if (impl->active_prompt && impl->rendered_rows > 0 &&
       sl_write_cursor_pos(impl->output_fd,
                           impl->rendered_top_row + impl->rendered_cursor_row,
@@ -3803,7 +3808,6 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
             : "failed to render live output bytes");
     return result == -2 ? SL_ERROR_INVALID : SL_ERROR_IO;
   }
-  sl_output_track_tail(impl, bytes, length);
   return SL_OK;
 }
 
@@ -3886,6 +3890,8 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
   sl_row_t body;
   size_t len;
   size_t pos;
+  size_t word_end;
+  int remaining_word_width;
   int width;
   int indent;
   int col;
@@ -3938,6 +3944,8 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
     goto allocation_failed;
   len = strlen(text);
   col = indent;
+  word_end = 0;
+  remaining_word_width = 0;
   for (pos = 0; pos < len;) {
     size_t n;
     int cells;
@@ -3969,16 +3977,19 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
         continue;
       }
     }
-    if (sl_word_byte(text[pos]) && col > indent) {
+    if (sl_word_byte(text[pos]) && pos >= word_end) {
       size_t word_len = sl_next_word_len(text, len, pos);
-      int word_width = sl_word_width(text, len, pos, word_len);
-      if (word_width <= width - indent && col + word_width > width) {
-        result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
-                                             text_style, &body);
-        if (result != SL_OK)
-          goto failed;
-        col = indent;
-      }
+      word_end = pos + word_len;
+      remaining_word_width = sl_word_width(text, len, pos, word_len);
+    }
+    if (sl_word_byte(text[pos]) && col > indent &&
+        remaining_word_width <= width - indent &&
+        col + remaining_word_width > width) {
+      result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
+                                           text_style, &body);
+      if (result != SL_OK)
+        goto failed;
+      col = indent;
     }
     n = sl_utf8_cluster_len_width(text, len, pos, &cells);
     if (n == 0)
@@ -4009,6 +4020,8 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
         goto allocation_failed;
       col += cells;
     }
+    if (sl_word_byte(text[pos]))
+      remaining_word_width -= cells;
     pos += n;
   }
   result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,

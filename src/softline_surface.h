@@ -22,8 +22,10 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
 void sl_surface_geometry(const sl_surface_t *surface, int *x, int *y,
                          int *width, int *height, int *terminal_rows);
 /* Returns 0 on success, -1 for output/allocation failure, -2 for invalid
- * input bytes or a viewport too small for the next glyph. */
-int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length);
+ * input bytes or a viewport too small for the next glyph. accepted reports
+ * the prefix consumed before a failure, including any partial parser bytes. */
+int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length,
+                     size_t *accepted);
 /* Validate a span without rendering. On failure, accepted is the valid prefix.
  */
 int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,

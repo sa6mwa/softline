@@ -1519,6 +1519,8 @@ static const char *vt_csi(struct vt_screen *screen, const char *p) {
     if (*p >= '0' && *p <= '9')
       p = vt_parse_number(p, &b);
   }
+  while (*p && (*p < '@' || *p > '~'))
+    p++;
   switch (*p) {
   case 'A':
     screen->row -= have_a && a > 0 ? a : 1;
@@ -1839,6 +1841,61 @@ static void test_quoted_prompt_terminal_style(void) {
                   strstr(bytes, "\033[0;3;96m") != NULL &&
                   strstr(bytes, "\033[0;3;97m") != NULL,
               "theme or custom quote colour and italic treatment missing");
+  PASS();
+#endif
+}
+
+static void test_quote_spacing_after_partial_invalid_write(void) {
+#if SL_TEST_PTY
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  int abc_row;
+  int quote_row;
+  int row;
+  char output[8192];
+  TEST("quote keeps blank-row separation after a partial invalid write");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 7) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\n\n", 2) == SL_OK &&
+                  sl_output_stream_write(sl, "abc\0", 4) == SL_ERROR_INVALID &&
+                  sl_output_stream_write_quoted_prompt(sl, "hello") == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "partial write recovery failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, output);
+  abc_row = -1;
+  quote_row = -1;
+  for (row = 0; row < screen.rows; row++) {
+    if (strstr(screen.cells[row], "abc"))
+      abc_row = row;
+    if (strstr(screen.cells[row], "> hello"))
+      quote_row = row;
+  }
+  if (abc_row < 0 || quote_row < abc_row + 2)
+    vt_dump(&screen);
+  ASSERT_TRUE(abc_row >= 0 && quote_row >= abc_row + 2 &&
+                  !strstr(screen.cells[abc_row], "> hello"),
+              "quoted prompt joined partially accepted output");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#else
+  TEST("quote keeps blank-row separation after a partial invalid write");
   PASS();
 #endif
 }
@@ -10664,6 +10721,7 @@ int main(void) {
   test_redirected_live_output_validates_stream();
   test_quoted_prompt_output_api();
   test_quoted_prompt_terminal_style();
+  test_quote_spacing_after_partial_invalid_write();
   test_live_output_stream_across_narrow_bounds();
   test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();

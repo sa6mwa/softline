@@ -691,8 +691,12 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   return after_native_scroll ? 0 : sl_surface_repaint(surface);
 }
 
-int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length) {
+int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length,
+                     size_t *accepted) {
   size_t i;
+  if (!accepted)
+    return -2;
+  *accepted = 0;
   if (!surface || surface->validate_only || (!bytes && length > 0))
     return -2;
   if (length == 0)
@@ -705,12 +709,14 @@ int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length) {
       int status;
       status = sl_surface_byte(surface, (unsigned char)bytes[i]);
       if (status != 0) {
+        *accepted = i;
         surface->draw_valid = 0;
         (void)sl_surface_write_all(surface->fd, "\033[0m", 4);
         return status;
       }
     }
   }
+  *accepted = length;
   surface->draw_valid = 0;
   return sl_surface_write_all(surface->fd, "\033[0m", 4);
 }
