@@ -495,13 +495,8 @@ static void test_chat_live_queue(const char *path) {
               "first queued turn not dispatched");
   ASSERT_TRUE(wait_screen(&t, "A longer answer", 6000) == 0,
               "queued turn did not start next operation");
-  {
-    struct timespec history_deadline = deadline_after(6000);
-    while (!term_history_contains(&t, "> first") &&
-           before_deadline(&history_deadline))
-      if (term_read(&t) < 0)
-        break;
-  }
+  ASSERT_TRUE(wait_screen(&t, "+ streaming demo", 10000) == 0,
+              "queued turn did not finish");
   if (!(t.scrolls > 0 && term_history_contains(&t, "> first"))) {
     unsigned int hi;
     fprintf(stderr, "native scrolls: %u\n", t.scrolls);
@@ -597,12 +592,18 @@ static void test_chat_spacing_across_turns(const char *path) {
   ASSERT_TRUE(write(fd, "one\r", 4) == 4, "first send failed");
   ASSERT_TRUE(wait_screen(&t, "Try another prompt.", 3000) == 0,
               "first response missing");
+  ASSERT_TRUE(wait_screen(&t, "+ streaming demo", 10000) == 0,
+              "first response did not finish");
   ASSERT_TRUE(write(fd, "two\r", 4) == 4, "second send failed");
   ASSERT_TRUE(wait_screen(&t, "The stream is still live.", 3000) == 0,
               "second response missing");
+  ASSERT_TRUE(wait_screen(&t, "+ streaming demo", 10000) == 0,
+              "second response did not finish");
   ASSERT_TRUE(write(fd, "three\r", 6) == 6, "third send failed");
   ASSERT_TRUE(wait_screen(&t, "A single line can be", 3000) == 0,
               "third response missing");
+  ASSERT_TRUE(wait_screen(&t, "+ streaming demo", 10000) == 0,
+              "third response did not finish");
   ASSERT_TRUE(term_row_of(&t, "# A short answer") ==
                       term_row_of(&t, "> one") + 2 &&
                   term_row_of(&t, "> two") ==
