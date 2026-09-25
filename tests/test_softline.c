@@ -1993,6 +1993,105 @@ static void test_quoted_prompt_resets_inherited_style(void) {
 #endif
 }
 
+#if SL_TEST_PTY
+static int quoted_prompt_has_one_empty_row_after_session(const char *answer) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+  int answer_row;
+  int quote_row;
+  int row;
+
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 12;
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0)
+    return 0;
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+      sl_output_stream_write(sl, answer, strlen(answer)) != SL_OK ||
+      sl_output_stream_end(sl) != SL_OK ||
+      sl_output_stream_begin(sl) != SL_OK ||
+      sl_output_stream_write_quoted_prompt(sl, "question") != SL_OK ||
+      sl_output_stream_end(sl) != SL_OK) {
+    sl_destroy(sl);
+    close(slave_fd);
+    close(master_fd);
+    return 0;
+  }
+  sl_destroy(sl);
+  close(slave_fd);
+  if (read_live_pty_output(master_fd, output, sizeof(output)) == 0) {
+    close(master_fd);
+    return 0;
+  }
+  close(master_fd);
+  vt_init(&screen, 12, 30);
+  vt_apply(&screen, output);
+  answer_row = -1;
+  quote_row = -1;
+  for (row = 0; row < screen.rows; row++) {
+    if (strstr(screen.cells[row], "answer"))
+      answer_row = row;
+    if (strstr(screen.cells[row], "> question"))
+      quote_row = row;
+  }
+  return answer_row >= 0 && quote_row == answer_row + 2 &&
+         screen.cells[answer_row + 1][0] == ' ';
+}
+#endif
+
+static void test_quoted_prompt_spacing_across_sessions(void) {
+  TEST("quoted prompts keep one empty row across output sessions");
+#if SL_TEST_PTY
+  ASSERT_TRUE(quoted_prompt_has_one_empty_row_after_session("answer\n\n") &&
+                  quoted_prompt_has_one_empty_row_after_session("answer"),
+              "retained output inserted the wrong number of quote separators");
+  PASS();
+#else
+  printf("SKIP\n");
+  tests_passed++;
+#endif
+}
+
+static void test_redirected_quoted_prompt_spacing_across_sessions(void) {
+  static const char expected[] = "answer\n\n> question\n\n";
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char bytes[64];
+  ssize_t amount;
+
+  TEST("redirected quoted prompts preserve spacing across sessions");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "answer\n\n", 8) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "question") ==
+                      SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "redirected output sessions failed");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "redirected quote added an extra empty row");
+  PASS();
+}
+
 static void test_quote_spacing_after_partial_invalid_write(void) {
 #if SL_TEST_PTY
   struct winsize ws;
@@ -11341,6 +11440,8 @@ int main(void) {
   test_quoted_prompt_chunk_boundary();
   test_quoted_prompt_terminal_style();
   test_quoted_prompt_resets_inherited_style();
+  test_quoted_prompt_spacing_across_sessions();
+  test_redirected_quoted_prompt_spacing_across_sessions();
   test_quote_spacing_after_partial_invalid_write();
   test_live_output_stream_across_narrow_bounds();
   test_live_output_preserves_viewport_between_sessions();

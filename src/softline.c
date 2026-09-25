@@ -3700,7 +3700,6 @@ static int sl_output_stream_begin_method(sl_t *self) {
   }
   sl_release_auto_scroll_region(impl);
   impl->output_stream_active = 1;
-  impl->output_trailing_newlines = 0;
   impl->output_ansi_state = 0;
   impl->output_pending_len = 0;
   if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
@@ -4028,6 +4027,7 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
   size_t pos;
   size_t word_end;
   int remaining_word_width;
+  int preceding_breaks;
   int width;
   int indent;
   int col;
@@ -4072,9 +4072,16 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
   }
   memset(&output, 0, sizeof(output));
   output.owner = self;
-  if (impl->output_trailing_newlines < 2) {
-    result = sl_quote_output_append(
-        &output, "\n\n", (size_t)(2 - impl->output_trailing_newlines));
+  preceding_breaks = impl->output_trailing_newlines;
+  if (isatty(impl->input_fd) && isatty(impl->output_fd) &&
+      impl->output_surface) {
+    preceding_breaks = sl_surface_trailing_blank_rows(impl->output_surface, 2);
+    if (sl_surface_boundary_will_scroll(impl->output_surface))
+      preceding_breaks++;
+  }
+  if (preceding_breaks < 2) {
+    result =
+        sl_quote_output_append(&output, "\n\n", (size_t)(2 - preceding_breaks));
     if (result != SL_OK)
       return result;
   }

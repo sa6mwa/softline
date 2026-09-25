@@ -38,6 +38,10 @@ void sl_surface_reset_partial(sl_surface_t *surface);
  * visible cells until it writes. Reset parser/style, then advance past a
  * nonempty final row on that producer's first write. */
 void sl_surface_mark_boundary(sl_surface_t *surface);
+/* Visible empty rows at the viewport bottom, capped at limit. */
+int sl_surface_trailing_blank_rows(const sl_surface_t *surface, int limit);
+/* Whether the pending producer boundary will advance an occupied last row. */
+int sl_surface_boundary_will_scroll(const sl_surface_t *surface);
 int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
                        int height);
 /* Called before and after a visible viewport row is scrolled away. */

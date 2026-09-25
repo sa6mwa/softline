@@ -240,21 +240,43 @@ static int sl_surface_scroll(sl_surface_t *surface) {
              : 0;
 }
 
-static int sl_surface_advance_boundary(sl_surface_t *surface) {
+static int sl_surface_row_occupied(const sl_surface_t *surface, int row) {
   int col;
-  int occupied;
-  size_t bottom;
+  size_t offset;
+  if (!surface || surface->validate_only || row < 0 || row >= surface->height)
+    return 0;
+  offset = (size_t)row * (size_t)surface->width;
+  for (col = 0; col < surface->width; col++)
+    if (surface->cells[offset + (size_t)col].len != 0)
+      return 1;
+  return 0;
+}
+
+int sl_surface_trailing_blank_rows(const sl_surface_t *surface, int limit) {
+  int count;
+  int row;
+  if (!surface || surface->validate_only || limit <= 0)
+    return 0;
+  count = 0;
+  for (row = surface->height - 1; row >= 0 && count < limit; row--) {
+    if (sl_surface_row_occupied(surface, row))
+      break;
+    count++;
+  }
+  return count;
+}
+
+int sl_surface_boundary_will_scroll(const sl_surface_t *surface) {
+  return surface && surface->boundary_pending &&
+         sl_surface_row_occupied(surface, surface->height - 1);
+}
+
+static int sl_surface_advance_boundary(sl_surface_t *surface) {
   if (!surface->boundary_pending)
     return 0;
-  occupied = 0;
-  bottom = (size_t)(surface->height - 1) * (size_t)surface->width;
-  for (col = 0; col < surface->width; col++)
-    if (surface->cells[bottom + (size_t)col].len != 0) {
-      occupied = 1;
-      break;
-    }
   surface->col = 0;
-  if (occupied && sl_surface_scroll(surface) != 0)
+  if (sl_surface_boundary_will_scroll(surface) &&
+      sl_surface_scroll(surface) != 0)
     return -1;
   surface->boundary_pending = 0;
   return 0;
