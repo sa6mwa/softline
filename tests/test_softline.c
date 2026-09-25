@@ -9795,6 +9795,98 @@ test_finite_viewport_output_then_readline_preserves_transcript(void) {
   PASS();
 }
 
+struct multiline_stream_end_state {
+  int master_fd;
+  int attempted;
+  int failed;
+  unsigned int history_before_end;
+  unsigned int history_after_end;
+  unsigned int history_after_resize;
+  struct vt_screen screen;
+};
+
+static void
+multiline_stream_end_snapshot(struct multiline_stream_end_state *state) {
+  char bytes[16384];
+  if (read_live_pty_output(state->master_fd, bytes, sizeof(bytes)) == 0) {
+    state->failed = 1;
+    return;
+  }
+  vt_apply(&state->screen, bytes);
+}
+
+static void idle_end_multiline_stream_once(sl_t *sl, void *userdata) {
+  struct multiline_stream_end_state *state;
+  state = (struct multiline_stream_end_state *)userdata;
+  if (state->attempted)
+    return;
+  state->attempted = 1;
+  if (sl_set_buffer(sl, "one\ntwo") != SL_OK ||
+      sl_output_stream_write(sl, "A\nB\nC\nD\nE\nF", 11) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  multiline_stream_end_snapshot(state);
+  state->history_before_end = state->screen.history_count;
+  if (sl_output_stream_end(sl) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  multiline_stream_end_snapshot(state);
+  state->history_after_end = state->screen.history_count;
+  if (sl_output_stream_begin(sl) != SL_OK ||
+      sl_set_screen_width(sl, 19) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  multiline_stream_end_snapshot(state);
+  state->history_after_resize = state->screen.history_count;
+finish:
+  (void)sl_submit(sl);
+}
+
+static void test_multiline_stream_end_preserves_transcript_position(void) {
+  struct winsize ws;
+  struct multiline_stream_end_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char *line;
+
+  TEST("multiline editor stream teardown and resize keep transcript position");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  memset(&state, 0, sizeof(state));
+  state.master_fd = master_fd;
+  vt_init(&state.screen, 8, 20);
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_idle_callback(sl, idle_end_multiline_stream_once,
+                                       &state) == SL_OK,
+              "multiline stream setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line && strcmp(line, "one\ntwo") == 0 && state.attempted &&
+                  !state.failed &&
+                  state.history_after_end == state.history_before_end &&
+                  state.history_after_resize == state.history_before_end &&
+                  !vt_history_contains(&state.screen, "A") &&
+                  vt_contains(&state.screen, "A") &&
+                  vt_contains(&state.screen, "F"),
+              "stream teardown scrolled or duplicated retained transcript");
+  sl_free_string(sl, line);
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
 static void test_live_output_preserves_reverse_search_prompt(void) {
   struct winsize ws;
   struct vt_screen screen;
@@ -10662,6 +10754,11 @@ test_finite_viewport_output_then_readline_preserves_transcript(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_multiline_stream_end_preserves_transcript_position(void) {
+  TEST("multiline editor stream teardown and resize keep transcript position");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_stream_chunk_protocol(void) {
   TEST("live output preserves split ANSI and UTF-8 and validates end");
   printf("SKIP\n");
@@ -11250,6 +11347,7 @@ int main(void) {
   test_unbounded_finite_output_between_sessions();
   test_unbounded_stream_then_readline_preserves_transcript();
   test_finite_viewport_output_then_readline_preserves_transcript();
+  test_multiline_stream_end_preserves_transcript_position();
   test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();
   test_live_output_disables_native_scroll_after_widening();

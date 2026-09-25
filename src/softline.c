@@ -4177,6 +4177,7 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
 
 static int sl_output_stream_end_method(sl_t *self) {
   sl_impl_t *impl;
+  int prompt_origin;
   impl = sl_impl(self);
   if (!impl || !impl->output_stream_active) {
     sl_set_error(self, "no live output stream is open");
@@ -4187,6 +4188,9 @@ static int sl_output_stream_end_method(sl_t *self) {
                  "live output ends in an incomplete ANSI or UTF-8 sequence");
     return SL_ERROR_INVALID;
   }
+  prompt_origin = impl->active_prompt && impl->rendered_rows > 0
+                      ? impl->rendered_top_row
+                      : -1;
   if (impl->active_prompt && impl->rendered_rows > 0 &&
       sl_render_clear_active(self) != 0) {
     sl_set_error(self, "failed to clear prompt when ending live output");
@@ -4199,6 +4203,13 @@ static int sl_output_stream_end_method(sl_t *self) {
     sl_surface_mark_boundary(impl->output_surface);
   impl->output_stream_active = 0;
   sl_output_surface_update_scroll_hook(self);
+  if (impl->active_prompt && prompt_origin >= 0 && !sl_bounded_mode(impl) &&
+      sl_write_cursor_pos(impl->output_fd, prompt_origin, sl_box_left(impl)) !=
+          0) {
+    sl_set_error(self, "failed to position cursor before restoring prompt");
+    (void)sl_show_cursor(impl);
+    return SL_ERROR_IO;
+  }
   if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0) {
     (void)sl_show_cursor(impl);
     return SL_ERROR_IO;
