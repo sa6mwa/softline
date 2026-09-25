@@ -10163,6 +10163,70 @@ static void test_live_output_after_readline_submit_clears_editor(void) {
   PASS();
 }
 
+static void test_retained_stream_tracks_readline_scrollback(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct live_submit_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[32768];
+  char *line;
+  int turn;
+
+  TEST("retained stream follows scrollback through ordinary readline turns");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FIRST", 5) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "initial output stream failed");
+  vt_init(&screen, 8, 20);
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "initial transcript output missing");
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST"), "initial transcript row missing");
+  memset(&state, 0, sizeof(state));
+  ASSERT_TRUE(sl_set_idle_callback(sl, live_submit_draft_idle, &state) == SL_OK,
+              "idle callback setup failed");
+  for (turn = 0; turn < 8; turn++) {
+    state.fired = 0;
+    line = sl_readline(sl, "> ");
+    ASSERT_TRUE(line && strcmp(line, "draft") == 0 && state.status == SL_OK,
+                "ordinary readline submission failed");
+    sl_free_string(sl, line);
+    ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+                "readline output missing");
+    vt_apply(&screen, output);
+  }
+  ASSERT_TRUE(vt_history_contains(&screen, "FIRST") &&
+                  !vt_contains(&screen, "FIRST"),
+              "old transcript did not move into scrollback");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "SECOND", 6) == SL_OK &&
+                  sl_set_screen_width(sl, 19) == SL_OK,
+              "restarted stream or resize failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "resized stream output missing");
+  vt_apply(&screen, output);
+  ASSERT_TRUE(
+      vt_history_contains(&screen, "FIRST") && !vt_contains(&screen, "FIRST") &&
+          vt_contains(&screen, "SECOND") && vt_contains(&screen, "draft"),
+      "resize replayed scrollback or erased a newer submitted turn");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
 struct native_scroll_probe {
   int master_fd;
   int output_fd;
@@ -10804,6 +10868,11 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
 }
 static void test_live_output_after_readline_submit_clears_editor(void) {
   TEST("live output after readline submission excludes old editor cells");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_retained_stream_tracks_readline_scrollback(void) {
+  TEST("retained stream follows scrollback through ordinary readline turns");
   printf("SKIP\n");
   tests_passed++;
 }
@@ -11451,6 +11520,7 @@ int main(void) {
   test_multiline_stream_end_preserves_transcript_position();
   test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();
+  test_retained_stream_tracks_readline_scrollback();
   test_live_output_disables_native_scroll_after_widening();
   test_live_output_native_scroll_resets_prompt_style();
   test_live_output_short_full_width_box_uses_viewport();

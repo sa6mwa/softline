@@ -57,7 +57,9 @@ local function consume_steers()
   local index = 1
   while index <= sl:queue_count() do
     if sl:queue_mode(index) == softline.QUEUE_MODE_STEER then
-      consume_active_operation_input(assert(sl:queue_take(index)))
+      local line = assert(sl:queue_take(index))
+      assert(sl:history_add(line))
+      consume_active_operation_input(line)
     else
       index = index + 1
     end

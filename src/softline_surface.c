@@ -197,11 +197,57 @@ static int sl_surface_clear_rect(sl_surface_t *surface, int x, int y, int width,
   return 0;
 }
 
-static int sl_surface_repaint(sl_surface_t *surface) {
+/* A viewport created after ordinary readline does not own earlier transcript
+ * rows. Clear only glyphs this surface drew when resizing it. */
+static int sl_surface_clear_occupied(sl_surface_t *surface, int width,
+                                     int height) {
+  static const char blanks[] =
+      "                                                                ";
+  int row;
+  if (sl_surface_write_all(surface->fd, "\033[0m", 4) != 0)
+    return -1;
+  for (row = 0; row < height; row++) {
+    int col = 0;
+    while (col < width) {
+      int start;
+      int remaining;
+      const sl_surface_cell_t *cell;
+      cell =
+          &surface->cells[(size_t)row * (size_t)surface->width + (size_t)col];
+      if (cell->len == 0) {
+        col++;
+        continue;
+      }
+      start = col;
+      do {
+        col += cell->width > 0 ? cell->width : 1;
+        if (col >= width)
+          break;
+        cell =
+            &surface->cells[(size_t)row * (size_t)surface->width + (size_t)col];
+      } while (cell->len > 0);
+      if (col > width)
+        col = width;
+      if (sl_surface_at(surface, row, start) != 0)
+        return -1;
+      remaining = col - start;
+      while (remaining > 0) {
+        size_t amount = remaining > 64 ? 64u : (size_t)remaining;
+        if (sl_surface_write_all(surface->fd, blanks, amount) != 0)
+          return -1;
+        remaining -= (int)amount;
+      }
+    }
+  }
+  surface->draw_valid = 0;
+  return 0;
+}
+
+static int sl_surface_repaint(sl_surface_t *surface, int clear) {
   int row;
   int col;
-  if (sl_surface_clear_rect(surface, surface->x, surface->y, surface->width,
-                            surface->height) != 0)
+  if (clear && sl_surface_clear_rect(surface, surface->x, surface->y,
+                                     surface->width, surface->height) != 0)
     return -1;
   for (row = 0; row < surface->height; row++) {
     for (col = 0; col < surface->width; col++) {
@@ -233,7 +279,7 @@ static int sl_surface_scroll(sl_surface_t *surface) {
   surface->draw_valid = 0;
   /* The main terminal has already shifted these same cells. Repainting its
    * viewport would clear and redraw the transcript on every newline. */
-  if (!surface->scroll_hook && sl_surface_repaint(surface) != 0)
+  if (!surface->scroll_hook && sl_surface_repaint(surface, 1) != 0)
     return -1;
   return surface->scroll_hook
              ? surface->scroll_hook(surface->scroll_userdata, 1)
@@ -716,8 +762,7 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   else if (clear_height > (int)terminal.ws_row - surface->y)
     clear_height = (int)terminal.ws_row - surface->y;
   if (!after_native_scroll && clear_width > 0 && clear_height > 0 &&
-      sl_surface_clear_rect(surface, surface->x, surface->y, clear_width,
-                            clear_height) != 0) {
+      sl_surface_clear_occupied(surface, clear_width, clear_height) != 0) {
     free(new_cells);
     return -1;
   }
@@ -731,7 +776,7 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   if (surface->col > width)
     surface->col = width;
   surface->draw_valid = 0;
-  return after_native_scroll ? 0 : sl_surface_repaint(surface);
+  return after_native_scroll ? 0 : sl_surface_repaint(surface, 0);
 }
 
 int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length,

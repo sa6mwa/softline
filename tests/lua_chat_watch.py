@@ -152,6 +152,12 @@ def main():
         os.write(master, b"\x1b")
         read_until(master, output, b"[operation] cancelled\r\n", escape_offset)
         read_until(master, output, b"\x1b[?2004h", escape_offset)
+        history_offset = len(output)
+        os.write(master, b"\x1b[A")
+        read_until(master, output, b"\x1b[0msteer", history_offset)
+        if b"\x1b[0mstart" in output[history_offset:]:
+            raise AssertionError("Up recalled an older turn instead of the delivered steer")
+        os.write(master, b"\x15")
         os.write(master, b"exit\r")
         if proc.wait(timeout=10.0) != 0:
             raise AssertionError("Lua watch chat exited unsuccessfully")

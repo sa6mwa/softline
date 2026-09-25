@@ -3321,6 +3321,10 @@ static int sl_render_finish(sl_t *self, int queue_dispatch) {
     sl_set_error(self, "failed to write final newline");
     return -1;
   }
+  /* Ordinary readline advances the terminal outside the output viewport.
+   * Its retained cells can no longer be safely replayed by a later stream. */
+  sl_surface_destroy(impl->output_surface);
+  impl->output_surface = NULL;
   sl_render_store_clear(impl);
   return 0;
 }
