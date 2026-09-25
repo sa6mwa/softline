@@ -2983,6 +2983,7 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
   int result_pipe[2];
   pid_t pid;
   size_t terminal_len;
+  size_t output_mark;
   ssize_t n;
   int status;
   int tries;
@@ -3081,10 +3082,11 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
   }
   if (!contains_bytes(terminal, idle_style))
     return -1;
+  output_mark = terminal_len;
   if (write(master_fd, "\033p", 2) != 2)
     return -1;
   tries = 0;
-  while (!contains_bytes(terminal, busy_style) && tries < 20) {
+  while (!contains_bytes(terminal + output_mark, busy_style) && tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n < 0)
@@ -3097,12 +3099,13 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     }
     tries++;
   }
-  if (!contains_bytes(terminal, busy_style))
+  if (!contains_bytes(terminal + output_mark, busy_style))
     return -1;
+  output_mark = terminal_len;
   if (write(master_fd, "\033m", 2) != 2)
     return -1;
   tries = 0;
-  while (!contains_bytes(terminal, element_style) && tries < 20) {
+  while (!contains_bytes(terminal + output_mark, element_style) && tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
     if (n < 0)
@@ -3115,39 +3118,16 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     }
     tries++;
   }
-  if (!contains_bytes(terminal, element_style))
+  if (!contains_bytes(terminal + output_mark, element_style))
     return -1;
+  output_mark = terminal_len;
   if (write(master_fd, "\033n", 2) != 2)
     return -1;
   tries = 0;
-  while (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
-                                       ? "\033[32m- "
-                                       : "\033[38;2;57;255;20m- ") &&
-         tries < 20) {
-    n = read_some_with_timeout(master_fd, terminal + terminal_len,
-                               terminal_cap - 1 - terminal_len);
-    if (n < 0)
-      return -1;
-    if (n > 0) {
-      terminal_len += (size_t)n;
-      terminal[terminal_len] = '\0';
-      if (terminal_len >= terminal_cap - 1)
-        return -1;
-    }
-    tries++;
-  }
-  if (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
-                                    ? "\033[32m- "
-                                    : "\033[38;2;57;255;20m- "))
-    return -1;
-  if (write(master_fd, "\033z", 2) != 2)
-    return -1;
-  tries = 0;
   while (
-      !contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
-                                    ? "\033[35m? \033[0m\033[3;2;90mChanged"
-                                    : "\033[38;2;185;103;255m? "
-                                      "\033[0m\033[3;38;2;72;76;105mChanged") &&
+      !contains_bytes(terminal + output_mark, theme == SL_PROMPT_THEME_DEFAULT
+                                                  ? "\033[32m- "
+                                                  : "\033[38;2;57;255;20m- ") &&
       tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
@@ -3161,18 +3141,19 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     }
     tries++;
   }
-  if (!contains_bytes(
-          terminal,
-          theme == SL_PROMPT_THEME_DEFAULT
-              ? "\033[35m? \033[0m\033[3;2;90mChanged"
-              : "\033[38;2;185;103;255m? \033[0m\033[3;38;2;72;76;105mChanged"))
+  if (!contains_bytes(terminal + output_mark, theme == SL_PROMPT_THEME_DEFAULT
+                                                  ? "\033[32m- "
+                                                  : "\033[38;2;57;255;20m- "))
     return -1;
-  if (write(master_fd, "\033y", 2) != 2)
+  output_mark = terminal_len;
+  if (write(master_fd, "\033z", 2) != 2)
     return -1;
   tries = 0;
-  while (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
-                                       ? "\033[3;2;90mBare"
-                                       : "\033[3;38;2;72;76;105mBare") &&
+  while (!contains_bytes(terminal + output_mark,
+                         theme == SL_PROMPT_THEME_DEFAULT
+                             ? "\033[35m? \033[0m\033[3;2;90mChanged"
+                             : "\033[38;2;185;103;255m? "
+                               "\033[0m\033[3;38;2;72;76;105mChanged") &&
          tries < 20) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                terminal_cap - 1 - terminal_len);
@@ -3186,9 +3167,37 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     }
     tries++;
   }
-  if (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
-                                    ? "\033[3;2;90mBare"
-                                    : "\033[3;38;2;72;76;105mBare"))
+  if (!contains_bytes(
+          terminal + output_mark,
+          theme == SL_PROMPT_THEME_DEFAULT
+              ? "\033[35m? \033[0m\033[3;2;90mChanged"
+              : "\033[38;2;185;103;255m? \033[0m\033[3;38;2;72;76;105mChanged"))
+    return -1;
+  output_mark = terminal_len;
+  if (write(master_fd, "\033y", 2) != 2)
+    return -1;
+  tries = 0;
+  while (!contains_bytes(terminal + output_mark,
+                         theme == SL_PROMPT_THEME_DEFAULT
+                             ? "\033[3;2;90mBare"
+                             : "\033[3;38;2;72;76;105mBare") &&
+         tries < 20) {
+    n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                               terminal_cap - 1 - terminal_len);
+    if (n < 0)
+      return -1;
+    if (n > 0) {
+      terminal_len += (size_t)n;
+      terminal[terminal_len] = '\0';
+      if (terminal_len >= terminal_cap - 1)
+        return -1;
+    }
+    tries++;
+  }
+  if (!contains_bytes(terminal + output_mark,
+                      theme == SL_PROMPT_THEME_DEFAULT
+                          ? "\033[3;2;90mBare"
+                          : "\033[3;38;2;72;76;105mBare"))
     return -1;
   if (write(master_fd, "ok\r", 3) != 3)
     return -1;
@@ -4120,12 +4129,24 @@ static void test_default_statusline_uses_ansi_palette(void) {
   char terminal[16384];
   char result[64];
   int status;
+  int case_result;
 
   TEST("default status line uses standard ANSI palette");
-  ASSERT_TRUE(run_pty_statusline_case(SL_PROMPT_THEME_DEFAULT, terminal,
-                                      sizeof(terminal), result, sizeof(result),
-                                      &status) == 0,
-              "default status line pty case failed");
+  case_result = run_pty_statusline_case(SL_PROMPT_THEME_DEFAULT, terminal,
+                                        sizeof(terminal), result,
+                                        sizeof(result), &status);
+  if (case_result != 0)
+    fprintf(stderr,
+            "default status PTY: bytes=%lu prompt=%d idle=%d busy=%d "
+            "element=%d changed=%d bare=%d\n",
+            (unsigned long)strlen(terminal),
+            contains_bytes(terminal, "status> "),
+            contains_bytes(terminal, "\033[32m+ "),
+            contains_bytes(terminal, "\033[31m- "),
+            contains_bytes(terminal, "\r  \033[97me0"),
+            contains_bytes(terminal, "\033[3;2;90mChanged"),
+            contains_bytes(terminal, "\033[3;2;90mBare"));
+  ASSERT_TRUE(case_result == 0, "default status line pty case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "default status line child failed");
   ASSERT_TRUE(strcmp(result, "ok") == 0, "default status line result mismatch");
