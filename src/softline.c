@@ -199,7 +199,14 @@ static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
 static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
                              unsigned long *codepoint);
 static int sl_render_clear_active(sl_t *self);
+static int sl_render_apply(sl_t *self, const char *prompt);
+static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
+                                 size_t length);
+static int sl_write_cursor_pos(int fd, int row, int col);
+static int sl_wstr(int fd, const char *s);
 static int sl_try_pin_scroll_region(sl_t *self);
+static int sl_codepoint_width(unsigned long cp);
+static int sl_surface_cluster_width(const char *bytes, size_t length);
 
 static sl_impl_t *sl_impl(sl_t *self) {
   if (!self)
@@ -248,7 +255,7 @@ static void sl_prompt_queue_clear_raw(sl_prompt_queue_t *queue) {
   if (!queue)
     return;
   for (i = 0; i < queue->len; i++)
-    free(queue->items[i]);
+    free(queue->items[i].text);
   free(queue->items);
   queue->items = NULL;
   queue->len = 0;
@@ -256,7 +263,7 @@ static void sl_prompt_queue_clear_raw(sl_prompt_queue_t *queue) {
 }
 
 static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
-  char **items;
+  sl_prompt_queue_entry_t *items;
   int cap;
   if (!queue)
     return -1;
@@ -270,7 +277,8 @@ static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
     }
     cap *= 2;
   }
-  items = (char **)realloc(queue->items, (size_t)cap * sizeof(*items));
+  items = (sl_prompt_queue_entry_t *)realloc(queue->items,
+                                             (size_t)cap * sizeof(*items));
   if (!items)
     return -1;
   queue->items = items;
@@ -278,7 +286,8 @@ static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
   return 0;
 }
 
-static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text) {
+static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text,
+                                      sl_prompt_queue_mode_t mode) {
   char *copy;
   if (!impl || !text)
     return -1;
@@ -292,7 +301,8 @@ static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text) {
     free(copy);
     return -1;
   }
-  impl->prompt_queue.items[impl->prompt_queue.len++] = copy;
+  impl->prompt_queue.items[impl->prompt_queue.len].text = copy;
+  impl->prompt_queue.items[impl->prompt_queue.len++].mode = mode;
   return 0;
 }
 
@@ -317,7 +327,8 @@ static int sl_prompt_queue_insert_raw(sl_impl_t *impl, int index,
   }
   for (i = queue->len; i > index; i--)
     queue->items[i] = queue->items[i - 1];
-  queue->items[index] = copy;
+  queue->items[index].text = copy;
+  queue->items[index].mode = SL_PROMPT_QUEUE_MODE_QUEUED;
   queue->len++;
   return 0;
 }
@@ -334,8 +345,8 @@ static int sl_prompt_queue_replace_raw(sl_impl_t *impl, int index,
   copy = sl_strdup(text);
   if (!copy)
     return -1;
-  free(queue->items[index]);
-  queue->items[index] = copy;
+  free(queue->items[index].text);
+  queue->items[index].text = copy;
   return 0;
 }
 
@@ -344,11 +355,19 @@ static char *sl_prompt_queue_take_raw(sl_prompt_queue_t *queue, int index) {
   int i;
   if (!queue || index < 0 || index >= queue->len)
     return NULL;
-  item = queue->items[index];
+  item = queue->items[index].text;
   for (i = index; i + 1 < queue->len; i++)
     queue->items[i] = queue->items[i + 1];
   queue->len--;
   return item;
+}
+
+static int sl_prompt_queue_first_queued(const sl_prompt_queue_t *queue) {
+  int i;
+  for (i = 0; queue && i < queue->len; i++)
+    if (queue->items[i].mode == SL_PROMPT_QUEUE_MODE_QUEUED)
+      return i;
+  return -1;
 }
 
 static int sl_prompt_queue_enabled(const sl_impl_t *impl) {
@@ -363,11 +382,13 @@ static void sl_prompt_queue_sync_queued_turns_delivery(sl_impl_t *impl) {
       impl->prompt_queue.profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS)
     return;
   impl->prompt_queue.delivery =
-      impl->statusline.busy || impl->prompt_queue.stopped
+      impl->statusline.busy || impl->prompt_queue.stopped ||
+              impl->prompt_queue.host_controls_delivery
           ? SL_PROMPT_QUEUE_DELIVERY_MANUAL
           : SL_PROMPT_QUEUE_DELIVERY_AUTO;
   if (impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->active_readline && impl->prompt_queue.len > 0 && impl->len == 0)
+      impl->active_readline &&
+      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0 && impl->len == 0)
     impl->request_queue_dispatch = 1;
 }
 
@@ -433,6 +454,24 @@ static int sl_statusline_text_valid(const char *text) {
     if (n == 0 || ((unsigned char)text[pos] >= 0x80 && n == 1) ||
         codepoint < 32 || codepoint == 127 ||
         (codepoint >= 0x80 && codepoint <= 0x9f))
+      return 0;
+    pos += n;
+  }
+  return 1;
+}
+
+static int sl_quoted_prompt_text_valid(const char *text) {
+  size_t len;
+  size_t pos;
+  if (!text)
+    return 0;
+  len = strlen(text);
+  for (pos = 0; pos < len;) {
+    unsigned long codepoint;
+    size_t n = sl_utf8_decode(text, len, pos, &codepoint);
+    if (n == 0 || ((unsigned char)text[pos] >= 0x80 && n == 1) ||
+        (codepoint < 32 && codepoint != '\n' && codepoint != '\t') ||
+        codepoint == 127 || (codepoint >= 0x80 && codepoint <= 0x9f))
       return 0;
     pos += n;
   }
@@ -582,12 +621,15 @@ static int sl_scroll_region_up(sl_impl_t *impl, int top, int bottom, int rows) {
   return sl_reset_scroll_region(fd);
 }
 
-static int sl_write_spaces(int fd, int cols) {
-  while (cols-- > 0) {
-    if (sl_wchar(fd, ' ') != 0)
-      return -1;
-  }
-  return 0;
+static int sl_erase_chars(int fd, int cols) {
+  char seq[32];
+  int count;
+  if (cols <= 0)
+    return 0;
+  count = snprintf(seq, sizeof(seq), "\033[%dX", cols);
+  return count > 0 && count < (int)sizeof(seq)
+             ? sl_write_all(fd, seq, (size_t)count)
+             : -1;
 }
 
 static int sl_enable_bracketed_paste(sl_impl_t *impl) {
@@ -625,9 +667,22 @@ static int sl_terminal_columns(sl_impl_t *impl) {
   return 80;
 }
 
+static int sl_terminal_rows(sl_impl_t *impl) {
+  struct winsize ws;
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+    return (int)ws.ws_row;
+  return 24;
+}
+
+static int sl_output_pinned(const sl_impl_t *impl) {
+  return impl && impl->output_stream_active && !impl->bounded;
+}
+
 static int sl_terminal_width(sl_impl_t *impl) {
   int width;
   if (impl && impl->auto_scroll_pinned)
+    return sl_terminal_columns(impl);
+  if (sl_output_pinned(impl) && impl->dynamic_width)
     return sl_terminal_columns(impl);
   if (!impl->dynamic_width && impl->screen_width > 0)
     return impl->screen_width;
@@ -640,7 +695,7 @@ static int sl_terminal_width(sl_impl_t *impl) {
 static int sl_terminal_height(sl_impl_t *impl) {
   struct winsize ws;
   int height;
-  if (impl && impl->auto_scroll_pinned) {
+  if (impl && (impl->auto_scroll_pinned || sl_output_pinned(impl))) {
     if (ioctl(impl->output_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
       return (int)ws.ws_row;
     return 24;
@@ -657,15 +712,20 @@ static int sl_terminal_height(sl_impl_t *impl) {
 }
 
 static int sl_bounded_mode(sl_impl_t *impl) {
-  return impl && (impl->bounded || impl->auto_scroll_pinned);
+  return impl && (impl->bounded || impl->auto_scroll_pinned ||
+                  impl->output_stream_active);
 }
 
 static int sl_box_left(sl_impl_t *impl) {
-  return impl && impl->auto_scroll_pinned ? 0 : impl->screen_x;
+  return impl && (impl->auto_scroll_pinned || sl_output_pinned(impl))
+             ? 0
+             : impl->screen_x;
 }
 
 static int sl_box_top(sl_impl_t *impl) {
-  return impl && impl->auto_scroll_pinned ? 0 : impl->screen_y;
+  return impl && (impl->auto_scroll_pinned || sl_output_pinned(impl))
+             ? 0
+             : impl->screen_y;
 }
 
 static int sl_box_width(sl_impl_t *impl) {
@@ -684,10 +744,14 @@ static int sl_bounded_scroll_spans_full_width(sl_impl_t *impl) {
 
 static int sl_clear_box_tail(sl_impl_t *impl, int from_col) {
   int remaining;
+  int physical;
   remaining = sl_box_width(impl) - from_col;
+  physical = sl_terminal_columns(impl) - sl_box_left(impl) - from_col;
+  if (remaining > physical)
+    remaining = physical;
   if (remaining <= 0)
     return 0;
-  return sl_write_spaces(impl->output_fd, remaining);
+  return sl_erase_chars(impl->output_fd, remaining);
 }
 
 /* A full-width box can use the terminal's erase primitive. This avoids
@@ -709,7 +773,7 @@ static int sl_clear_bounded_row(sl_impl_t *impl) {
 }
 
 static int sl_box_bottom(sl_impl_t *impl) {
-  if (impl && impl->auto_scroll_pinned)
+  if (impl && (impl->auto_scroll_pinned || sl_output_pinned(impl)))
     return sl_terminal_height(impl) - 1;
   return impl->screen_y + sl_terminal_height(impl) - 1;
 }
@@ -726,6 +790,83 @@ static int sl_prompt_top(sl_impl_t *impl, int prompt_rows) {
   if (top < sl_box_top(impl))
     top = sl_box_top(impl);
   return top;
+}
+
+/* A full-width live session uses the terminal's main-screen scrollback. Keep
+ * the editor off the physical screen while scrolling, then redraw it. */
+static int sl_native_history_scroll(void *userdata, int after) {
+  sl_t *self;
+  sl_impl_t *impl;
+  self = (sl_t *)userdata;
+  impl = sl_impl(self);
+  if (!impl)
+    return -1;
+  if (after) {
+    int rc;
+    rc = impl->active_prompt ? sl_render_apply(self, impl->active_prompt) : 0;
+    if (sl_wstr(impl->output_fd, "\033[?2026l") != 0)
+      return -1;
+    return rc;
+  }
+  if (sl_wstr(impl->output_fd, "\033[?2026h\033[0m") != 0 ||
+      sl_render_clear_active(self) != 0 ||
+      sl_write_cursor_pos(impl->output_fd, sl_terminal_height(impl) - 1, 0) !=
+          0 ||
+      sl_wstr(impl->output_fd, "\033[2K") != 0 ||
+      sl_wstr(impl->output_fd, "\r\n") != 0) {
+    (void)sl_wstr(impl->output_fd, "\033[?2026l");
+    return -1;
+  }
+  return 0;
+}
+
+static void sl_output_surface_update_scroll_hook(sl_t *self) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || !impl->output_surface)
+    return;
+  sl_surface_set_scroll_hook(
+      impl->output_surface,
+      (impl->output_stream_active || !impl->active_prompt) &&
+              sl_box_left(impl) == 0 && sl_box_top(impl) == 0 &&
+              sl_box_width(impl) >= sl_terminal_columns(impl) &&
+              sl_box_bottom(impl) == sl_terminal_rows(impl) - 1
+          ? sl_native_history_scroll
+          : NULL,
+      self);
+}
+
+static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
+                                       int after_native_scroll) {
+  sl_impl_t *impl;
+  int x;
+  int y;
+  int width;
+  int height;
+  impl = sl_impl(self);
+  if (!impl || !isatty(impl->input_fd) || !isatty(impl->output_fd))
+    return 0;
+  x = sl_box_left(impl);
+  y = sl_box_top(impl);
+  width = sl_box_width(impl);
+  height = prompt_top - y;
+  if (width < 1 || height < 0 || x < 0 || y < 0 ||
+      x >= sl_terminal_columns(impl) || y >= sl_terminal_rows(impl) ||
+      width > sl_terminal_columns(impl) - x ||
+      height > sl_terminal_rows(impl) - y)
+    return -1;
+  if (!impl->output_surface) {
+    impl->output_surface =
+        sl_surface_create(impl->output_fd, x, y, width, height,
+                          sl_codepoint_width, sl_surface_cluster_width);
+    if (!impl->output_surface)
+      return -1;
+  } else if (sl_surface_resize(impl->output_surface, x, y, width, height,
+                               after_native_scroll) != 0) {
+    return -1;
+  }
+  sl_output_surface_update_scroll_hook(self);
+  return 0;
 }
 
 static int sl_enable_raw(sl_t *self) {
@@ -1263,6 +1404,12 @@ static int sl_codepoint_is_regional_indicator(unsigned long cp) {
   return cp >= 0x1f1e6UL && cp <= 0x1f1ffUL;
 }
 
+static int sl_codepoint_accepts_emoji_modifier(unsigned long cp) {
+  return (cp >= 0x1f000UL && cp <= 0x1faffUL &&
+          !sl_codepoint_is_regional_indicator(cp)) ||
+         cp == 0x261dUL || cp == 0x26f9UL || (cp >= 0x270aUL && cp <= 0x270dUL);
+}
+
 static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
                                         int *width) {
   size_t n;
@@ -1270,6 +1417,7 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
   unsigned long cp;
   int w;
   int emoji_sequence;
+  int modifier_eligible;
   n = sl_utf8_decode(buf, len, pos, &cp);
   if (n == 0) {
     if (width)
@@ -1278,6 +1426,7 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
   }
   w = sl_codepoint_width(cp);
   emoji_sequence = sl_codepoint_is_wide(cp);
+  modifier_eligible = sl_codepoint_accepts_emoji_modifier(cp);
   if (sl_codepoint_is_regional_indicator(cp)) {
     step = sl_utf8_decode(buf, len, pos + n, &cp);
     if (step > 0 && sl_codepoint_is_regional_indicator(cp)) {
@@ -1299,6 +1448,12 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
       n += step;
       continue;
     }
+    if (cp >= 0x1f3fbUL && cp <= 0x1f3ffUL && modifier_eligible) {
+      n += step;
+      emoji_sequence = 1;
+      modifier_eligible = 0;
+      continue;
+    }
     if (cp == 0x200dUL) {
       n += step;
       if (pos + n >= len)
@@ -1308,6 +1463,7 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
         break;
       n += step;
       emoji_sequence = 1;
+      modifier_eligible = sl_codepoint_accepts_emoji_modifier(cp);
       continue;
     }
     if (cp == 0x20e3UL) {
@@ -1322,6 +1478,13 @@ static size_t sl_utf8_cluster_len_width(const char *buf, size_t len, size_t pos,
   if (width)
     *width = w;
   return n;
+}
+
+static int sl_surface_cluster_width(const char *bytes, size_t length) {
+  int width;
+  if (sl_utf8_cluster_len_width(bytes, length, 0, &width) != length)
+    return -1;
+  return width;
 }
 
 static size_t sl_utf8_next_cluster_len(const char *buf, size_t len,
@@ -2335,6 +2498,195 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   return 0;
 }
 
+static int sl_status_message_style(sl_prompt_theme_t theme,
+                                   sl_theme_color_t color, int italic,
+                                   char *style, size_t size) {
+  static const int ansi_elements[] = {36, 33, 35, 34, 32, 31, 37, 97};
+  const sl_theme_palette_t *palette;
+  const sl_rgb_t *rgb;
+  int ansi;
+  int dim;
+  int n;
+  palette = sl_theme_palette(theme);
+  if (theme == SL_PROMPT_THEME_DEFAULT || theme == SL_PROMPT_THEME_PLAIN) {
+    dim = color == SL_THEME_COLOR_MUTED;
+    if (color == SL_THEME_COLOR_MUTED || color == SL_THEME_COLOR_SECONDARY)
+      ansi = 90;
+    else if (color == SL_THEME_COLOR_PROMPT || color == SL_THEME_COLOR_INPUT)
+      ansi = 97;
+    else if (color == SL_THEME_COLOR_QUEUE)
+      ansi = 36;
+    else
+      ansi = ansi_elements[color - SL_THEME_COLOR_ELEMENT_0];
+    n = snprintf(style, size, "\033[%s%s%dm", italic ? "3;" : "",
+                 dim ? "2;" : "", ansi);
+  } else {
+    if (color == SL_THEME_COLOR_MUTED)
+      rgb = &palette->separator;
+    else if (color == SL_THEME_COLOR_SECONDARY)
+      rgb = &palette->queue_text;
+    else if (color == SL_THEME_COLOR_PROMPT)
+      rgb = &palette->prompt;
+    else if (color == SL_THEME_COLOR_QUEUE)
+      rgb = &palette->queue;
+    else if (color == SL_THEME_COLOR_INPUT)
+      rgb = &palette->input;
+    else
+      rgb = &palette->elements[color - SL_THEME_COLOR_ELEMENT_0];
+    n = snprintf(style, size, "\033[%s38;2;%u;%u;%um", italic ? "3;" : "",
+                 (unsigned int)rgb->red, (unsigned int)rgb->green,
+                 (unsigned int)rgb->blue);
+  }
+  return n > 0 && (size_t)n < size ? 0 : -1;
+}
+
+static int sl_status_message_append_part(sl_row_t *row, const char *text,
+                                         int width, const char *style) {
+  size_t pos;
+  size_t len;
+  if (sl_row_append(row, style, strlen(style)) != 0)
+    return -1;
+  len = strlen(text);
+  pos = 0;
+  while (pos < len) {
+    int cells;
+    size_t n;
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0 || (cells > 0 && row->cols + cells > width))
+      break;
+    if (sl_row_append_cells(row, text + pos, n, cells) != 0)
+      return -1;
+    pos += n;
+  }
+  return sl_row_append(row, "\033[0m", 4);
+}
+
+static int sl_status_message_new_row(sl_render_t *render, int indent,
+                                     const char *style) {
+  if (sl_row_append(&render->rows[render->count - 1], "\033[0m", 4) != 0 ||
+      sl_render_new_indented_row(render, indent, 0) != 0)
+    return -1;
+  return sl_row_append(&render->rows[render->count - 1], style, strlen(style));
+}
+
+static int sl_status_message_append_wrapped(sl_render_t *render,
+                                            const char *text, int width,
+                                            int indent, const char *style) {
+  size_t pos;
+  size_t len;
+  size_t word_end;
+  sl_row_t *row;
+  len = strlen(text);
+  pos = 0;
+  word_end = 0;
+  row = &render->rows[render->count - 1];
+  if (row->cols >= width && len > 0) {
+    if (sl_render_new_indented_row(render, indent, 0) != 0)
+      return -1;
+    row = &render->rows[render->count - 1];
+  }
+  if (sl_row_append(row, style, strlen(style)) != 0)
+    return -1;
+  while (pos < len) {
+    size_t n;
+    int cells;
+    row = &render->rows[render->count - 1];
+    if (text[pos] == ' ') {
+      size_t spaces;
+      size_t next_word;
+      int next_width;
+      spaces = 0;
+      while (pos + spaces < len && text[pos + spaces] == ' ')
+        spaces++;
+      next_word = sl_next_word_len(text, len, pos + spaces);
+      next_width = sl_word_width(text, len, pos + spaces, next_word);
+      if ((next_word > 0 && next_width <= width - indent &&
+           spaces + (size_t)next_width > (size_t)(width - row->cols)) ||
+          spaces > (size_t)(width - row->cols)) {
+        pos += spaces;
+        if (pos < len && sl_status_message_new_row(render, indent, style) != 0)
+          return -1;
+        continue;
+      }
+      if (sl_row_append_cells(row, text + pos, spaces, (int)spaces) != 0)
+        return -1;
+      pos += spaces;
+      continue;
+    }
+    if (sl_word_byte(text[pos]) && pos >= word_end) {
+      size_t word_len;
+      int word_width;
+      word_len = sl_next_word_len(text, len, pos);
+      word_end = pos + word_len;
+      word_width = sl_word_width(text, len, pos, word_len);
+      if (row->cols > indent && word_width <= width - indent &&
+          row->cols + word_width > width) {
+        if (sl_status_message_new_row(render, indent, style) != 0)
+          return -1;
+        row = &render->rows[render->count - 1];
+      }
+    }
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0)
+      return -1;
+    if (cells > width) {
+      if (row->cols >= width) {
+        if (sl_status_message_new_row(render, indent, style) != 0)
+          return -1;
+        row = &render->rows[render->count - 1];
+      }
+      if (sl_row_append_cells(row, "?", 1, 1) != 0)
+        return -1;
+      pos += n;
+      continue;
+    }
+    if (row->cols + cells > width) {
+      if (sl_status_message_new_row(render, indent, style) != 0)
+        return -1;
+      row = &render->rows[render->count - 1];
+    }
+    if (cells > width - row->cols)
+      return -1;
+    if (sl_row_append_cells(row, text + pos, n, cells) != 0)
+      return -1;
+    pos += n;
+  }
+  return sl_row_append(&render->rows[render->count - 1], "\033[0m", 4);
+}
+
+static int sl_render_append_status_message(sl_t *self, sl_render_t *render,
+                                           int width) {
+  sl_impl_t *impl;
+  sl_row_t *row;
+  char prefix_style[48];
+  char text_style[48];
+  const char *prefix;
+  int indent;
+  impl = sl_impl(self);
+  if (!impl || (!impl->statusline.enabled && !impl->status_message))
+    return 0;
+  if (sl_render_new_row_at(render, 0, 0) != 0)
+    return -1;
+  if (!impl->status_message || !impl->status_message[0])
+    return 0;
+  if (sl_status_message_style(impl->prompt_theme,
+                              impl->status_message_prefix_color, 0,
+                              prefix_style, sizeof(prefix_style)) != 0 ||
+      sl_status_message_style(impl->prompt_theme,
+                              impl->status_message_text_color, 1, text_style,
+                              sizeof(text_style)) != 0)
+    return -1;
+  row = &render->rows[render->count - 1];
+  prefix = impl->status_message_prefix ? impl->status_message_prefix : "! ";
+  if (sl_status_message_append_part(row, prefix, width, prefix_style) != 0)
+    return -1;
+  indent = sl_text_width(prefix, strlen(prefix));
+  if (indent > width - 2)
+    indent = width > 1 ? width - 2 : 0;
+  return sl_status_message_append_wrapped(render, impl->status_message, width,
+                                          indent, text_style);
+}
+
 static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
                                         int width) {
   sl_impl_t *impl;
@@ -2380,13 +2732,14 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
       return -1;
     row = &render->rows[render->count - 1];
     (void)snprintf(number, sizeof(number), "%d. ", i + 1);
-    entry_prefix = i == 0 ? "Q " : "  ";
+    entry_prefix =
+        queue->items[i].mode == SL_PROMPT_QUEUE_MODE_STEER ? "S " : "Q ";
     (void)snprintf(prefix, sizeof(prefix), "%s%s", entry_prefix, number);
     if (sl_queue_row_append_preview(row, prefix, width, control_style) != 0)
       return -1;
     prefix_width = row->cols;
-    if (sl_queue_row_append_preview(row, queue->items[i], width - prefix_width,
-                                    text_style) != 0)
+    if (sl_queue_row_append_preview(row, queue->items[i].text,
+                                    width - prefix_width, text_style) != 0)
       return -1;
   }
   if (shown < queue->len) {
@@ -2420,6 +2773,8 @@ static int sl_render_build(sl_t *self, const char *prompt,
   if (width < 1)
     width = 1;
   if (sl_render_append_queue_panel(self, render, width) != 0)
+    return -1;
+  if (sl_render_append_status_message(self, render, width) != 0)
     return -1;
   if (sl_render_append_statusline(self, render, width) != 0)
     return -1;
@@ -2499,7 +2854,8 @@ static int sl_render_build(sl_t *self, const char *prompt,
         continue;
       }
     }
-    if (sl_word_byte(ch) && col > indent) {
+    if (sl_word_byte(ch) && (i == 0 || !sl_word_byte(impl->buf[i - 1])) &&
+        col > indent) {
       size_t word_len;
       int word_width;
       int avail;
@@ -2633,6 +2989,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   int rc;
   int height;
   int width;
+  int native_scroll_rows;
+  int sync_open;
   char input_style[32];
   int input_styled;
   impl = sl_impl(self);
@@ -2643,7 +3001,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   input_styled = input_style[0] != '\0';
   height = sl_terminal_height(impl);
   width = sl_box_width(impl);
-  if (impl->rendered_rows > 0 &&
+  if (!impl->output_stream_active && !impl->output_surface &&
+      impl->rendered_rows > 0 &&
       (impl->rendered_width != width || impl->rendered_height != height)) {
     clear_top = sl_box_top(impl);
     clear_bottom = sl_box_bottom(impl);
@@ -2665,6 +3024,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   visible = render->count;
   if (visible > height)
     visible = height;
+  if (impl->output_stream_active && height > 1 && visible >= height)
+    visible = height - 1;
   if (visible < 1)
     visible = 1;
   first = render->cursor_row - visible + 1;
@@ -2678,9 +3039,51 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   if (cursor_row >= visible)
     cursor_row = visible - 1;
   top = sl_prompt_top(impl, visible);
+  native_scroll_rows = 0;
+  sync_open = 0;
+  if ((impl->output_stream_active || impl->output_surface) &&
+      (!impl->output_surface ||
+       !sl_surface_matches(impl->output_surface, sl_box_left(impl),
+                           sl_box_top(impl), width, top - sl_box_top(impl)))) {
+    if (impl->output_stream_active && impl->output_surface &&
+        sl_box_left(impl) == 0 && sl_box_top(impl) == 0 &&
+        width >= sl_terminal_columns(impl) &&
+        sl_box_bottom(impl) == sl_terminal_rows(impl) - 1) {
+      int old_x;
+      int old_y;
+      int old_width;
+      int old_height;
+      int old_terminal_rows;
+      sl_surface_geometry(impl->output_surface, &old_x, &old_y, &old_width,
+                          &old_height, &old_terminal_rows);
+      if (old_x == 0 && old_y == 0 && old_width == width &&
+          old_terminal_rows == sl_terminal_rows(impl) && old_height > top)
+        native_scroll_rows = old_height - top;
+    }
+    if (native_scroll_rows > 0) {
+      if (sl_wstr(impl->output_fd, "\033[?2026h\033[0m") != 0)
+        return -1;
+      sync_open = 1;
+    }
+    if (impl->rendered_rows > 0 && sl_render_clear_active(self) != 0)
+      goto resize_failed;
+    for (i = 0; i < native_scroll_rows; i++) {
+      if (sl_write_cursor_pos(impl->output_fd, sl_terminal_rows(impl) - 1, 0) !=
+              0 ||
+          sl_wstr(impl->output_fd, "\r\n") != 0)
+        goto resize_failed;
+    }
+    if (sl_output_surface_reconcile(self, top, native_scroll_rows > 0) != 0) {
+      sl_set_error(self, "failed to resize live output surface");
+      goto resize_failed;
+    }
+  }
   if (sl_render_visible_equal(impl, render, first, visible, cursor_row,
-                              render->cursor_col, top))
+                              render->cursor_col, top)) {
+    if (sync_open)
+      return sl_wstr(impl->output_fd, "\033[?2026l");
     return 0;
+  }
   old_rows = impl->rendered_rows;
   old_top = impl->rendered_top_row;
   current_row = old_rows > 0 && old_top == top ? impl->rendered_cursor_row : -1;
@@ -2789,7 +3192,14 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   }
   if (rc != 0)
     (void)sl_show_cursor(impl);
+  if (sync_open && sl_wstr(impl->output_fd, "\033[?2026l") != 0)
+    rc = -1;
   return rc;
+
+resize_failed:
+  if (sync_open)
+    (void)sl_wstr(impl->output_fd, "\033[?2026l");
+  return -1;
 }
 
 static int sl_render_apply(sl_t *self, const char *prompt) {
@@ -2800,6 +3210,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   int i;
   int fd;
   int rc;
+  int retained_top;
+  int retained_height;
   impl = sl_impl(self);
   if (!impl)
     return -1;
@@ -2857,6 +3269,21 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
     sl_set_error(self, "out of memory while storing terminal render state");
     rc = -1;
   }
+  if (rc == 0 && impl->output_surface && isatty(impl->input_fd) &&
+      isatty(impl->output_fd)) {
+    retained_top = sl_prompt_top(impl, render.count);
+    sl_surface_geometry(impl->output_surface, NULL, NULL, NULL,
+                        &retained_height, NULL);
+    if (retained_top > retained_height)
+      retained_top = retained_height;
+    /* The ordinary editor has already advanced the main terminal while
+     * growing. A shorter editor stays at its old top row. */
+    if (sl_output_surface_reconcile(self, retained_top,
+                                    render.count > old_rows) != 0) {
+      sl_set_error(self, "failed to resize retained output surface");
+      rc = -1;
+    }
+  }
   sl_render_free(&render);
   if (rc != 0)
     sl_set_error(self, "failed to write terminal output");
@@ -2894,7 +3321,8 @@ static int sl_render_finish(sl_t *self, int queue_dispatch) {
     return 0;
   }
   if (sl_bounded_mode(impl)) {
-    if (queue_dispatch && sl_prompt_queue_enabled(impl)) {
+    if (impl->output_stream_active ||
+        (queue_dispatch && sl_prompt_queue_enabled(impl))) {
       if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0) {
         (void)sl_show_cursor(impl);
         return -1;
@@ -2916,6 +3344,10 @@ static int sl_render_finish(sl_t *self, int queue_dispatch) {
     sl_set_error(self, "failed to write final newline");
     return -1;
   }
+  /* Ordinary readline advances the terminal outside the output viewport.
+   * Its retained cells can no longer be safely replayed by a later stream. */
+  sl_surface_destroy(impl->output_surface);
+  impl->output_surface = NULL;
   sl_render_store_clear(impl);
   return 0;
 }
@@ -2931,6 +3363,9 @@ static int sl_render_clear_active(sl_t *self) {
     if (sl_hide_cursor(impl) != 0)
       return -1;
     for (i = 0; i < impl->rendered_rows; i++) {
+      if (impl->rendered_top_row + i < 0 ||
+          impl->rendered_top_row + i >= sl_terminal_rows(impl))
+        continue;
       if (sl_write_cursor_pos(impl->output_fd, impl->rendered_top_row + i,
                               sl_box_left(impl)) != 0 ||
           sl_clear_bounded_row(impl) != 0)
@@ -3014,6 +3449,8 @@ static int sl_write_stream(sl_t *self, sl_stream_callback_t callback,
       return SL_ERROR_INVALID;
     if (sl_write_stream_chunk(impl, chunk, len) != 0)
       return SL_ERROR_IO;
+    if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
+      sl_output_track_tail(impl, chunk, len);
   }
 }
 
@@ -3093,6 +3530,72 @@ static int sl_write_scroll_stream(sl_t *self, sl_stream_callback_t callback,
   }
 }
 
+/* A finite print_above call shares the cell viewport with an open-ended
+ * output session when VT scrolling would affect columns outside the box. */
+static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
+                                  void *userdata, int prompt_top) {
+  sl_impl_t *impl;
+  int result;
+  impl = sl_impl(self);
+  if (!impl || !callback)
+    return SL_ERROR_INVALID;
+  if (sl_output_surface_reconcile(self, prompt_top, 0) != 0) {
+    sl_set_error(self, "failed to size output viewport");
+    return SL_ERROR_IO;
+  }
+  if (sl_hide_cursor(impl) != 0)
+    return SL_ERROR_IO;
+  result = SL_OK;
+  for (;;) {
+    const char *bytes;
+    size_t length;
+    int status;
+    bytes = NULL;
+    length = 0;
+    status = callback(self, userdata, &bytes, &length);
+    if (status != SL_OK) {
+      result = status;
+      break;
+    }
+    if (length == 0)
+      break;
+    if (!bytes) {
+      sl_set_error(self, "output callback returned a NULL nonempty chunk");
+      result = SL_ERROR_INVALID;
+      break;
+    }
+    {
+      size_t accepted;
+      status = sl_surface_write(impl->output_surface, bytes, length, &accepted);
+    }
+    if (status != 0) {
+      sl_set_error(self, status == -2 ? "invalid output byte sequence"
+                                      : "failed to render output bytes");
+      result = status == -2 ? SL_ERROR_INVALID : SL_ERROR_IO;
+      break;
+    }
+  }
+  if (result == SL_OK && !sl_surface_complete(impl->output_surface)) {
+    sl_set_error(self, "output ends in an incomplete ANSI or UTF-8 sequence");
+    result = SL_ERROR_INVALID;
+  }
+  if (result != SL_OK)
+    sl_surface_reset_partial(impl->output_surface);
+  if (impl->active_prompt && impl->rendered_rows > 0 &&
+      sl_write_cursor_pos(impl->output_fd,
+                          impl->rendered_top_row + impl->rendered_cursor_row,
+                          sl_box_left(impl) + impl->rendered_cursor_col) != 0)
+    result = SL_ERROR_IO;
+  if (!impl->active_prompt && sl_write_cursor_pos(impl->output_fd, prompt_top,
+                                                  sl_box_left(impl)) != 0) {
+    sl_set_error(self, "failed to position cursor after finite output");
+    result = SL_ERROR_IO;
+  }
+  if (sl_show_cursor(impl) != 0)
+    result = SL_ERROR_IO;
+  return result;
+}
+
 static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
                                  void *userdata) {
   sl_impl_t *impl;
@@ -3104,14 +3607,42 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   impl = sl_impl(self);
   if (!impl)
     return SL_ERROR_INVALID;
+  if (impl->output_stream_active) {
+    sl_set_error(self, "print_above cannot overlap a live output stream");
+    return SL_ERROR_INVALID;
+  }
   if (!sl_bounded_mode(impl) && impl->live_scroll_region && impl->active_prompt)
     (void)sl_try_pin_scroll_region(self);
+  if (!sl_bounded_mode(impl) && impl->output_surface &&
+      isatty(impl->input_fd) && isatty(impl->output_fd)) {
+    prompt_rows = impl->rendered_rows > 0 ? impl->rendered_rows : 1;
+    prompt_top = sl_prompt_top(impl, prompt_rows);
+    if (prompt_top <= sl_box_top(impl)) {
+      sl_set_error(self, "output viewport has no space above the prompt");
+      return SL_ERROR_INVALID;
+    }
+    if (impl->active_prompt && sl_render_clear_active(self) != 0) {
+      sl_set_error(self, "failed to clear active prompt before printing");
+      return SL_ERROR_IO;
+    }
+    rc = sl_print_above_surface(self, callback, userdata, prompt_top);
+    if (impl->active_prompt &&
+        (sl_write_cursor_pos(impl->output_fd, prompt_top, sl_box_left(impl)) !=
+             0 ||
+         sl_render_apply(self, impl->active_prompt) != 0))
+      return SL_ERROR_IO;
+    return rc;
+  }
   if (sl_bounded_mode(impl)) {
     prompt_rows = impl->rendered_rows > 0 ? impl->rendered_rows : 1;
     prompt_top = sl_prompt_top(impl, prompt_rows);
     content_top = sl_box_top(impl);
     content_bottom = prompt_top - 1;
     if (content_bottom >= content_top) {
+      if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
+        return sl_write_stream(self, callback, userdata);
+      if (!sl_bounded_scroll_spans_full_width(impl) || impl->output_surface)
+        return sl_print_above_surface(self, callback, userdata, prompt_top);
       if (impl->auto_scroll_pinned && impl->active_prompt &&
           impl->rendered_rows > 0 && impl->rendered_top_row < 0) {
         impl->rendered_top_row = prompt_top;
@@ -3121,12 +3652,6 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
       if ((impl->active_prompt || impl->cursor_hidden) &&
           sl_hide_cursor(impl) != 0)
         return SL_ERROR_IO;
-      if (!sl_bounded_scroll_spans_full_width(impl)) {
-        sl_set_error(self,
-                     "bounded print_above requires full-width terminal bounds");
-        (void)sl_show_cursor(impl);
-        return SL_ERROR_INVALID;
-      }
       if (sl_set_scroll_region(impl->output_fd, content_top, content_bottom) !=
               0 ||
           sl_write_cursor_pos(impl->output_fd, content_bottom,
@@ -3185,6 +3710,560 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
     return rc;
   if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
     return SL_ERROR_IO;
+  return SL_OK;
+}
+
+static int sl_output_stream_begin_method(sl_t *self) {
+  sl_impl_t *impl;
+  sl_surface_t *previous_surface;
+  impl = sl_impl(self);
+  if (!impl || impl->output_stream_active) {
+    sl_set_error(self, "live output stream is already open");
+    return SL_ERROR_INVALID;
+  }
+  previous_surface = impl->output_surface;
+  if (impl->active_prompt && impl->rendered_rows > 0 &&
+      sl_render_clear_active(self) != 0) {
+    sl_set_error(self, "failed to clear prompt for live output");
+    return SL_ERROR_IO;
+  }
+  sl_release_auto_scroll_region(impl);
+  impl->output_stream_active = 1;
+  impl->output_ansi_state = 0;
+  impl->output_pending_len = 0;
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
+    sl_surface_destroy(previous_surface);
+    impl->output_surface = NULL;
+    previous_surface = NULL;
+    impl->output_surface = sl_surface_create_validator();
+    if (!impl->output_surface) {
+      sl_set_error(self, "failed to create live output validator");
+      goto failed;
+    }
+  } else if (impl->active_prompt) {
+    if (sl_render_apply(self, impl->active_prompt) != 0)
+      goto failed;
+  } else if (sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) !=
+             0) {
+    sl_set_error(self, "failed to create live output surface");
+    goto failed;
+  }
+  if (previous_surface && isatty(impl->input_fd) && isatty(impl->output_fd)) {
+    sl_output_surface_update_scroll_hook(self);
+    sl_surface_mark_boundary(impl->output_surface);
+  }
+  return SL_OK;
+
+failed:
+  if (!previous_surface) {
+    sl_surface_destroy(impl->output_surface);
+    impl->output_surface = NULL;
+  }
+  impl->output_stream_active = 0;
+  sl_output_surface_update_scroll_hook(self);
+  return SL_ERROR_IO;
+}
+
+static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
+                                 size_t length) {
+  size_t i;
+  for (i = 0; i < length; i++) {
+    unsigned char byte = (unsigned char)bytes[i];
+    if (impl->output_ansi_state == 1) {
+      impl->output_ansi_state = byte == '[' ? 2 : 0;
+      continue;
+    }
+    if (impl->output_ansi_state == 2) {
+      if (byte >= 0x40 && byte <= 0x7e)
+        impl->output_ansi_state = 0;
+      continue;
+    }
+    if (byte == 0x1b)
+      impl->output_ansi_state = 1;
+    else if (byte == '\n') {
+      if (impl->output_trailing_newlines < 2)
+        impl->output_trailing_newlines++;
+    } else if (byte != '\r')
+      impl->output_trailing_newlines = 0;
+  }
+}
+
+static int sl_output_flush_redirected(sl_t *self, const char *bytes,
+                                      size_t length) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (length == 0)
+    return SL_OK;
+  if (sl_write_all(impl->output_fd, bytes, length) != 0) {
+    sl_set_error(self, "failed to write live output");
+    return SL_ERROR_IO;
+  }
+  sl_output_track_tail(impl, bytes, length);
+  return SL_OK;
+}
+
+static int sl_output_stream_write_method(sl_t *self, const char *bytes,
+                                         size_t length) {
+  sl_impl_t *impl;
+  size_t accepted;
+  int result;
+  impl = sl_impl(self);
+  if (!impl || !impl->output_stream_active || (!bytes && length > 0)) {
+    sl_set_error(self, "live output write requires an open stream and bytes");
+    return SL_ERROR_INVALID;
+  }
+  if (length == 0)
+    return SL_OK;
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
+    char ready[4096];
+    size_t ready_len;
+    size_t i;
+    ready_len = 0;
+    for (i = 0; i < length; i++) {
+      size_t accepted;
+      result =
+          sl_surface_validate(impl->output_surface, bytes + i, 1, &accepted);
+      if (result != 0) {
+        impl->output_pending_len = 0;
+        if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+          return SL_ERROR_IO;
+        sl_set_error(
+            self,
+            "live output contains an unsupported or invalid byte sequence");
+        return SL_ERROR_INVALID;
+      }
+      if (impl->output_pending_len > 0 ||
+          !sl_surface_complete(impl->output_surface)) {
+        if (impl->output_pending_len >= sizeof(impl->output_pending)) {
+          impl->output_pending_len = 0;
+          sl_surface_reset_partial(impl->output_surface);
+          if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+            return SL_ERROR_IO;
+          sl_set_error(self, "live output escape sequence is too long");
+          return SL_ERROR_INVALID;
+        }
+        impl->output_pending[impl->output_pending_len++] = bytes[i];
+        if (!sl_surface_complete(impl->output_surface))
+          continue;
+        if (impl->output_pending_len > sizeof(ready) - ready_len) {
+          if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+            return SL_ERROR_IO;
+          ready_len = 0;
+        }
+        memcpy(ready + ready_len, impl->output_pending,
+               impl->output_pending_len);
+        ready_len += impl->output_pending_len;
+        impl->output_pending_len = 0;
+      } else {
+        if (ready_len == sizeof(ready)) {
+          if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+            return SL_ERROR_IO;
+          ready_len = 0;
+        }
+        ready[ready_len++] = bytes[i];
+      }
+    }
+    return sl_output_flush_redirected(self, ready, ready_len);
+  }
+  if (sl_box_left(impl) >= sl_terminal_columns(impl) ||
+      sl_box_top(impl) >= sl_terminal_rows(impl) ||
+      sl_box_width(impl) > sl_terminal_columns(impl) - sl_box_left(impl) ||
+      sl_terminal_height(impl) > sl_terminal_rows(impl) - sl_box_top(impl)) {
+    sl_set_error(self, "live output bounds exceed the terminal after resize");
+    return SL_ERROR_INVALID;
+  }
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
+  if (!impl->output_surface) {
+    if (sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
+      sl_set_error(self, "failed to resize live output surface");
+      return SL_ERROR_IO;
+    }
+  } else if (!impl->active_prompt) {
+    int old_x;
+    int old_y;
+    int old_width;
+    int old_terminal_rows;
+    sl_surface_geometry(impl->output_surface, &old_x, &old_y, &old_width, NULL,
+                        &old_terminal_rows);
+    if ((old_x != sl_box_left(impl) || old_y != sl_box_top(impl) ||
+         old_width != sl_box_width(impl) ||
+         old_terminal_rows != sl_terminal_rows(impl)) &&
+        sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
+      sl_set_error(self, "failed to resize live output surface");
+      return SL_ERROR_IO;
+    }
+  }
+  sl_output_surface_update_scroll_hook(self);
+  if (sl_hide_cursor(impl) != 0) {
+    sl_set_error(self, "failed to hide cursor for live output");
+    return SL_ERROR_IO;
+  }
+  result = sl_surface_write(impl->output_surface, bytes, length, &accepted);
+  sl_output_track_tail(impl, bytes, accepted);
+  if (result == -2)
+    impl->output_ansi_state = 0;
+  if (impl->active_prompt && impl->rendered_rows > 0 &&
+      sl_write_cursor_pos(impl->output_fd,
+                          impl->rendered_top_row + impl->rendered_cursor_row,
+                          sl_box_left(impl) + impl->rendered_cursor_col) != 0)
+    result = -1;
+  if (sl_show_cursor(impl) != 0)
+    result = -1;
+  if (result != 0) {
+    sl_set_error(
+        self,
+        result == -2
+            ? "live output contains an unsupported or invalid byte sequence"
+            : "failed to render live output bytes");
+    return result == -2 ? SL_ERROR_INVALID : SL_ERROR_IO;
+  }
+  return SL_OK;
+}
+
+static int sl_quoted_prompt_styles(sl_impl_t *impl, char *prefix_style,
+                                   size_t prefix_cap, char *text_style,
+                                   size_t text_cap) {
+  const sl_theme_palette_t *palette;
+  sl_rgb_t prefix_color;
+  sl_rgb_t text_color;
+  char prefix_rgb[32];
+  char text_rgb[32];
+  int n;
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
+    prefix_style[0] = '\0';
+    text_style[0] = '\0';
+    return 0;
+  }
+  if (!impl->quoted_prompt_style_custom &&
+      impl->prompt_theme == SL_PROMPT_THEME_PLAIN) {
+    strcpy(prefix_style, "\033[2;90m");
+    strcpy(text_style, "\033[3;97m");
+    return 0;
+  }
+  if (!impl->quoted_prompt_style_custom &&
+      impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
+    strcpy(prefix_style, "\033[2;90m");
+    strcpy(text_style, "\033[3;96m");
+    return 0;
+  }
+  palette = sl_theme_palette(impl->prompt_theme);
+  if (!palette)
+    return -1;
+  if (impl->quoted_prompt_style_custom) {
+    prefix_color.red = impl->quoted_prompt_style.prefix.red;
+    prefix_color.green = impl->quoted_prompt_style.prefix.green;
+    prefix_color.blue = impl->quoted_prompt_style.prefix.blue;
+    text_color.red = impl->quoted_prompt_style.text.red;
+    text_color.green = impl->quoted_prompt_style.text.green;
+    text_color.blue = impl->quoted_prompt_style.text.blue;
+  } else {
+    prefix_color = palette->separator;
+    text_color = palette->elements[0];
+  }
+  if (sl_rgb_style(prefix_rgb, sizeof(prefix_rgb), prefix_color, 0) != 0 ||
+      sl_rgb_style(text_rgb, sizeof(text_rgb), text_color, 0) != 0)
+    return -1;
+  n = snprintf(prefix_style, prefix_cap, "\033[2m%s", prefix_rgb);
+  if (n < 0 || (size_t)n >= prefix_cap)
+    return -1;
+  n = snprintf(text_style, text_cap, "\033[3m%s", text_rgb);
+  return n >= 0 && (size_t)n < text_cap ? 0 : -1;
+}
+
+typedef struct sl_quote_output {
+  sl_t *owner;
+  char bytes[4096];
+  size_t len;
+} sl_quote_output_t;
+
+static int sl_quote_output_flush(sl_quote_output_t *output) {
+  int result;
+  if (output->len == 0)
+    return SL_OK;
+  result =
+      sl_output_stream_write_method(output->owner, output->bytes, output->len);
+  if (result == SL_OK)
+    output->len = 0;
+  return result;
+}
+
+static int sl_quote_output_append(sl_quote_output_t *output, const char *bytes,
+                                  size_t len) {
+  while (len > 0) {
+    size_t available = sizeof(output->bytes) - output->len;
+    size_t count = len < available ? len : available;
+    int result;
+    memcpy(output->bytes + output->len, bytes, count);
+    output->len += count;
+    bytes += count;
+    len -= count;
+    if (output->len == sizeof(output->bytes)) {
+      result = sl_quote_output_flush(output);
+      if (result != SL_OK)
+        return result;
+    }
+  }
+  return SL_OK;
+}
+
+static int sl_quoted_prompt_begin_row(sl_quote_output_t *output,
+                                      const char *prefix,
+                                      const char *prefix_style,
+                                      const char *text_style) {
+  const char *reset;
+  int result;
+  reset = prefix_style[0] ? "\033[0m" : "";
+  result = sl_quote_output_append(output, reset, strlen(reset));
+  if (result != SL_OK)
+    return result;
+  result = sl_quote_output_append(output, prefix_style, strlen(prefix_style));
+  if (result != SL_OK)
+    return result;
+  result = sl_quote_output_append(output, prefix, strlen(prefix));
+  if (result != SL_OK)
+    return result;
+  result = sl_quote_output_append(output, reset, strlen(reset));
+  if (result != SL_OK)
+    return result;
+  return sl_quote_output_append(output, text_style, strlen(text_style));
+}
+
+static int sl_quoted_prompt_end_row(sl_quote_output_t *output,
+                                    const char *text_style) {
+  return sl_quote_output_append(output, text_style[0] ? "\033[0m\n" : "\n",
+                                text_style[0] ? 5 : 1);
+}
+
+static int sl_quoted_prompt_next_row(sl_quote_output_t *output,
+                                     const char *prefix,
+                                     const char *prefix_style,
+                                     const char *text_style) {
+  int result = sl_quoted_prompt_end_row(output, text_style);
+  if (result != SL_OK)
+    return result;
+  return sl_quoted_prompt_begin_row(output, prefix, prefix_style, text_style);
+}
+
+static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
+                                                       const char *text) {
+  sl_impl_t *impl = sl_impl(self);
+  const char *prefix;
+  char prefix_style[64];
+  char text_style[64];
+  sl_quote_output_t output;
+  size_t len;
+  size_t pos;
+  size_t space_run_end;
+  size_t space_word_len;
+  int space_word_width;
+  int preceding_breaks;
+  int width;
+  int indent;
+  int col;
+  int result;
+  if (!impl || !impl->output_stream_active ||
+      !sl_quoted_prompt_text_valid(text)) {
+    sl_set_error(
+        self, "quoted prompt requires an open stream and printable UTF-8 text");
+    return SL_ERROR_INVALID;
+  }
+  if (impl->output_surface && !sl_surface_complete(impl->output_surface)) {
+    sl_set_error(self,
+                 "quoted prompt requires complete preceding output bytes");
+    return SL_ERROR_INVALID;
+  }
+  prefix = impl->quoted_prompt_prefix ? impl->quoted_prompt_prefix : "> ";
+  indent = sl_text_width(prefix, strlen(prefix));
+  width = sl_box_width(impl);
+  if (indent >= width) {
+    sl_set_error(
+        self,
+        "quoted prompt prefix leaves no room at the current output width");
+    return SL_ERROR_INVALID;
+  }
+  for (pos = 0, len = strlen(text); pos < len;) {
+    int cells;
+    size_t n;
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0)
+      break;
+    if (text[pos] != '\n' && text[pos] != '\t' && cells > width - indent) {
+      sl_set_error(self,
+                   "quoted prompt glyph is wider than space after prefix");
+      return SL_ERROR_INVALID;
+    }
+    pos += n;
+  }
+  if (sl_quoted_prompt_styles(impl, prefix_style, sizeof(prefix_style),
+                              text_style, sizeof(text_style)) != 0) {
+    sl_set_error(self, "failed to style quoted prompt");
+    return SL_ERROR;
+  }
+  memset(&output, 0, sizeof(output));
+  output.owner = self;
+  preceding_breaks = impl->output_trailing_newlines;
+  if (isatty(impl->input_fd) && isatty(impl->output_fd) &&
+      impl->output_surface) {
+    preceding_breaks = sl_surface_trailing_blank_rows(impl->output_surface, 2);
+    if (sl_surface_boundary_will_scroll(impl->output_surface))
+      preceding_breaks++;
+  }
+  if (preceding_breaks < 2) {
+    result =
+        sl_quote_output_append(&output, "\n\n", (size_t)(2 - preceding_breaks));
+    if (result != SL_OK)
+      return result;
+  }
+  result =
+      sl_quoted_prompt_begin_row(&output, prefix, prefix_style, text_style);
+  if (result != SL_OK)
+    return result;
+  len = strlen(text);
+  col = indent;
+  space_run_end = 0;
+  space_word_len = 0;
+  space_word_width = 0;
+  for (pos = 0; pos < len;) {
+    size_t n;
+    int cells;
+    if (text[pos] == '\n') {
+      result =
+          sl_quoted_prompt_next_row(&output, prefix, prefix_style, text_style);
+      if (result != SL_OK)
+        return result;
+      col = indent;
+      pos++;
+      continue;
+    }
+    if (text[pos] == ' ' && col > indent) {
+      size_t spaces;
+      if (space_run_end <= pos) {
+        space_run_end = pos;
+        while (space_run_end < len && text[space_run_end] == ' ')
+          space_run_end++;
+        space_word_len = sl_next_word_len(text, len, space_run_end);
+        space_word_width =
+            sl_word_width(text, len, space_run_end, space_word_len);
+      }
+      spaces = space_run_end - pos;
+      if (space_word_len > 0 && space_word_width <= width - indent &&
+          (spaces > (size_t)width ||
+           col + (int)spaces + space_word_width > width)) {
+        result = sl_quoted_prompt_next_row(&output, prefix, prefix_style,
+                                           text_style);
+        if (result != SL_OK)
+          return result;
+        col = indent;
+        pos += spaces;
+        continue;
+      }
+    }
+    if (sl_word_byte(text[pos]) && (pos == 0 || !sl_word_byte(text[pos - 1])) &&
+        col > indent) {
+      size_t word_len = sl_next_word_len(text, len, pos);
+      int word_width = sl_word_width(text, len, pos, word_len);
+      if (word_width <= width - indent && col + word_width > width) {
+        result = sl_quoted_prompt_next_row(&output, prefix, prefix_style,
+                                           text_style);
+        if (result != SL_OK)
+          return result;
+        col = indent;
+      }
+    }
+    n = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (n == 0)
+      break;
+    if (col >= width || (cells > 0 && col + cells > width)) {
+      result =
+          sl_quoted_prompt_next_row(&output, prefix, prefix_style, text_style);
+      if (result != SL_OK)
+        return result;
+      col = indent;
+    }
+    if (text[pos] == '\t') {
+      int spaces = 8 - col % 8;
+      while (spaces-- > 0) {
+        if (col >= width) {
+          result = sl_quoted_prompt_next_row(&output, prefix, prefix_style,
+                                             text_style);
+          if (result != SL_OK)
+            return result;
+          col = indent;
+        }
+        result = sl_quote_output_append(&output, " ", 1);
+        if (result != SL_OK)
+          return result;
+        col++;
+      }
+    } else {
+      result = sl_quote_output_append(&output, text + pos, n);
+      if (result != SL_OK)
+        return result;
+      col += cells;
+    }
+    pos += n;
+  }
+  result = sl_quoted_prompt_end_row(&output, text_style);
+  if (result != SL_OK)
+    return result;
+  result = sl_quote_output_append(&output, "\n", 1);
+  if (result != SL_OK)
+    return result;
+  return sl_quote_output_flush(&output);
+}
+
+static int sl_output_stream_end_method(sl_t *self) {
+  sl_impl_t *impl;
+  int prompt_origin;
+  impl = sl_impl(self);
+  if (!impl || !impl->output_stream_active) {
+    sl_set_error(self, "no live output stream is open");
+    return SL_ERROR_INVALID;
+  }
+  if (impl->output_surface && !sl_surface_complete(impl->output_surface)) {
+    sl_set_error(self,
+                 "live output ends in an incomplete ANSI or UTF-8 sequence");
+    return SL_ERROR_INVALID;
+  }
+  prompt_origin = impl->active_prompt && impl->rendered_rows > 0
+                      ? impl->rendered_top_row
+                      : -1;
+  if (impl->active_prompt && impl->rendered_rows > 0 &&
+      sl_render_clear_active(self) != 0) {
+    sl_set_error(self, "failed to clear prompt when ending live output");
+    return SL_ERROR_IO;
+  }
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
+    sl_surface_destroy(impl->output_surface);
+    impl->output_surface = NULL;
+  } else
+    sl_surface_mark_boundary(impl->output_surface);
+  impl->output_stream_active = 0;
+  sl_output_surface_update_scroll_hook(self);
+  if (impl->active_prompt && prompt_origin >= 0 && !sl_bounded_mode(impl) &&
+      sl_write_cursor_pos(impl->output_fd, prompt_origin, sl_box_left(impl)) !=
+          0) {
+    sl_set_error(self, "failed to position cursor before restoring prompt");
+    (void)sl_show_cursor(impl);
+    return SL_ERROR_IO;
+  }
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0) {
+    (void)sl_show_cursor(impl);
+    return SL_ERROR_IO;
+  }
+  if (!impl->active_prompt && !sl_bounded_mode(impl) &&
+      isatty(impl->input_fd) && isatty(impl->output_fd) &&
+      sl_write_cursor_pos(impl->output_fd, sl_prompt_top(impl, 1),
+                          sl_box_left(impl)) != 0) {
+    sl_set_error(self, "failed to position cursor after live output");
+    (void)sl_show_cursor(impl);
+    return SL_ERROR_IO;
+  }
+  if (sl_show_cursor(impl) != 0) {
+    sl_set_error(self, "failed to restore cursor after live output");
+    return SL_ERROR_IO;
+  }
   return SL_OK;
 }
 
@@ -4109,6 +5188,7 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   sl_impl_t *impl;
   sl_prompt_queue_keys_t *keys;
   char *queued;
+  sl_prompt_queue_mode_t queued_mode;
   int rc;
   if (handled)
     *handled = 0;
@@ -4155,12 +5235,13 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
       return SL_OK;
     }
     queued = NULL;
+    queued_mode = impl->prompt_queue.items[impl->prompt_queue.len - 1].mode;
     rc = sl_prompt_queue_take_method(self, (size_t)(impl->prompt_queue.len - 1),
                                      &queued);
     if (rc != SL_OK)
       return rc;
     if (sl_buf_set(self, queued) != 0) {
-      (void)sl_prompt_queue_append_raw(impl, queued);
+      (void)sl_prompt_queue_append_raw(impl, queued, queued_mode);
       free(queued);
       sl_set_error(self, "failed to restore queued draft into editor");
       return SL_ERROR_NOMEM;
@@ -4172,6 +5253,37 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   if (keys->submit_or_promote_newest != SL_KEY_NONE &&
       (sl_key_t)key == keys->submit_or_promote_newest) {
     *handled = 1;
+    if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS &&
+        impl->statusline.busy) {
+      if (impl->len != 0) {
+        rc = sl_prompt_queue_append_raw(impl, impl->buf,
+                                        SL_PROMPT_QUEUE_MODE_STEER);
+        if (rc == 1) {
+          sl_prompt_queue_bell(impl);
+          return SL_OK;
+        }
+        if (rc != 0) {
+          sl_set_error(self, "failed to queue steer draft");
+          return SL_ERROR_NOMEM;
+        }
+        if (sl_buf_set(self, "") != 0) {
+          char *discard = sl_prompt_queue_take_raw(&impl->prompt_queue,
+                                                   impl->prompt_queue.len - 1);
+          free(discard);
+          sl_set_error(self, "failed to clear steered draft");
+          return SL_ERROR_NOMEM;
+        }
+        sl_history_nav_reset(impl);
+        return SL_OK;
+      }
+      if (impl->prompt_queue.len == 0) {
+        sl_prompt_queue_bell(impl);
+        return SL_OK;
+      }
+      impl->prompt_queue.items[impl->prompt_queue.len - 1].mode =
+          SL_PROMPT_QUEUE_MODE_STEER;
+      return SL_OK;
+    }
     if (impl->len != 0) {
       *submit = 1;
       return SL_OK;
@@ -4261,19 +5373,22 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     int key;
     sl_key_action_t action;
     render_prompt = search.active && search.prompt ? search.prompt : prompt;
+    impl->active_prompt = render_prompt;
     paste_len = 0;
     if (impl->bracketed_paste)
       key = sl_read_paste_input(self, paste_bytes, &paste_len);
     else
       key = sl_read_key(self);
     /* A watch completion may become ready while a key sequence is being
-     * decoded. Preserve a real key, especially an immediate-turn
-     * override; only release FIFO work on an otherwise idle iteration. */
+     * decoded. Preserve a real key; release FIFO work only on an otherwise
+     * idle iteration. */
     if (key == SL_KEY_NONE && queue_dispatch && impl->request_queue_dispatch &&
         impl->len == 0 &&
         impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-        impl->prompt_queue.len > 0) {
-      queued = sl_prompt_queue_take_raw(&impl->prompt_queue, 0);
+        sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
+      queued = sl_prompt_queue_take_raw(
+          &impl->prompt_queue,
+          sl_prompt_queue_first_queued(&impl->prompt_queue));
       if (!queued) {
         sl_set_error(self, "failed to dispatch queued prompt");
         failed = 1;
@@ -4294,6 +5409,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         }
       }
       render_prompt = search.active && search.prompt ? search.prompt : prompt;
+      impl->active_prompt = render_prompt;
       if (!done && sl_render_apply(self, render_prompt) != 0) {
         failed = 1;
         done = 1;
@@ -4325,6 +5441,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
           break;
         }
         render_prompt = search.active && search.prompt ? search.prompt : prompt;
+        impl->active_prompt = render_prompt;
         if (sl_render_apply(self, render_prompt) != 0) {
           failed = 1;
           done = 1;
@@ -4554,12 +5671,14 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       break;
     }
     render_prompt = search.active && search.prompt ? search.prompt : prompt;
+    impl->active_prompt = render_prompt;
     if (!done && sl_render_apply(self, render_prompt) != 0) {
       failed = 1;
       done = 1;
     }
   }
   impl->active_readline = 0;
+  impl->active_prompt = prompt;
   if (interrupted) {
     sl_prompt_queue_stop_queued_turns(impl);
     free(promoted);
@@ -4679,8 +5798,9 @@ static char *sl_next_prompt_method(sl_t *self, const char *prompt,
     return NULL;
   if (sl_prompt_queue_enabled(impl) &&
       impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->prompt_queue.len > 0) {
-    result = sl_prompt_queue_take_raw(&impl->prompt_queue, 0);
+      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
+    result = sl_prompt_queue_take_raw(
+        &impl->prompt_queue, sl_prompt_queue_first_queued(&impl->prompt_queue));
     if (!result) {
       sl_set_error(self, "failed to dequeue prompt");
       sl_set_readline_status(self, SL_READLINE_ERROR);
@@ -4711,7 +5831,11 @@ static void sl_destroy_method(sl_t *self) {
     sl_history_clear(&impl->history);
     sl_prompt_queue_clear_raw(&impl->prompt_queue);
     sl_statusline_clear(&impl->statusline);
+    free(impl->quoted_prompt_prefix);
+    free(impl->status_message);
+    free(impl->status_message_prefix);
     sl_render_store_clear(impl);
+    sl_surface_destroy(impl->output_surface);
     free(impl->history_edit);
     free(impl->pending_input);
     free(impl->buf);
@@ -4732,8 +5856,22 @@ static int sl_set_screen_width_method(sl_t *self, int width) {
     sl_set_error(self, "invalid screen width");
     return SL_ERROR_INVALID;
   }
+  if (impl->active_prompt && impl->rendered_rows > 0 &&
+      sl_render_clear_active(self) != 0) {
+    sl_set_error(self, "failed to clear prompt before changing width");
+    return SL_ERROR_IO;
+  }
   impl->screen_width = width;
   impl->dynamic_width = width == 0;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0) {
+    sl_set_error(self, "failed to redraw prompt after changing width");
+    return SL_ERROR_IO;
+  }
+  if (!impl->active_prompt && impl->output_surface &&
+      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
+    sl_set_error(self, "failed to resize live output after changing width");
+    return SL_ERROR_IO;
+  }
   return SL_OK;
 }
 
@@ -4831,7 +5969,7 @@ static int sl_prompt_queue_peek_method(const sl_t *self, size_t index,
     sl_set_error((sl_t *)self, "prompt queue index is out of range");
     return SL_ERROR_INVALID;
   }
-  copy = sl_strdup(impl->prompt_queue.items[index]);
+  copy = sl_strdup(impl->prompt_queue.items[index].text);
   if (!copy) {
     sl_set_error((sl_t *)self, "failed to copy prompt queue entry");
     return SL_ERROR_NOMEM;
@@ -4876,7 +6014,7 @@ static int sl_prompt_queue_append_method(sl_t *self, const char *text) {
     sl_set_error(self, "prompt queue append requires nonempty text");
     return SL_ERROR_INVALID;
   }
-  rc = sl_prompt_queue_append_raw(impl, text);
+  rc = sl_prompt_queue_append_raw(impl, text, SL_PROMPT_QUEUE_MODE_QUEUED);
   if (rc == 1) {
     sl_set_error(self, "prompt queue is full");
     return SL_ERROR_FULL;
@@ -4930,6 +6068,36 @@ static int sl_prompt_queue_take_method(sl_t *self, size_t index, char **out) {
   return SL_OK;
 }
 
+static int sl_prompt_queue_get_mode_method(const sl_t *self, size_t index,
+                                           sl_prompt_queue_mode_t *out) {
+  const sl_impl_t *impl = sl_impl((sl_t *)self);
+  if (!impl || !out ||
+      !sl_prompt_queue_index_valid(index, impl->prompt_queue.len, 0)) {
+    sl_set_error((sl_t *)self, "invalid prompt queue mode query");
+    return SL_ERROR_INVALID;
+  }
+  *out = impl->prompt_queue.items[index].mode;
+  return SL_OK;
+}
+
+static int sl_prompt_queue_set_mode_method(sl_t *self, size_t index,
+                                           sl_prompt_queue_mode_t mode) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl || !sl_prompt_queue_enabled(impl) ||
+      !sl_prompt_queue_index_valid(index, impl->prompt_queue.len, 0) ||
+      (mode != SL_PROMPT_QUEUE_MODE_QUEUED &&
+       mode != SL_PROMPT_QUEUE_MODE_STEER)) {
+    sl_set_error(self, "invalid prompt queue mode update");
+    return SL_ERROR_INVALID;
+  }
+  impl->prompt_queue.items[index].mode = mode;
+  if (mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
+      impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+      impl->active_readline && impl->len == 0)
+    impl->request_queue_dispatch = 1;
+  return SL_OK;
+}
+
 static int sl_prompt_queue_clear_method(sl_t *self) {
   sl_impl_t *impl;
   impl = sl_impl(self);
@@ -4952,7 +6120,7 @@ static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
         self, "prompt queue draft enqueue requires an active nonempty editor");
     return SL_ERROR_INVALID;
   }
-  rc = sl_prompt_queue_append_raw(impl, impl->buf);
+  rc = sl_prompt_queue_append_raw(impl, impl->buf, SL_PROMPT_QUEUE_MODE_QUEUED);
   if (rc == 1) {
     sl_set_error(self, "prompt queue is full");
     return SL_ERROR_FULL;
@@ -4980,10 +6148,11 @@ sl_set_prompt_queue_delivery_method(sl_t *self,
     return SL_ERROR_INVALID;
   }
   if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) {
-    sl_set_error(self, "queued-turns delivery follows the status busy state");
-    return SL_ERROR_INVALID;
-  }
-  impl->prompt_queue.delivery = delivery;
+    impl->prompt_queue.host_controls_delivery =
+        delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL;
+    sl_prompt_queue_sync_queued_turns_delivery(impl);
+  } else
+    impl->prompt_queue.delivery = delivery;
   return SL_OK;
 }
 
@@ -5011,8 +6180,11 @@ sl_set_prompt_queue_profile_method(sl_t *self,
     return SL_ERROR_INVALID;
   }
   impl->prompt_queue.profile = profile;
-  if (profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS)
+  impl->prompt_queue.host_controls_delivery = 0;
+  if (profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) {
     impl->prompt_queue.stopped = 0;
+    impl->prompt_queue.delivery = SL_PROMPT_QUEUE_DELIVERY_AUTO;
+  }
   sl_prompt_queue_profile_keys(profile, &impl->prompt_queue.keys);
   sl_prompt_queue_sync_queued_turns_delivery(impl);
   return SL_OK;
@@ -5079,6 +6251,43 @@ static int sl_set_prompt_theme_method(sl_t *self, sl_prompt_theme_t theme) {
   return SL_OK;
 }
 
+static int sl_set_quoted_prompt_prefix_method(sl_t *self, const char *prefix) {
+  sl_impl_t *impl = sl_impl(self);
+  char *copy = NULL;
+  if (!impl ||
+      (prefix && (prefix[0] == '\0' || !sl_statusline_text_valid(prefix)))) {
+    sl_set_error(
+        self,
+        "quoted prompt prefix must be nonempty printable single-line UTF-8");
+    return SL_ERROR_INVALID;
+  }
+  if (prefix) {
+    copy = strdup(prefix);
+    if (!copy) {
+      sl_set_error(self, "failed to allocate quoted prompt prefix");
+      return SL_ERROR;
+    }
+  }
+  free(impl->quoted_prompt_prefix);
+  impl->quoted_prompt_prefix = copy;
+  return SL_OK;
+}
+
+static int sl_set_quoted_prompt_style_method(sl_t *self,
+                                             const sl_quote_style_t *style) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl)
+    return SL_ERROR_INVALID;
+  if (style) {
+    impl->quoted_prompt_style = *style;
+    impl->quoted_prompt_style_custom = 1;
+  } else {
+    memset(&impl->quoted_prompt_style, 0, sizeof(impl->quoted_prompt_style));
+    impl->quoted_prompt_style_custom = 0;
+  }
+  return SL_OK;
+}
+
 static int sl_set_statusline_method(sl_t *self, int enabled,
                                     size_t starting_element) {
   sl_impl_t *impl;
@@ -5089,6 +6298,66 @@ static int sl_set_statusline_method(sl_t *self, int enabled,
   }
   impl->statusline.enabled = enabled;
   impl->statusline.start_element = starting_element;
+  return SL_OK;
+}
+
+static int sl_set_status_message_method(sl_t *self, const char *message) {
+  sl_impl_t *impl;
+  char *copy;
+  impl = sl_impl(self);
+  if (!impl || !sl_statusline_text_valid(message)) {
+    sl_set_error(self, "status message must be printable single-line UTF-8");
+    return SL_ERROR_INVALID;
+  }
+  copy = message && message[0] ? sl_strdup(message) : NULL;
+  if (message && message[0] && !copy) {
+    sl_set_error(self, "failed to allocate status message");
+    return SL_ERROR_NOMEM;
+  }
+  free(impl->status_message);
+  impl->status_message = copy;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
+  return SL_OK;
+}
+
+static int sl_set_status_message_prefix_method(sl_t *self, const char *prefix) {
+  sl_impl_t *impl;
+  char *copy;
+  impl = sl_impl(self);
+  if (!impl || !sl_statusline_text_valid(prefix)) {
+    sl_set_error(self,
+                 "status message prefix must be printable single-line UTF-8");
+    return SL_ERROR_INVALID;
+  }
+  copy = prefix ? sl_strdup(prefix) : NULL;
+  if (prefix && !copy) {
+    sl_set_error(self, "failed to allocate status message prefix");
+    return SL_ERROR_NOMEM;
+  }
+  free(impl->status_message_prefix);
+  impl->status_message_prefix = copy;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
+  return SL_OK;
+}
+
+static int sl_set_status_message_colors_method(sl_t *self,
+                                               sl_theme_color_t prefix_color,
+                                               sl_theme_color_t text_color) {
+  sl_impl_t *impl;
+  impl = sl_impl(self);
+  if (!impl || prefix_color < SL_THEME_COLOR_MUTED ||
+      prefix_color > SL_THEME_COLOR_ELEMENT_7 ||
+      text_color < SL_THEME_COLOR_MUTED ||
+      text_color > SL_THEME_COLOR_ELEMENT_7) {
+    sl_set_error(self, "invalid status message theme color");
+    return SL_ERROR_INVALID;
+  }
+  impl->status_message_prefix_color = prefix_color;
+  impl->status_message_text_color = text_color;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
   return SL_OK;
 }
 
@@ -5221,6 +6490,11 @@ static int sl_set_bounds_method(sl_t *self, int x, int y, int width,
     sl_set_error(self, "invalid terminal bounds");
     return SL_ERROR_INVALID;
   }
+  if (impl->active_prompt && impl->rendered_rows > 0 &&
+      sl_render_clear_active(self) != 0) {
+    sl_set_error(self, "failed to clear prompt before changing bounds");
+    return SL_ERROR_IO;
+  }
   impl->screen_x = x;
   impl->screen_y = y;
   impl->screen_width = width;
@@ -5228,7 +6502,17 @@ static int sl_set_bounds_method(sl_t *self, int x, int y, int width,
   impl->dynamic_width = width == 0;
   impl->dynamic_height = height == 0;
   impl->bounded = height > 0 || impl->dynamic_height;
-  sl_render_store_clear(impl);
+  if (!impl->active_prompt)
+    sl_render_store_clear(impl);
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0) {
+    sl_set_error(self, "failed to redraw prompt after changing bounds");
+    return SL_ERROR_IO;
+  }
+  if (!impl->active_prompt && impl->output_surface &&
+      sl_output_surface_reconcile(self, sl_prompt_top(impl, 1), 0) != 0) {
+    sl_set_error(self, "failed to resize live output after changing bounds");
+    return SL_ERROR_IO;
+  }
   return SL_OK;
 }
 
@@ -5415,6 +6699,15 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->watch_modify = sl_watch_modify_method;
   self->watch_remove = sl_watch_remove_method;
   self->watch_clear = sl_watch_clear_method;
+  self->output_stream_begin = sl_output_stream_begin_method;
+  self->output_stream_write = sl_output_stream_write_method;
+  self->output_stream_end = sl_output_stream_end_method;
+  self->output_stream_write_quoted_prompt =
+      sl_output_stream_write_quoted_prompt_method;
+  self->set_quoted_prompt_prefix = sl_set_quoted_prompt_prefix_method;
+  self->set_quoted_prompt_style = sl_set_quoted_prompt_style_method;
+  self->set_status_message_prefix = sl_set_status_message_prefix_method;
+  self->set_status_message_colors = sl_set_status_message_colors_method;
   self->bind_key = sl_bind_key_method;
   self->insert = sl_buf_insert_cstr;
   self->set_buffer = sl_buf_set_public;
@@ -5431,6 +6724,11 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->set_prompt_queue = sl_set_prompt_queue_method;
   self->set_prompt_theme = sl_set_prompt_theme_method;
   self->set_statusline = sl_set_statusline_method;
+  self->set_status_message = sl_set_status_message_method;
+  impl->status_message_prefix_color = SL_THEME_COLOR_MUTED;
+  impl->status_message_text_color = SL_THEME_COLOR_SECONDARY;
+  self->prompt_queue_get_mode = sl_prompt_queue_get_mode_method;
+  self->prompt_queue_set_mode = sl_prompt_queue_set_mode_method;
   self->set_status_elements = sl_set_status_elements_method;
   self->set_status_element = sl_set_status_element_method;
   self->set_status_busy = sl_set_status_busy_method;
@@ -5617,6 +6915,20 @@ int sl_prompt_queue_take(sl_t *self, size_t index, char **out) {
   return self->prompt_queue_take(self, index, out);
 }
 
+int sl_prompt_queue_get_mode(const sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t *out) {
+  if (!self || !self->prompt_queue_get_mode)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_get_mode(self, index, out);
+}
+
+int sl_prompt_queue_set_mode(sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t mode) {
+  if (!self || !self->prompt_queue_set_mode)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_set_mode(self, index, mode);
+}
+
 int sl_prompt_queue_clear(sl_t *self) {
   if (!self || !self->prompt_queue_clear)
     return SL_ERROR_INVALID;
@@ -5678,6 +6990,25 @@ int sl_set_statusline(sl_t *self, int enabled, size_t starting_element) {
   if (!self || !self->set_statusline)
     return SL_ERROR_INVALID;
   return self->set_statusline(self, enabled, starting_element);
+}
+
+int sl_set_status_message(sl_t *self, const char *message) {
+  if (!self || !self->set_status_message)
+    return SL_ERROR_INVALID;
+  return self->set_status_message(self, message);
+}
+
+int sl_set_status_message_prefix(sl_t *self, const char *prefix) {
+  if (!self || !self->set_status_message_prefix)
+    return SL_ERROR_INVALID;
+  return self->set_status_message_prefix(self, prefix);
+}
+
+int sl_set_status_message_colors(sl_t *self, sl_theme_color_t prefix_color,
+                                 sl_theme_color_t text_color) {
+  if (!self || !self->set_status_message_colors)
+    return SL_ERROR_INVALID;
+  return self->set_status_message_colors(self, prefix_color, text_color);
 }
 
 int sl_set_status_elements(sl_t *self, const char *const *elements,
@@ -5799,6 +7130,42 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata) {
   if (!self || !self->print_above)
     return SL_ERROR_INVALID;
   return self->print_above(self, callback, userdata);
+}
+
+int sl_output_stream_begin(sl_t *self) {
+  if (!self || !self->output_stream_begin)
+    return SL_ERROR_INVALID;
+  return self->output_stream_begin(self);
+}
+
+int sl_output_stream_write(sl_t *self, const char *bytes, size_t length) {
+  if (!self || !self->output_stream_write)
+    return SL_ERROR_INVALID;
+  return self->output_stream_write(self, bytes, length);
+}
+
+int sl_output_stream_end(sl_t *self) {
+  if (!self || !self->output_stream_end)
+    return SL_ERROR_INVALID;
+  return self->output_stream_end(self);
+}
+
+int sl_output_stream_write_quoted_prompt(sl_t *self, const char *text) {
+  if (!self || !self->output_stream_write_quoted_prompt)
+    return SL_ERROR_INVALID;
+  return self->output_stream_write_quoted_prompt(self, text);
+}
+
+int sl_set_quoted_prompt_prefix(sl_t *self, const char *prefix) {
+  if (!self || !self->set_quoted_prompt_prefix)
+    return SL_ERROR_INVALID;
+  return self->set_quoted_prompt_prefix(self, prefix);
+}
+
+int sl_set_quoted_prompt_style(sl_t *self, const sl_quote_style_t *style) {
+  if (!self || !self->set_quoted_prompt_style)
+    return SL_ERROR_INVALID;
+  return self->set_quoted_prompt_style(self, style);
 }
 
 sl_readline_status_t sl_last_readline_status(const sl_t *self) {

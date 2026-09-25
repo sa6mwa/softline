@@ -2,6 +2,7 @@
 #define SOFTLINE_INTERNAL_H
 
 #include "softline/softline.h"
+#include "softline_surface.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -35,8 +36,13 @@ typedef struct sl_history {
   int max_len;
 } sl_history_t;
 
+typedef struct sl_prompt_queue_entry {
+  char *text;
+  sl_prompt_queue_mode_t mode;
+} sl_prompt_queue_entry_t;
+
 typedef struct sl_prompt_queue {
-  char **items;
+  sl_prompt_queue_entry_t *items;
   int len;
   int cap;
   int max_entries;
@@ -45,6 +51,7 @@ typedef struct sl_prompt_queue {
   /* A queued-turns cancellation retains drafts but stops automatic FIFO
    * release until the user intentionally submits or promotes a turn. */
   int stopped;
+  int host_controls_delivery;
   sl_prompt_queue_delivery_t delivery;
   sl_prompt_queue_profile_t profile;
   sl_prompt_queue_keys_t keys;
@@ -82,6 +89,13 @@ typedef struct sl_impl {
   int bounded;
   int live_scroll_region;
   int auto_scroll_pinned;
+  int output_stream_active;
+  int output_trailing_newlines;
+  int output_ansi_state;
+  /* Hold at most ESC [, 128 CSI bytes, and a terminator across writes. */
+  char output_pending[132];
+  size_t output_pending_len;
+  sl_surface_t *output_surface;
   int cursor_position_probe;
   int dynamic_width;
   int dynamic_height;
@@ -95,7 +109,14 @@ typedef struct sl_impl {
   sl_history_t history;
   sl_prompt_queue_t prompt_queue;
   sl_prompt_theme_t prompt_theme;
+  char *quoted_prompt_prefix;
+  sl_quote_style_t quoted_prompt_style;
+  int quoted_prompt_style_custom;
   sl_statusline_t statusline;
+  char *status_message;
+  char *status_message_prefix;
+  sl_theme_color_t status_message_prefix_color;
+  sl_theme_color_t status_message_text_color;
   int history_index;
   char *history_edit;
   int bracketed_paste;

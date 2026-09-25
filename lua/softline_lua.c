@@ -604,6 +604,33 @@ static int softline_lua_queue_take(lua_State *L) {
   return 1;
 }
 
+static int softline_lua_queue_mode(lua_State *L) {
+  softline_lua_handle_t *handle;
+  sl_prompt_queue_mode_t mode;
+  size_t index;
+  int status;
+  handle = softline_lua_check(L, 1);
+  if (!softline_lua_queue_index(L, 2, &index))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  status = sl_prompt_queue_get_mode(handle->sl, index, &mode);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  lua_pushinteger(L, (lua_Integer)mode);
+  return 1;
+}
+
+static int softline_lua_queue_set_mode(lua_State *L) {
+  softline_lua_handle_t *handle;
+  size_t index;
+  handle = softline_lua_check(L, 1);
+  if (!softline_lua_queue_index(L, 2, &index))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  return softline_lua_status(
+      L,
+      sl_prompt_queue_set_mode(
+          handle->sl, index, (sl_prompt_queue_mode_t)luaL_checkinteger(L, 3)));
+}
+
 static int softline_lua_queue_clear(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -729,12 +756,88 @@ static int softline_lua_set_prompt_theme(lua_State *L) {
                              (sl_prompt_theme_t)luaL_checkinteger(L, 2)));
 }
 
+/** Lua editor:set_quoted_prompt_prefix(prefix): set the prefix repeated on
+ * every wrapped quote row. nil restores the default "> ". */
+static int softline_lua_set_quoted_prompt_prefix(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  const char *prefix = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+  return softline_lua_status(L,
+                             sl_set_quoted_prompt_prefix(handle->sl, prefix));
+}
+
+static void softline_lua_quote_color(lua_State *L, int index, const char *field,
+                                     sl_quote_color_t *out) {
+  unsigned char *values[3];
+  int i;
+  lua_getfield(L, index, field);
+  luaL_checktype(L, -1, LUA_TTABLE);
+  values[0] = &out->red;
+  values[1] = &out->green;
+  values[2] = &out->blue;
+  for (i = 0; i < 3; i++) {
+    lua_Integer value;
+    lua_rawgeti(L, -1, i + 1);
+    value = luaL_checkinteger(L, -1);
+    if (value < 0 || value > 255)
+      luaL_error(L, "quoted prompt %s colour channels must be 0..255", field);
+    *values[i] = (unsigned char)value;
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+}
+
+/** Lua editor:set_quoted_prompt_style(style): set independent RGB colours for
+ * the dim prefix and italic text. nil restores the selected theme. */
+static int softline_lua_set_quoted_prompt_style(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_quote_style_t style;
+  if (lua_isnoneornil(L, 2))
+    return softline_lua_status(L, sl_set_quoted_prompt_style(handle->sl, NULL));
+  luaL_checktype(L, 2, LUA_TTABLE);
+  softline_lua_quote_color(L, 2, "prefix", &style.prefix);
+  softline_lua_quote_color(L, 2, "text", &style.text);
+  return softline_lua_status(L, sl_set_quoted_prompt_style(handle->sl, &style));
+}
+
 static int softline_lua_set_statusline(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
   return softline_lua_status(
       L, sl_set_statusline(handle->sl, lua_toboolean(L, 2),
                            (size_t)luaL_checkinteger(L, 3)));
+}
+
+/** Lua editor:set_status_message(text): update the wrapped status message
+ * above the status line, including during an active output stream. nil or an
+ * empty string clears it. */
+static int softline_lua_set_status_message(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *message;
+  handle = softline_lua_check(L, 1);
+  message = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+  return softline_lua_status(L, sl_set_status_message(handle->sl, message));
+}
+
+/** Lua editor:set_status_message_prefix(prefix): change the first-row prefix;
+ * continuation rows are indented to its display width. nil restores "! ". */
+static int softline_lua_set_status_message_prefix(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *prefix;
+  handle = softline_lua_check(L, 1);
+  prefix = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+  return softline_lua_status(L,
+                             sl_set_status_message_prefix(handle->sl, prefix));
+}
+
+/** Lua editor:set_status_message_colors(prefix_color, text_color): select
+ * separate theme palette roles for the prefix and italic message. */
+static int softline_lua_set_status_message_colors(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_set_status_message_colors(
+                                    handle->sl,
+                                    (sl_theme_color_t)luaL_checkinteger(L, 2),
+                                    (sl_theme_color_t)luaL_checkinteger(L, 3)));
 }
 
 static int softline_lua_set_status_elements(lua_State *L) {
@@ -1086,6 +1189,45 @@ static int softline_lua_print_above(lua_State *L) {
   return softline_lua_status(L, status);
 }
 
+/** Lua editor:output_stream_begin(): open one renderer-agnostic session.
+ * The Lua/editor owner thread controls writes and geometry; an external
+ * producer must hand chunks through a watched descriptor. */
+static int softline_lua_output_stream_begin(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_output_stream_begin(handle->sl));
+}
+
+/** Lua editor:output_stream_write(bytes): forward a byte string immediately.
+ * No newline or document boundary is inferred, including for an empty string.
+ */
+static int softline_lua_output_stream_write(lua_State *L) {
+  softline_lua_handle_t *handle;
+  const char *bytes;
+  size_t length;
+  handle = softline_lua_check(L, 1);
+  bytes = luaL_checklstring(L, 2, &length);
+  return softline_lua_status(L,
+                             sl_output_stream_write(handle->sl, bytes, length));
+}
+
+/** Lua editor:output_stream_write_quoted_prompt(text): write a literal,
+ * wrapped quote between renderer segments, with one empty row on each side. */
+static int softline_lua_output_stream_write_quoted_prompt(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  const char *text = luaL_checkstring(L, 2);
+  return softline_lua_status(
+      L, sl_output_stream_write_quoted_prompt(handle->sl, text));
+}
+
+/** Lua editor:output_stream_end(): release the session without finishing any
+ * external renderer document or adding output bytes. */
+static int softline_lua_output_stream_end(lua_State *L) {
+  softline_lua_handle_t *handle;
+  handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_output_stream_end(handle->sl));
+}
+
 static const luaL_Reg softline_lua_methods[] = {
     {"readline", softline_lua_readline},
     {"next_prompt", softline_lua_next_prompt},
@@ -1104,6 +1246,8 @@ static const luaL_Reg softline_lua_methods[] = {
     {"queue_append", softline_lua_queue_append},
     {"queue_replace", softline_lua_queue_replace},
     {"queue_take", softline_lua_queue_take},
+    {"queue_mode", softline_lua_queue_mode},
+    {"queue_set_mode", softline_lua_queue_set_mode},
     {"queue_clear", softline_lua_queue_clear},
     {"queue_draft", softline_lua_queue_draft},
     {"set_queue_delivery", softline_lua_set_queue_delivery},
@@ -1113,7 +1257,12 @@ static const luaL_Reg softline_lua_methods[] = {
     {"set_queue_keys", softline_lua_set_queue_keys},
     {"queue_keys", softline_lua_queue_keys},
     {"set_prompt_theme", softline_lua_set_prompt_theme},
+    {"set_quoted_prompt_prefix", softline_lua_set_quoted_prompt_prefix},
+    {"set_quoted_prompt_style", softline_lua_set_quoted_prompt_style},
     {"set_statusline", softline_lua_set_statusline},
+    {"set_status_message", softline_lua_set_status_message},
+    {"set_status_message_prefix", softline_lua_set_status_message_prefix},
+    {"set_status_message_colors", softline_lua_set_status_message_colors},
     {"set_status_elements", softline_lua_set_status_elements},
     {"set_status_element", softline_lua_set_status_element},
     {"set_status_busy", softline_lua_set_status_busy},
@@ -1133,6 +1282,11 @@ static const luaL_Reg softline_lua_methods[] = {
     {"watch_remove", softline_lua_watch_remove},
     {"watch_clear", softline_lua_watch_clear},
     {"print_above", softline_lua_print_above},
+    {"output_stream_begin", softline_lua_output_stream_begin},
+    {"output_stream_write", softline_lua_output_stream_write},
+    {"output_stream_write_quoted_prompt",
+     softline_lua_output_stream_write_quoted_prompt},
+    {"output_stream_end", softline_lua_output_stream_end},
     {"last_readline_status", softline_lua_last_readline_status},
     {"last_error", softline_lua_last_error},
     {"close", softline_lua_close},
@@ -1166,6 +1320,14 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "READLINE_ERROR");
   lua_pushinteger(L, SL_OK);
   lua_setfield(L, -2, "OK");
+  lua_pushinteger(L, SL_ERROR);
+  lua_setfield(L, -2, "ERROR");
+  lua_pushinteger(L, SL_ERROR_INVALID);
+  lua_setfield(L, -2, "ERROR_INVALID");
+  lua_pushinteger(L, SL_ERROR_NOMEM);
+  lua_setfield(L, -2, "ERROR_NOMEM");
+  lua_pushinteger(L, SL_ERROR_IO);
+  lua_setfield(L, -2, "ERROR_IO");
   lua_pushinteger(L, SL_ERROR_FULL);
   lua_setfield(L, -2, "ERROR_FULL");
   lua_pushinteger(L, SL_WATCH_READ);
@@ -1184,6 +1346,10 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "PROMPT_SOURCE_QUEUED");
   lua_pushinteger(L, SL_PROMPT_SOURCE_PROMOTED);
   lua_setfield(L, -2, "PROMPT_SOURCE_PROMOTED");
+  lua_pushinteger(L, SL_PROMPT_QUEUE_MODE_QUEUED);
+  lua_setfield(L, -2, "QUEUE_MODE_QUEUED");
+  lua_pushinteger(L, SL_PROMPT_QUEUE_MODE_STEER);
+  lua_setfield(L, -2, "QUEUE_MODE_STEER");
   lua_pushinteger(L, SL_PROMPT_THEME_PLAIN);
   lua_setfield(L, -2, "PROMPT_THEME_PLAIN");
   lua_pushinteger(L, SL_PROMPT_THEME_ACCENT);
@@ -1204,12 +1370,62 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "PROMPT_THEME_SYNTHWAVE");
   lua_pushinteger(L, SL_PROMPT_THEME_DEFAULT);
   lua_setfield(L, -2, "PROMPT_THEME_DEFAULT");
+  lua_pushinteger(L, SL_THEME_COLOR_MUTED);
+  lua_setfield(L, -2, "THEME_COLOR_MUTED");
+  lua_pushinteger(L, SL_THEME_COLOR_SECONDARY);
+  lua_setfield(L, -2, "THEME_COLOR_SECONDARY");
+  lua_pushinteger(L, SL_THEME_COLOR_PROMPT);
+  lua_setfield(L, -2, "THEME_COLOR_PROMPT");
+  lua_pushinteger(L, SL_THEME_COLOR_QUEUE);
+  lua_setfield(L, -2, "THEME_COLOR_QUEUE");
+  lua_pushinteger(L, SL_THEME_COLOR_INPUT);
+  lua_setfield(L, -2, "THEME_COLOR_INPUT");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_0);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_0");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_1);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_1");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_2);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_2");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_3);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_3");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_4);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_4");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_5);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_5");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_6);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_6");
+  lua_pushinteger(L, SL_THEME_COLOR_ELEMENT_7);
+  lua_setfield(L, -2, "THEME_COLOR_ELEMENT_7");
   lua_pushinteger(L, SL_STATUS_MAX_ELEMENTS);
   lua_setfield(L, -2, "STATUS_MAX_ELEMENTS");
   lua_pushinteger(L, SL_KEY_CTRL_C);
   lua_setfield(L, -2, "KEY_CTRL_C");
+  lua_pushinteger(L, SL_KEY_NONE);
+  lua_setfield(L, -2, "KEY_NONE");
+  lua_pushinteger(L, SL_KEY_CTRL_A);
+  lua_setfield(L, -2, "KEY_CTRL_A");
+  lua_pushinteger(L, SL_KEY_CTRL_B);
+  lua_setfield(L, -2, "KEY_CTRL_B");
+  lua_pushinteger(L, SL_KEY_CTRL_D);
+  lua_setfield(L, -2, "KEY_CTRL_D");
+  lua_pushinteger(L, SL_KEY_CTRL_E);
+  lua_setfield(L, -2, "KEY_CTRL_E");
+  lua_pushinteger(L, SL_KEY_CTRL_F);
+  lua_setfield(L, -2, "KEY_CTRL_F");
+  lua_pushinteger(L, SL_KEY_CTRL_J);
+  lua_setfield(L, -2, "KEY_CTRL_J");
+  lua_pushinteger(L, SL_KEY_CTRL_K);
+  lua_setfield(L, -2, "KEY_CTRL_K");
+  lua_pushinteger(L, SL_KEY_CTRL_R);
+  lua_setfield(L, -2, "KEY_CTRL_R");
+  lua_pushinteger(L, SL_KEY_CTRL_U);
+  lua_setfield(L, -2, "KEY_CTRL_U");
+  lua_pushinteger(L, SL_KEY_CTRL_W);
+  lua_setfield(L, -2, "KEY_CTRL_W");
   lua_pushinteger(L, SL_KEY_ESCAPE);
   lua_setfield(L, -2, "KEY_ESCAPE");
+  lua_pushinteger(L, SL_KEY_BACKSPACE);
+  lua_setfield(L, -2, "KEY_BACKSPACE");
   lua_pushinteger(L, SL_KEY_TAB);
   lua_setfield(L, -2, "KEY_TAB");
   lua_pushinteger(L, SL_KEY_ENTER);
@@ -1222,12 +1438,56 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "KEY_UP");
   lua_pushinteger(L, SL_KEY_DOWN);
   lua_setfield(L, -2, "KEY_DOWN");
+  lua_pushinteger(L, SL_KEY_LEFT);
+  lua_setfield(L, -2, "KEY_LEFT");
+  lua_pushinteger(L, SL_KEY_RIGHT);
+  lua_setfield(L, -2, "KEY_RIGHT");
+  lua_pushinteger(L, SL_KEY_HOME);
+  lua_setfield(L, -2, "KEY_HOME");
+  lua_pushinteger(L, SL_KEY_END);
+  lua_setfield(L, -2, "KEY_END");
+  lua_pushinteger(L, SL_KEY_DELETE);
+  lua_setfield(L, -2, "KEY_DELETE");
+  lua_pushinteger(L, SL_KEY_ALT_B);
+  lua_setfield(L, -2, "KEY_ALT_B");
+  lua_pushinteger(L, SL_KEY_ALT_F);
+  lua_setfield(L, -2, "KEY_ALT_F");
+  lua_pushinteger(L, SL_KEY_UNKNOWN);
+  lua_setfield(L, -2, "KEY_UNKNOWN");
+  lua_pushinteger(L, SL_KEY_PASTE_BEGIN);
+  lua_setfield(L, -2, "KEY_PASTE_BEGIN");
+  lua_pushinteger(L, SL_KEY_PASTE_END);
+  lua_setfield(L, -2, "KEY_PASTE_END");
+  lua_pushinteger(L, SL_KEY_F1);
+  lua_setfield(L, -2, "KEY_F1");
+  lua_pushinteger(L, SL_KEY_F2);
+  lua_setfield(L, -2, "KEY_F2");
+  lua_pushinteger(L, SL_KEY_F3);
+  lua_setfield(L, -2, "KEY_F3");
+  lua_pushinteger(L, SL_KEY_F4);
+  lua_setfield(L, -2, "KEY_F4");
+  lua_pushinteger(L, SL_KEY_F5);
+  lua_setfield(L, -2, "KEY_F5");
+  lua_pushinteger(L, SL_KEY_F6);
+  lua_setfield(L, -2, "KEY_F6");
+  lua_pushinteger(L, SL_KEY_F7);
+  lua_setfield(L, -2, "KEY_F7");
+  lua_pushinteger(L, SL_KEY_F8);
+  lua_setfield(L, -2, "KEY_F8");
+  lua_pushinteger(L, SL_KEY_F9);
+  lua_setfield(L, -2, "KEY_F9");
+  lua_pushinteger(L, SL_KEY_F10);
+  lua_setfield(L, -2, "KEY_F10");
   lua_pushinteger(L, SL_KEY_CTRL_ENTER);
   lua_setfield(L, -2, "KEY_CTRL_ENTER");
   lua_pushinteger(L, SL_KEY_ALT_ENTER);
   lua_setfield(L, -2, "KEY_ALT_ENTER");
   lua_pushinteger(L, SL_KEY_ALT_E);
   lua_setfield(L, -2, "KEY_ALT_E");
+  lua_pushinteger(L, SL_KEY_ALT_BASE);
+  lua_setfield(L, -2, "KEY_ALT_BASE");
+  lua_pushinteger(L, SL_KEY_ALT_M);
+  lua_setfield(L, -2, "KEY_ALT_M");
   lua_pushinteger(L, SL_KEY_ACTION_PASS);
   lua_setfield(L, -2, "KEY_ACTION_PASS");
   lua_pushinteger(L, SL_KEY_ACTION_HANDLED);

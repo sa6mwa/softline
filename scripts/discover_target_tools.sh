@@ -129,6 +129,7 @@ DEFAULT_CC=""
 DEFAULT_LINKER=""
 DEFAULT_READELF=""
 DEFAULT_STRIP=""
+DEFAULT_NM=""
 ALLOW_PATH_FALLBACK=0
 
 case "${TARGET_OS}" in
@@ -140,6 +141,7 @@ case "${TARGET_OS}" in
       DEFAULT_LINKER="${CPKT_TOOLCHAIN_LD:-${LD:-}}"
       DEFAULT_READELF="${CPKT_TOOLCHAIN_READELF:-${READELF:-}}"
       DEFAULT_STRIP="${CPKT_TOOLCHAIN_STRIP:-${STRIP:-}}"
+      DEFAULT_NM="${CPKT_TOOLCHAIN_NM:-${NM:-}}"
     fi
     ;;
   darwin)
@@ -175,6 +177,7 @@ case "${TARGET_OS}" in
   *) DEFAULT_STRIP_PATH="${DEFAULT_DARWIN_STRIP}" ;;
 esac
 STRIP_VALUE="$(find_tool "${SOFTLINE_STRIP:-}" CMAKE_STRIP "${CC_VALUE}" strip "${DEFAULT_STRIP_PATH}" "${ALLOW_PATH_FALLBACK}")"
+NM_VALUE="$(find_tool "${SOFTLINE_NM:-}" CMAKE_NM "${CC_VALUE}" nm "${DEFAULT_NM}" "${ALLOW_PATH_FALLBACK}")"
 
 print_assignment TARGET_ID "${TARGET_ID}"
 print_assignment TARGET_OS "${TARGET_OS}"
@@ -184,3 +187,4 @@ print_assignment READELF "${READELF_VALUE}"
 print_assignment OTOOL "${OTOOL_VALUE}"
 print_assignment INSTALL_NAME_TOOL "${INSTALL_NAME_TOOL_VALUE}"
 print_assignment STRIP "${STRIP_VALUE}"
+print_assignment NM "${NM_VALUE}"

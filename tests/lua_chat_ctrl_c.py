@@ -52,7 +52,7 @@ def main():
         os.write(master, b"\x03")
         read_until(master, b"[cancelled]")
         time.sleep(0.1)
-        os.write(master, b"exit\r")
+        os.write(master, b"/quit\r")
         status = proc.wait(timeout=5.0)
         if status != 0:
             raise AssertionError(f"lua chat exited with status {status}")

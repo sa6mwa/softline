@@ -16,8 +16,13 @@ fi
 
 dry_run() {
   PATH_VALUE="$1"
-  printf 'int main(void) { return 0; }\n' |
-    PATH="${PATH_VALUE}" "${cc}" -x c - -### -o /dev/null 2>&1
+  if [ "$#" -eq 2 ]; then
+    printf 'int main(void) { return 0; }\n' |
+      PATH="${PATH_VALUE}" "${cc}" -x c - -### "--ld-path=$2" -o /dev/null 2>&1
+  else
+    printf 'int main(void) { return 0; }\n' |
+      PATH="${PATH_VALUE}" "${cc}" -x c - -### -o /dev/null 2>&1
+  fi
 }
 
 ambient_out="$(dry_run "${PATH}")"
@@ -25,7 +30,7 @@ case "${ambient_out}" in
   *'"/usr/bin/ld"'*|*' /usr/bin/ld '*)
     echo "Observed unfixed Darwin route selecting host /usr/bin/ld"
     ;;
-  *"${ld}"*)
+  *"${ld}"*|*'/ld64.lld"'*)
     echo "Ambient Darwin route already selects target linker"
     ;;
   *)
@@ -35,7 +40,7 @@ case "${ambient_out}" in
     ;;
 esac
 
-fixed_out="$(dry_run "$(dirname "${cc}"):${PATH}")"
+fixed_out="$(dry_run "$(dirname "${cc}"):${PATH}" "${ld}")"
 case "${fixed_out}" in
   *"${ld}"*) ;;
   *)

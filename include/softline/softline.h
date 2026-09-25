@@ -255,15 +255,25 @@ typedef enum sl_prompt_queue_delivery {
   SL_PROMPT_QUEUE_DELIVERY_MANUAL = 1
 } sl_prompt_queue_delivery_t;
 
+/** Application-controlled delivery intent attached to each queued prompt. */
+typedef enum sl_prompt_queue_mode {
+  /** A normal follow-up turn, eligible for automatic idle delivery. */
+  SL_PROMPT_QUEUE_MODE_QUEUED = 0,
+  /** A host-selected turn to deliver at a safe seam. */
+  SL_PROMPT_QUEUE_MODE_STEER = 1
+} sl_prompt_queue_mode_t;
+
 /** Built-in prompt queue interaction mappings. */
 typedef enum sl_prompt_queue_profile {
   /** Tab enqueues and Alt-E edits the newest queued entry. */
   SL_PROMPT_QUEUE_PROFILE_DEFAULT = 0,
   /**
    * Turn-oriented queueing. While status is busy, Enter enqueues nonempty
-   * drafts. When status returns idle, next_prompt() delivers one oldest queued
-   * turn. Cancellation stops automatic release until the user submits or
-   * promotes a turn. Alt-Enter submits or promotes; Alt-E edits newest.
+   * drafts. In automatic delivery mode, idle next_prompt() delivers the oldest
+   * ordinary queued turn. While busy, Alt-Enter queues a steer entry; with an
+   * empty editor it marks the newest queued entry as steer. The host may take
+   * steer entries at safe response seams. Cancellation pauses automatic
+   * release; Alt-E edits newest.
    */
   SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS = 1
 } sl_prompt_queue_profile_t;
@@ -309,6 +319,55 @@ typedef enum sl_prompt_theme {
   /** The standard 16-colour ANSI prompt palette. */
   SL_PROMPT_THEME_DEFAULT = 9
 } sl_prompt_theme_t;
+
+/** Theme palette roles for the transient status message. */
+typedef enum sl_theme_color {
+  /** Subdued separator colour. */
+  SL_THEME_COLOR_MUTED = 0,
+  /** Secondary text colour. */
+  SL_THEME_COLOR_SECONDARY = 1,
+  /** Prompt marker colour. */
+  SL_THEME_COLOR_PROMPT = 2,
+  /** Queue marker colour. */
+  SL_THEME_COLOR_QUEUE = 3,
+  /** Editor input colour. */
+  SL_THEME_COLOR_INPUT = 4,
+  /** First status element colour. */
+  SL_THEME_COLOR_ELEMENT_0 = 5,
+  /** Second status element colour. */
+  SL_THEME_COLOR_ELEMENT_1,
+  /** Third status element colour. */
+  SL_THEME_COLOR_ELEMENT_2,
+  /** Fourth status element colour. */
+  SL_THEME_COLOR_ELEMENT_3,
+  /** Fifth status element colour. */
+  SL_THEME_COLOR_ELEMENT_4,
+  /** Sixth status element colour. */
+  SL_THEME_COLOR_ELEMENT_5,
+  /** Seventh status element colour. */
+  SL_THEME_COLOR_ELEMENT_6,
+  /** Eighth status element colour. */
+  SL_THEME_COLOR_ELEMENT_7
+} sl_theme_color_t;
+
+/** RGB colour for a separately styled quoted transcript prompt. */
+typedef struct sl_quote_color {
+  /** Red channel, 0..255. */
+  unsigned char red;
+  /** Green channel, 0..255. */
+  unsigned char green;
+  /** Blue channel, 0..255. */
+  unsigned char blue;
+} sl_quote_color_t;
+
+/** Override colours for quoted prompts. The prefix is dimmed and the prompt
+ * text is italic regardless of the selected colours. */
+typedef struct sl_quote_style {
+  /** Dimmed prefix colour. */
+  sl_quote_color_t prefix;
+  /** Italic prompt-text colour. */
+  sl_quote_color_t text;
+} sl_quote_style_t;
 
 /** Maximum number of retained status-line elements. Excess bulk elements end
  * in a final `...` element. */
@@ -401,10 +460,11 @@ struct sl {
   /** Load history entries from a history file into this handle's current
    * history. */
   int (*history_load)(sl_t *self, const char *filename);
-  /** Configure bounded prompt geometry; width or height zero uses dynamic
-   * terminal bounds. */
+  /** Configure prompt/output geometry; width or height zero follows terminal
+   * size. Safe during an active output session or edit; redraws immediately. */
   int (*set_bounds)(sl_t *self, int x, int y, int width, int height);
-  /** Set normal prompt wrapping width for non-bounded rendering. */
+  /** Set wrapping width, including during an active bounded edit or stream;
+   * zero resumes terminal-width probing. Redraws immediately. */
   int (*set_screen_width)(sl_t *self, int width);
   /** Enable or disable bottom-pinned scroll-region output for unbounded
    * prompts. The setting applies to subsequent print_above() calls. */
@@ -466,8 +526,8 @@ struct sl {
   int (*set_status_element)(sl_t *self, size_t index, const char *element);
   /** Set busy state; busy renders x (or a spinner), while idle uses the
    * configured marker, which defaults to green +. In the queued-turns profile
-   * with queueing enabled, busy also retains turns and idle releases one FIFO
-   * turn into an active next_prompt() call. */
+   * with automatic delivery, busy retains turns and idle releases one
+   * ordinary queued turn into an active next_prompt() call. */
   int (*set_status_busy)(sl_t *self, int busy);
   /** Enable or disable the 500ms /-\\| busy spinner. */
   int (*set_status_spinner)(sl_t *self, int enabled);
@@ -492,8 +552,8 @@ struct sl {
   /** Atomically queue the active nonempty draft and clear the editor. */
   int (*prompt_queue_enqueue_draft)(sl_t *self);
   /** Set automatic or host-controlled queued delivery for next_prompt(). This
-   * is the delivery policy for the default profile; queued-turns derives it
-   * from set_status_busy(). */
+   * also controls whether queued-turns releases ordinary entries on idle.
+   * Busy queued-turns always retains entries. */
   int (*set_prompt_queue_delivery)(sl_t *self,
                                    sl_prompt_queue_delivery_t delivery);
   /** Return this handle's queued delivery mode. */
@@ -520,6 +580,51 @@ struct sl {
   int (*watch_remove)(sl_t *self, sl_watch_id_t id);
   /** Remove every registered watch from this handle. */
   int (*watch_clear)(sl_t *self);
+  /** Begin one owner-thread, renderer-agnostic live output session. Only one
+   * session may be open per handle. Output occupies the bounds above the
+   * prompt; without explicit bounds the prompt is pinned to the bottom.
+   * Visible output from completed sessions remains in the TTY viewport. */
+  int (*output_stream_begin)(sl_t *self);
+  /** Forward exactly length bytes into the open session. Complete parsed
+   * input is visible before return; a write boundary adds no newline or
+   * document boundary. bytes may be NULL only when
+   * length is zero. Input must be printable UTF-8, LF/CR/Tab, or ANSI SGR;
+   * unsupported terminal controls fail with SL_ERROR_INVALID. TTY viewport
+   * clusters longer than 128 bytes also fail without splitting the cell. */
+  int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
+  /** End the open session without adding a newline or finishing an external
+   * renderer document. The next TTY output starts on a fresh row if this
+   * session ended mid-row. Incomplete ANSI/UTF-8 leaves it open and returns
+   * SL_ERROR_INVALID so the caller may supply the missing bytes. */
+  int (*output_stream_end)(sl_t *self);
+  /** Set, replace, or clear the italic message above the status line.
+   * The default prefix is "! "; long text wraps at words with continuation
+   * rows indented to the prefix width. NULL or an empty string clears it.
+   * Text must be printable single-line UTF-8. */
+  int (*set_status_message)(sl_t *self, const char *message);
+  /** Read one queued entry's delivery intent. */
+  int (*prompt_queue_get_mode)(const sl_t *self, size_t index,
+                               sl_prompt_queue_mode_t *out);
+  /** Change one queued entry's delivery intent. */
+  int (*prompt_queue_set_mode)(sl_t *self, size_t index,
+                               sl_prompt_queue_mode_t mode);
+  /** Write literal submitted text into the open stream as a themed, italic
+   * quote. Repeat the prefix on each wrapped row and add only the line breaks
+   * needed for one empty row on either side. Preceding bytes must form a
+   * complete ANSI/UTF-8 sequence; text may contain printable UTF-8, LF, and
+   * Tab. */
+  int (*output_stream_write_quoted_prompt)(sl_t *self, const char *text);
+  /** Set a nonempty, printable, single-line UTF-8 quote prefix. NULL restores
+   * the default "> ". The prefix is repeated on each visible wrapped row. */
+  int (*set_quoted_prompt_prefix)(sl_t *self, const char *prefix);
+  /** Override quoted-prompt RGB colours. NULL restores theme defaults. */
+  int (*set_quoted_prompt_style)(sl_t *self, const sl_quote_style_t *style);
+  /** Set a printable single-line status prefix. NULL restores "! "; an
+   * empty string hides it. It appears only while a message is present. */
+  int (*set_status_message_prefix)(sl_t *self, const char *prefix);
+  /** Choose palette roles independently for prefix and italic message text. */
+  int (*set_status_message_colors)(sl_t *self, sl_theme_color_t prefix_color,
+                                   sl_theme_color_t text_color);
 };
 
 /**
@@ -597,11 +702,12 @@ int sl_history_save(sl_t *self, const char *filename);
  * entries if capped. */
 int sl_history_load(sl_t *self, const char *filename);
 
-/** Enable bounded prompt rendering at x,y,width,height; zero width or height
- * uses dynamic bounds. */
+/** Set prompt/output bounds at x,y,width,height. Zero width or height tracks
+ * terminal geometry. Safe mid-edit or mid-stream; redraws immediately. */
 int sl_set_bounds(sl_t *self, int x, int y, int width, int height);
 
-/** Set normal prompt wrapping width; zero returns to terminal-width probing. */
+/** Set prompt/output wrapping width, including mid-edit or mid-stream. Zero
+ * returns to terminal-width probing; redraws immediately. */
 int sl_set_screen_width(sl_t *self, int width);
 
 /** Enable or disable bottom-pinned scroll-region output for unbounded prompts.
@@ -637,14 +743,22 @@ int sl_prompt_queue_replace(sl_t *self, size_t index, const char *text);
 /** Remove queue index and transfer its softline-allocated text through out. */
 int sl_prompt_queue_take(sl_t *self, size_t index, char **out);
 
+/** Inspect one queued entry's delivery intent. New entries are QUEUED. */
+int sl_prompt_queue_get_mode(const sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t *out);
+/** Change one entry's delivery intent; the host chooses when to take STEER. */
+int sl_prompt_queue_set_mode(sl_t *self, size_t index,
+                             sl_prompt_queue_mode_t mode);
+
 /** Clear queued entries without changing the active editor draft. */
 int sl_prompt_queue_clear(sl_t *self);
 
 /** Queue the active nonempty draft and clear it atomically while editing. */
 int sl_prompt_queue_enqueue_draft(sl_t *self);
 
-/** Set automatic or manual queued delivery for the default profile.
- * queued-turns derives delivery from sl_set_status_busy(). */
+/** Set automatic or manual queued delivery. Busy queued-turns retains entries
+ * regardless of this setting; manual lets the host take entries at chosen
+ * seams and turn boundaries. */
 int sl_set_prompt_queue_delivery(sl_t *self,
                                  sl_prompt_queue_delivery_t delivery);
 
@@ -671,6 +785,21 @@ int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
 /** Enable or disable the status line and choose the palette index used for
  * its first element. Status elements wrap between elements where possible. */
 int sl_set_statusline(sl_t *self, int enabled, size_t starting_element);
+
+/** Set, replace, or clear the italic status message above the status line.
+ * The default prefix is "! ". NULL or an empty string clears the message.
+ * Long text wraps at words, with continuation rows indented to the display
+ * width of the prefix. Text must be printable single-line UTF-8 without
+ * control characters. */
+int sl_set_status_message(sl_t *self, const char *message);
+
+/** Set the status message prefix. NULL restores "! "; "" hides it. */
+int sl_set_status_message_prefix(sl_t *self, const char *prefix);
+
+/** Select theme palette roles for the prefix and italic message text.
+ * Defaults are MUTED and SECONDARY respectively. */
+int sl_set_status_message_colors(sl_t *self, sl_theme_color_t prefix_color,
+                                 sl_theme_color_t text_color);
 
 /** Replace all status-line elements. At most 32 elements are retained; longer
  * input is represented by the first 31 elements followed by `...`. Elements
@@ -746,8 +875,44 @@ int sl_cancel(sl_t *self);
 
 /** Write callback-produced chunks above the active prompt. Bounded prompts use
  * their output region; normal prompts clear and redraw by default, or use an
- * enabled live scroll region once they reach the terminal bottom. */
+ * enabled live scroll region once they reach the terminal bottom. After a TTY
+ * live session, finite output shares its retained viewport and byte rules. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
+
+/** Start a persistent output session on self's editor-owner thread. The
+ * caller owns its producer, wakeup, renderer, and document lifecycle. An
+ * unbounded prompt is pinned to the terminal bottom while this session is
+ * open. Visible output from completed sessions remains in the TTY viewport.
+ * Returns SL_ERROR_INVALID if a session is already open. */
+int sl_output_stream_begin(sl_t *self);
+
+/** Forward length bytes immediately to the live output session. Zero length
+ * is a no-op; no newline or response boundary is implied. Valid bytes are
+ * printable UTF-8, LF/CR/Tab, and ANSI SGR; malformed or unsupported control
+ * sequences or TTY viewport clusters longer than 128 bytes report
+ * SL_ERROR_INVALID. A failed write may have emitted a
+ * prefix, while a successful write has emitted all complete input units. */
+int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
+
+/** End the output session without adding a newline. The caller remains
+ * responsible for finishing any external renderer document first. The next
+ * TTY output starts on a fresh row if this session ended mid-row. Incomplete
+ * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open. */
+int sl_output_stream_end(sl_t *self);
+
+/** Write a submitted prompt as a themed quote into an open output stream.
+ * Word-wrap at the current output width and prefix every visible row. Add only
+ * the missing line breaks for one empty row before and after the quote.
+ * Preceding streamed bytes must form a complete ANSI/UTF-8 sequence. The
+ * input must be valid UTF-8 with printable characters, LF, and Tab only.
+ * Formatting uses bounded internal chunks regardless of input length. */
+int sl_output_stream_write_quoted_prompt(sl_t *self, const char *text);
+
+/** Set a nonempty printable single-line UTF-8 prefix; NULL restores "> ". */
+int sl_set_quoted_prompt_prefix(sl_t *self, const char *prefix);
+
+/** Override per-theme quote colours, or pass NULL to restore theme defaults. */
+int sl_set_quoted_prompt_style(sl_t *self, const sl_quote_style_t *style);
 
 /** Return the status of the most recent readline() call on this handle. */
 sl_readline_status_t sl_last_readline_status(const sl_t *self);

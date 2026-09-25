@@ -31,18 +31,15 @@ fi
 
 "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${ROCKSPEC}" >/dev/null
 sh "${ROOT_DIR}/scripts/build-local-lua.sh" "${SDK_LIB_DIR}"
-SOFTLINE_LUA_INCDIR="${ROOT_DIR}/build/local-lua/source/lua-5.5.1/src"
+SOFTLINE_LUA_INCDIR="$(cat "${ROOT_DIR}/build/local-lua/lua-source-dir.txt")"
 export SOFTLINE_LUA_INCDIR
 rm -rf "${LUA_TREE}"
-SOFTLINE_LUA_BOOTLIN=0
-if NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target 2>/dev/null)"; then
-  "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
-  BOOTLIN_ENV="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
-  eval "${BOOTLIN_ENV}"
-  SOFTLINE_LUA_CC="${CC}"
-  export CC LD AR RANLIB SOFTLINE_LUA_CC
-  SOFTLINE_LUA_BOOTLIN=1
-fi
+NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target)"
+"${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
+BOOTLIN_ENV="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
+eval "${BOOTLIN_ENV}"
+SOFTLINE_LUA_CC="${CC}"
+export CC LD AR RANLIB SOFTLINE_LUA_CC
 (
   cd "${ROOT_DIR}"
   PKG_CONFIG_PATH="${SDK_LIB_DIR}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}" \
@@ -52,13 +49,11 @@ fi
 
 SOFTLINE_LUA_ENV="$("${ROOT_DIR}/scripts/lua-env.sh")"
 eval "${SOFTLINE_LUA_ENV}"
-if [ "${SOFTLINE_LUA_BOOTLIN}" -eq 1 ]; then
-  lua "${ROOT_DIR}/tests/lua_runtime.lua"
-fi
+lua "${ROOT_DIR}/tests/lua_runtime.lua"
 lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
 lua "${ROOT_DIR}/tests/lua_smoke.lua"
 printf 'hello\n' | lua "${ROOT_DIR}/tests/lua_readline.lua"
-SOFTLINE_LUA_CHAT_OUTPUT="$(printf 'hello\nexit\n' | lua "${ROOT_DIR}/examples/chat.lua")"
+SOFTLINE_LUA_CHAT_OUTPUT="$(printf 'hello\n/quit\n' | lua "${ROOT_DIR}/examples/chat.lua")"
 if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "[turn] hello" ]; then
   echo "ERROR: non-tty Lua chat output mismatch: ${SOFTLINE_LUA_CHAT_OUTPUT}" >&2
   exit 1
@@ -72,9 +67,8 @@ esac
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_ctrl_c.py" "${ROOT_DIR}"
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_mixed_tty.py" "${ROOT_DIR}"
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_watch.py" "${ROOT_DIR}"
+python3 "${ROOT_DIR}/tests/lua_live_output.py" "${ROOT_DIR}"
 python3 "${ROOT_DIR}/tests/lua_idle_callback.py" "${ROOT_DIR}"
 python3 "${ROOT_DIR}/tests/lua_watch_file_gc.py" "${ROOT_DIR}"
-
-python3 "${ROOT_DIR}/tests/check_lua_fallback_runtime.py" "${SDK_LIB_DIR}"
 
 echo "Lua facade tests passed."

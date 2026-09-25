@@ -1,4 +1,4 @@
-"""Run both Lua workflows with controlled Bootlin selection and host fallback."""
+"""Run both Lua workflows with the mandatory Bootlin runtime selection."""
 import os
 from pathlib import Path
 import shutil
@@ -21,8 +21,14 @@ with tempfile.TemporaryDirectory(prefix="lua-selection.", dir=root / "build") as
 
     for name in ("lua-test.sh", "lua-debug.sh"):
         shutil.copy2(root / "scripts" / name, scripts / name)
-    for name in ("render_lua_rockspec.sh", "build-local-lua.sh", "lua-env.sh", "lua-debug-env.sh"):
+    for name in ("render_lua_rockspec.sh", "lua-env.sh", "lua-debug-env.sh"):
         stub(scripts / name, "exit 0\n")
+    stub(scripts / "build-local-lua.sh", '''
+root=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$root/build/local-lua" "$root/build/local-lua-debug"
+printf '%s\\n' "$root/.cache/deps-build/x86_64-linux-gnu/lua/lua-5.5.1/src" \
+  > "$root/build/${2:-local-lua}/lua-source-dir.txt"
+''')
     stub(scripts / "release_version.sh", "echo 0.0.0\n")
     stub(scripts / "cpkt-toolchains.sh", '''
 case "$1" in
@@ -48,17 +54,17 @@ esac
 ''')
     calls = work / "calls"
     for runner in ("lua-test.sh", "lua-debug.sh"):
-        for selected, runtime_fail, env_fail in ((0, 9, 0), (1, 0, 0), (1, 9, 0), (1, 0, 1)):
+        for selected, runtime_fail, env_fail in ((0, 0, 0), (1, 0, 0), (1, 9, 0), (1, 0, 1)):
             calls.write_text("")
             env = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
                    "SELECT_BOOTLIN": str(selected), "RUNTIME_FAIL": str(runtime_fail),
                    "ENV_FAIL": str(env_fail), "LUA_CALLS": str(calls),
                    "CPKT_TOOLCHAIN_ROOT": "inherited-stale-root", "SOFTLINE_LUA_BOOTLIN": "1"}
             result = subprocess.run([str(scripts / runner)], env=env, capture_output=True, text=True)
-            expected = 7 if env_fail else runtime_fail if selected else 0
+            expected = 7 if env_fail else runtime_fail if selected else 1
             assert result.returncode == expected, (runner, selected, result)
             invoked = calls.read_text()
             assert ("lua_runtime.lua" in invoked) == bool(selected and not env_fail), invoked
             if expected == 0:
                 assert "lua_smoke.lua" in invoked and "chat.lua" in invoked, invoked
-print("Both Lua workflows: fallback, selected runtime, assertion failure, and resolver failure passed")
+print("Both Lua workflows: mandatory runtime, assertion failure, and resolver failure passed")

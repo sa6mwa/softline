@@ -29,7 +29,7 @@ while true do
     end
     break
   end
-  if line == "exit" then
+  if line == "/quit" then
     break
   end
   io.write("submitted: ", line, "\n")

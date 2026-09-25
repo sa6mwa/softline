@@ -18,6 +18,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__linux__)
@@ -248,6 +249,11 @@ static void test_receiver_shell(void) {
   ASSERT_TRUE(sl->set_prompt_queue != NULL, "set_prompt_queue method missing");
   ASSERT_TRUE(sl->set_prompt_theme != NULL, "set_prompt_theme method missing");
   ASSERT_TRUE(sl->set_statusline != NULL, "set_statusline method missing");
+  ASSERT_TRUE(sl->set_status_message != NULL,
+              "set_status_message method missing");
+  ASSERT_TRUE(sl->set_status_message_prefix != NULL &&
+                  sl->set_status_message_colors != NULL,
+              "status message styling methods missing");
   ASSERT_TRUE(sl->set_status_elements != NULL,
               "set_status_elements method missing");
   ASSERT_TRUE(sl->set_status_element != NULL,
@@ -312,6 +318,168 @@ static void test_receiver_shell(void) {
   PASS();
 }
 
+static void test_status_message_api(void) {
+  sl_t *sl;
+  TEST("status message accepts updates and clear, rejects controls");
+  sl = sl_create();
+  ASSERT_TRUE(sl != NULL, "create failed");
+  ASSERT_TRUE(sl_set_status_message(sl, "Thinking...") == SL_OK &&
+                  sl->set_status_message(sl, "Reasoning...") == SL_OK &&
+                  sl_set_status_message(sl, "\xc3\xa5") == SL_OK,
+              "valid status message rejected");
+  ASSERT_TRUE(sl_set_status_message_prefix(sl, "? ") == SL_OK &&
+                  sl_set_status_message_prefix(sl, "") == SL_OK &&
+                  sl->set_status_message_prefix(sl, NULL) == SL_OK &&
+                  sl_set_status_message_colors(sl, SL_THEME_COLOR_MUTED,
+                                               SL_THEME_COLOR_ELEMENT_2) ==
+                      SL_OK,
+              "valid status styling rejected");
+  ASSERT_TRUE(sl_set_status_message_prefix(sl, "bad\n") == SL_ERROR_INVALID &&
+                  sl_set_status_message_prefix(sl, "\033[31m") ==
+                      SL_ERROR_INVALID &&
+                  sl_set_status_message_colors(sl, (sl_theme_color_t)-1,
+                                               SL_THEME_COLOR_MUTED) ==
+                      SL_ERROR_INVALID &&
+                  sl_set_status_message_colors(sl, SL_THEME_COLOR_MUTED,
+                                               (sl_theme_color_t)99) ==
+                      SL_ERROR_INVALID,
+              "invalid status styling accepted");
+  ASSERT_TRUE(sl_set_status_message(sl, "two\nlines") == SL_ERROR_INVALID &&
+                  sl_set_status_message(sl, "\033[31m") == SL_ERROR_INVALID &&
+                  sl_set_status_message(sl, "\xc3") == SL_ERROR_INVALID,
+              "invalid status message accepted");
+  ASSERT_TRUE(sl_set_status_message(sl, NULL) == SL_OK &&
+                  sl_set_status_message(sl, "") == SL_OK,
+              "status message did not clear");
+  sl_destroy(sl);
+  PASS();
+}
+
+static void test_parser_only_stream_allows_geometry_changes(void) {
+#if SL_TEST_PTY
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  int input_pipe[2];
+  char output[64];
+  ssize_t output_len;
+  fd_set readfds;
+  struct timeval timeout;
+  TEST("parser-only stream accepts geometry changes with TTY output");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0 &&
+                  pipe(input_pipe) == 0,
+              "mixed-TTY setup failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = input_pipe[0];
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_bounds(sl, 0, 0, 0, 0) == SL_OK &&
+                  sl_set_screen_width(sl, 20) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[2", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "J", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "H", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "parser-only stream failed after geometry change");
+  FD_ZERO(&readfds);
+  FD_SET(master_fd, &readfds);
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+  ASSERT_TRUE(select(master_fd + 1, &readfds, NULL, NULL, &timeout) == 1,
+              "parser-only stream emitted no output");
+  output_len = read(master_fd, output, sizeof(output));
+  ASSERT_TRUE(output_len == 1 && output[0] == 'H',
+              "parser-only stream emitted an incomplete terminal command");
+  sl_destroy(sl);
+  close(input_pipe[0]);
+  close(input_pipe[1]);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#else
+  TEST("parser-only stream accepts geometry changes with TTY output");
+  PASS();
+#endif
+}
+
+struct full_editor_stream_probe {
+  int fired;
+  int setup_result;
+  int write_result;
+  size_t draft_length;
+};
+
+#if SL_TEST_PTY
+static size_t read_live_pty_output(int fd, char *bytes, size_t capacity);
+#endif
+
+static void full_editor_stream_idle(sl_t *sl, void *userdata) {
+  struct full_editor_stream_probe *probe;
+  char draft[301];
+  probe = (struct full_editor_stream_probe *)userdata;
+  if (probe->fired)
+    return;
+  probe->fired = 1;
+  memset(draft, 'x', sizeof(draft) - 1);
+  draft[sizeof(draft) - 1] = '\0';
+  probe->setup_result = sl_set_buffer(sl, draft);
+  if (probe->setup_result == SL_OK)
+    probe->setup_result = sl_set_status_message(
+        sl, "Hello world, this is a long status line, that continues on "
+            "multiple lines.");
+  if (probe->setup_result == SL_OK) {
+    probe->draft_length = strlen(sl_buffer(sl));
+    probe->write_result = sl_output_stream_write(sl, "AFTER", 5);
+  }
+  (void)sl_cancel(sl);
+}
+
+static void test_live_output_retains_row_with_full_editor(void) {
+#if SL_TEST_PTY
+  struct winsize ws;
+  struct full_editor_stream_probe probe;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+  TEST("live stream keeps an output row under a full editor and status");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_statusline(sl, 1, 0) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "full editor stream setup failed");
+  memset(&probe, 0, sizeof(probe));
+  ASSERT_TRUE(sl_set_idle_callback(sl, full_editor_stream_idle, &probe) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line == NULL && probe.fired && probe.setup_result == SL_OK &&
+                  probe.write_result == SL_OK && probe.draft_length == 300,
+              "full editor blocked live output or lost its draft");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(strstr(output, "AFTER") != NULL,
+              "live fragment missing after full editor render");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#else
+  TEST("live stream keeps an output row under a full editor and status");
+  PASS();
+#endif
+}
+
 static void test_free_function_wrappers_use_receiver_methods(void) {
   sl_t *sl;
 
@@ -360,6 +528,7 @@ static void test_prompt_queue_control_api(void) {
   sl_prompt_queue_delivery_t delivery;
   sl_prompt_queue_keys_t keys;
   sl_prompt_queue_profile_t profile;
+  sl_prompt_queue_mode_t mode;
   char *text;
   sl_t *sl;
 
@@ -384,6 +553,22 @@ static void test_prompt_queue_control_api(void) {
   sl_free_string(sl, text);
   ASSERT_TRUE(sl_prompt_queue_replace(sl, 1, "second") == SL_OK,
               "replace failed");
+  ASSERT_TRUE(sl_prompt_queue_get_mode(sl, 1, &mode) == SL_OK &&
+                  mode == SL_PROMPT_QUEUE_MODE_QUEUED,
+              "new queue entry did not default to queued mode");
+  ASSERT_TRUE(sl_prompt_queue_set_mode(sl, 1, SL_PROMPT_QUEUE_MODE_STEER) ==
+                  SL_OK,
+              "steer mode update failed");
+  ASSERT_TRUE(sl_prompt_queue_get_mode(sl, 1, &mode) == SL_OK &&
+                  mode == SL_PROMPT_QUEUE_MODE_STEER,
+              "steer mode readback failed");
+  ASSERT_TRUE(sl_prompt_queue_replace(sl, 1, "second edit") == SL_OK &&
+                  sl_prompt_queue_get_mode(sl, 1, &mode) == SL_OK &&
+                  mode == SL_PROMPT_QUEUE_MODE_STEER,
+              "replacement lost entry mode");
+  ASSERT_TRUE(sl_prompt_queue_set_mode(sl, 1, (sl_prompt_queue_mode_t)9) ==
+                  SL_ERROR_INVALID,
+              "invalid queue mode accepted");
   text = NULL;
   ASSERT_TRUE(sl_prompt_queue_take(sl, 0, &text) == SL_OK, "take failed");
   ASSERT_TRUE(strcmp(text, "one") == 0, "take FIFO entry mismatch");
@@ -429,8 +614,18 @@ static void test_prompt_queue_control_api(void) {
                   delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO,
               "idle queued-turns delivery must release turns");
   ASSERT_TRUE(sl_set_prompt_queue_delivery(
-                  sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_ERROR_INVALID,
-              "queued-turns accepted a host delivery override");
+                  sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_OK &&
+                  sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL,
+              "queued-turns manual delivery configuration failed");
+  ASSERT_TRUE(sl_set_status_busy(sl, 1) == SL_OK &&
+                  sl_set_status_busy(sl, 0) == SL_OK &&
+                  sl_get_prompt_queue_delivery(sl, &delivery) == SL_OK &&
+                  delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL,
+              "busy transition lost host-controlled delivery");
+  ASSERT_TRUE(sl_set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_AUTO) ==
+                  SL_OK,
+              "queued-turns automatic delivery restore failed");
   keys.enqueue_draft = SL_KEY_NONE;
   ASSERT_TRUE(sl_set_prompt_queue_keys(sl, &keys) == SL_OK,
               "available-state queue key configuration failed");
@@ -536,6 +731,10 @@ static void test_invalid_receiver_arguments(void) {
               "NULL set_bounds accepted");
   ASSERT_TRUE(sl_set_screen_width(NULL, 1) == SL_ERROR_INVALID,
               "NULL set_screen_width accepted");
+  ASSERT_TRUE(sl_output_stream_begin(NULL) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(NULL, "x", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_end(NULL) == SL_ERROR_INVALID,
+              "NULL output stream handle accepted");
   ASSERT_TRUE(sl_set_live_scroll_region(NULL, 1) == SL_ERROR_INVALID,
               "NULL set_live_scroll_region accepted");
   ASSERT_TRUE(sl_set_idle_callback(NULL, NULL, NULL) == SL_ERROR_INVALID,
@@ -1157,6 +1356,36 @@ static void test_print_above_uses_lf_for_non_tty_output(void) {
   PASS();
 }
 
+static void test_bounded_print_above_with_redirected_output(void) {
+  int out_pipe[2];
+  sl_config_t cfg;
+  sl_t *sl;
+  char out[64];
+  ssize_t n;
+  struct one_chunk_once stream;
+
+  TEST("bounded print_above writes finite output with redirected descriptors");
+  ASSERT_TRUE(pipe(out_pipe) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = out_pipe[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL, "create failed");
+  ASSERT_TRUE(sl_set_bounds(sl, 1, 0, 20, 5) == SL_OK, "offset bounds failed");
+  stream.text = "alpha\nbeta\n";
+  stream.sent = 0;
+  ASSERT_TRUE(sl->print_above(sl, one_chunk_once_stream, &stream) == SL_OK,
+              "offset print_above failed");
+  sl->destroy(sl);
+  close(out_pipe[1]);
+  n = read(out_pipe[0], out, sizeof(out) - 1);
+  ASSERT_TRUE(n >= 0, "read output failed");
+  out[n] = '\0';
+  close(out_pipe[0]);
+  ASSERT_TRUE(strcmp(out, "alpha\nbeta\n") == 0,
+              "redirected finite output was changed or lost");
+  PASS();
+}
+
 static void test_bounded_print_above_without_space_is_error(void) {
   int out_pipe[2];
   sl_config_t cfg;
@@ -1225,6 +1454,8 @@ struct vt_screen {
   int scroll_top;
   int scroll_bottom;
   char cells[24][120];
+  unsigned int history_count;
+  char history[64][120];
 };
 
 static void vt_clear(struct vt_screen *screen) {
@@ -1242,6 +1473,7 @@ static void vt_clear(struct vt_screen *screen) {
 }
 
 static void vt_init(struct vt_screen *screen, int rows, int cols) {
+  memset(screen, 0, sizeof(*screen));
   screen->rows = rows > 24 ? 24 : rows;
   screen->cols = cols > 119 ? 119 : cols;
   vt_clear(screen);
@@ -1255,10 +1487,26 @@ static void vt_scroll_region(struct vt_screen *screen, int top, int bottom) {
     bottom = screen->rows - 1;
   if (bottom < top)
     return;
+  if (top == 0 && bottom == screen->rows - 1) {
+    memcpy(screen->history[screen->history_count % 64u], screen->cells[0],
+           (size_t)screen->cols + 1);
+    screen->history_count++;
+  }
   for (r = top + 1; r <= bottom; r++)
     memcpy(screen->cells[r - 1], screen->cells[r], (size_t)screen->cols + 1);
   memset(screen->cells[bottom], ' ', (size_t)screen->cols);
   screen->cells[bottom][screen->cols] = '\0';
+}
+
+static int vt_history_contains(const struct vt_screen *screen,
+                               const char *needle) {
+  unsigned int count;
+  unsigned int i;
+  count = screen->history_count < 64u ? screen->history_count : 64u;
+  for (i = 0; i < count; i++)
+    if (strstr(screen->history[i], needle))
+      return 1;
+  return 0;
 }
 
 static void vt_scroll(struct vt_screen *screen) {
@@ -1317,6 +1565,8 @@ static const char *vt_csi(struct vt_screen *screen, const char *p) {
     if (*p >= '0' && *p <= '9')
       p = vt_parse_number(p, &b);
   }
+  while (*p && (*p < '@' || *p > '~'))
+    p++;
   switch (*p) {
   case 'A':
     screen->row -= have_a && a > 0 ? a : 1;
@@ -1374,6 +1624,13 @@ static const char *vt_csi(struct vt_screen *screen, const char *p) {
     memset(screen->cells[screen->row] + screen->col, ' ',
            (size_t)(screen->cols - screen->col));
     break;
+  case 'X': {
+    int count = have_a && a > 0 ? a : 1;
+    if (count > screen->cols - screen->col)
+      count = screen->cols - screen->col;
+    memset(screen->cells[screen->row] + screen->col, ' ', (size_t)count);
+    break;
+  }
   default:
     break;
   }
@@ -1438,14 +1695,19 @@ static ssize_t read_some_with_timeout(int fd, char *buf, size_t cap) {
   fd_set readfds;
   struct timeval tv;
   int ready;
-  FD_ZERO(&readfds);
-  FD_SET(fd, &readfds);
   tv.tv_sec = 2;
   tv.tv_usec = 0;
-  ready = select(fd + 1, &readfds, NULL, NULL, &tv);
+  do {
+    FD_ZERO(&readfds);
+    FD_SET(fd, &readfds);
+    ready = select(fd + 1, &readfds, NULL, NULL, &tv);
+  } while (ready < 0 && errno == EINTR);
   if (ready <= 0)
     return ready;
-  return read(fd, buf, cap);
+  do {
+    ready = (int)read(fd, buf, cap);
+  } while (ready < 0 && errno == EINTR);
+  return ready;
 }
 
 static ssize_t read_some_with_timeout_ms(int fd, char *buf, size_t cap,
@@ -1453,14 +1715,550 @@ static ssize_t read_some_with_timeout_ms(int fd, char *buf, size_t cap,
   fd_set readfds;
   struct timeval tv;
   int ready;
-  FD_ZERO(&readfds);
-  FD_SET(fd, &readfds);
   tv.tv_sec = timeout_ms / 1000;
   tv.tv_usec = (timeout_ms % 1000) * 1000;
-  ready = select(fd + 1, &readfds, NULL, NULL, &tv);
+  do {
+    FD_ZERO(&readfds);
+    FD_SET(fd, &readfds);
+    ready = select(fd + 1, &readfds, NULL, NULL, &tv);
+  } while (ready < 0 && errno == EINTR);
   if (ready <= 0)
     return ready;
-  return read(fd, buf, cap);
+  do {
+    ready = (int)read(fd, buf, cap);
+  } while (ready < 0 && errno == EINTR);
+  return ready;
+}
+
+static void test_redirected_live_output_validates_stream(void) {
+  static const char expected[] = "\xc3\xa4\033[31mXZH";
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char bytes[64];
+  ssize_t amount;
+
+  TEST("redirected live output validates split ANSI and UTF-8");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\xc3", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xa4\033[31", 5) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "m", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "\001", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "X", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "redirected stream did not enforce byte protocol");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\xf0\x80\x80\x80", 4) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\x80", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xc2\x9b", 2) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "Z", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "redirected stream accepted malformed UTF-8 or a C1 control");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[2", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "J", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "H", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "invalid ANSI sequence leaked into subsequent output");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "redirected stream did not forward its valid prefix exactly");
+  PASS();
+}
+
+static void test_quoted_prompt_output_api(void) {
+  static const char expected[] =
+      "answer\n\n? one two\n? three four\n\n>> a\n>> b    c\n\n> *md*\n\n"
+      "> \xe7\x95\x8c\xe7\x95\x8c\n> \xe7\x95\x8c\n\n";
+  sl_config_t cfg;
+  sl_quote_style_t style;
+  sl_t *sl;
+  int output[2];
+  char bytes[256];
+  ssize_t amount;
+
+  TEST(
+      "quoted prompt API wraps, separates, configures, and preserves Markdown");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  cfg.screen_width = 12;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl->output_stream_write_quoted_prompt &&
+                  sl->set_quoted_prompt_prefix && sl->set_quoted_prompt_style,
+              "quoted prompt receiver API missing");
+  ASSERT_TRUE(
+      sl_output_stream_write_quoted_prompt(sl, "x") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, "") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, "bad\n") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, "\033[31m") == SL_ERROR_INVALID,
+      "quoted prompt accepted invalid state or prefix");
+  style.prefix.red = 1;
+  style.prefix.green = 2;
+  style.prefix.blue = 3;
+  style.text.red = 4;
+  style.text.green = 5;
+  style.text.blue = 6;
+  ASSERT_TRUE(
+      sl_set_quoted_prompt_style(sl, &style) == SL_OK &&
+          sl_set_quoted_prompt_prefix(sl, "? ") == SL_OK &&
+          sl_output_stream_begin(sl) == SL_OK &&
+          sl_output_stream_write(sl, "answer\n", 7) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "one two three four") ==
+              SL_OK &&
+          sl_set_quoted_prompt_prefix(sl, ">> ") == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "a\nb\tc") == SL_OK &&
+          sl_set_quoted_prompt_prefix(sl, "abcdefghijkl") == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "x") == SL_ERROR_INVALID &&
+          sl_set_quoted_prompt_prefix(sl, NULL) == SL_OK &&
+          sl_set_quoted_prompt_style(sl, NULL) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "bad\033[31m") ==
+              SL_ERROR_INVALID &&
+          sl_output_stream_write_quoted_prompt(sl, "*md*") == SL_OK &&
+          sl_set_screen_width(sl, 7) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(
+              sl, "\xe7\x95\x8c\xe7\x95\x8c\xe7\x95\x8c") == SL_OK &&
+          sl_set_screen_width(sl, 3) == SL_OK &&
+          sl_output_stream_write_quoted_prompt(sl, "\xe7\x95\x8c") ==
+              SL_ERROR_INVALID &&
+          sl_output_stream_end(sl) == SL_OK,
+      "quoted prompt output or validation failed");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "quoted prompt wrapping, literal text, or blank rows differ");
+  PASS();
+}
+
+static void test_quoted_prompt_long_unbroken_word(void) {
+  static const char expected[] = "\n\n> abcdefghij\n> klmnopqrst\n> uvwxy\n\n";
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char bytes[128];
+  ssize_t amount;
+
+  TEST("quoted prompt fills rows when a single word exceeds the width");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  cfg.screen_width = 12;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(
+                      sl, "abcdefghijklmnopqrstuvwxy") == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "quoted prompt write failed");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "long word wrapped before the row was full");
+  PASS();
+}
+
+static void test_quoted_prompt_chunk_boundary(void) {
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char prompt[4102];
+  char bytes[4200];
+  size_t used;
+  size_t i;
+  ssize_t amount;
+
+  TEST("quoted prompt preserves UTF-8 across bounded output chunks");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  prompt[0] = 'a';
+  for (i = 0; i < 2050; i++) {
+    prompt[1 + 2 * i] = '\xc3';
+    prompt[2 + 2 * i] = '\xa9';
+  }
+  prompt[4101] = '\0';
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  cfg.screen_width = 5000;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, prompt) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "quoted prompt rejected a UTF-8 chunk boundary");
+  sl_destroy(sl);
+  close(output[1]);
+  used = 0;
+  while (used < sizeof(bytes) &&
+         (amount = read(output[0], bytes + used, sizeof(bytes) - used)) > 0)
+    used += (size_t)amount;
+  if (used == sizeof(bytes))
+    amount = -1;
+  close(output[0]);
+  ASSERT_TRUE(amount == 0 && used == 4107 && memcmp(bytes, "\n\n> ", 4) == 0 &&
+                  memcmp(bytes + 4, prompt, 4101) == 0 &&
+                  memcmp(bytes + 4105, "\n\n", 2) == 0,
+              "quoted prompt changed bytes across an output chunk boundary");
+  PASS();
+}
+
+static void test_quoted_prompt_terminal_style(void) {
+#if SL_TEST_PTY
+  sl_config_t cfg;
+  sl_quote_style_t style;
+  struct winsize ws;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char bytes[8192];
+  size_t used;
+  ssize_t amount;
+
+  TEST("quoted prompt uses theme colours and independent style override");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 12;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  style.prefix.red = 1;
+  style.prefix.green = 2;
+  style.prefix.blue = 3;
+  style.text.red = 4;
+  style.text.green = 5;
+  style.text.blue = 6;
+  ASSERT_TRUE(sl && sl_set_prompt_theme(sl, SL_PROMPT_THEME_GRUVBOX) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[", 2) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "incomplete") ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "0m", 2) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "theme") == SL_OK &&
+                  sl_set_quoted_prompt_prefix(sl, ">> ") == SL_OK &&
+                  sl_set_quoted_prompt_style(sl, &style) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "custom") == SL_OK &&
+                  sl_set_quoted_prompt_style(sl, NULL) == SL_OK &&
+                  sl_set_prompt_theme(sl, SL_PROMPT_THEME_DEFAULT) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "default") ==
+                      SL_OK &&
+                  sl_set_prompt_theme(sl, SL_PROMPT_THEME_PLAIN) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "plain") == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "terminal quoted prompt setup failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  used = 0;
+  while (used < sizeof(bytes) - 1) {
+    amount = read(master_fd, bytes + used, sizeof(bytes) - 1 - used);
+    if (amount <= 0)
+      break;
+    used += (size_t)amount;
+  }
+  close(master_fd);
+  bytes[used] = '\0';
+  ASSERT_TRUE(strstr(bytes, "\033[0;2;38;2;102;92;84m") != NULL &&
+                  strstr(bytes, "\033[0;3;38;2;250;189;47m") != NULL &&
+                  strstr(bytes, "\033[0;2;38;2;1;2;3m") != NULL &&
+                  strstr(bytes, "\033[0;3;38;2;4;5;6m") != NULL &&
+                  strstr(bytes, "\033[0;2;90m") != NULL &&
+                  strstr(bytes, "\033[0;3;96m") != NULL &&
+                  strstr(bytes, "\033[0;3;97m") != NULL,
+              "theme or custom quote colour and italic treatment missing");
+  PASS();
+#endif
+}
+
+static void test_quoted_prompt_resets_inherited_style(void) {
+#if SL_TEST_PTY
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("quoted prompt prefix clears preceding reverse and background style");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_prompt_theme(sl, SL_PROMPT_THEME_DEFAULT) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[7;41mresponse\n\n",
+                                         strlen("\033[7;41mresponse\n\n")) ==
+                      SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "quoted") == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "styled quote setup failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "quoted output missing");
+  ASSERT_TRUE(contains_bytes(output, "\033[0;2;90m> ") &&
+                  contains_bytes(output, "\033[0;3;96mquoted") &&
+                  !contains_bytes(output, "\033[0;2;7;90;41m> "),
+              "first quoted prefix inherited reverse video or background");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#else
+  TEST("quoted prompt prefix clears preceding reverse and background style");
+  printf("SKIP\n");
+  tests_passed++;
+#endif
+}
+
+#if SL_TEST_PTY
+static int quoted_prompt_has_one_empty_row_after_session(const char *answer) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+  int answer_row;
+  int quote_row;
+  int row;
+
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 12;
+  if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0)
+    return 0;
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+      sl_output_stream_write(sl, answer, strlen(answer)) != SL_OK ||
+      sl_output_stream_end(sl) != SL_OK ||
+      sl_output_stream_begin(sl) != SL_OK ||
+      sl_output_stream_write_quoted_prompt(sl, "question") != SL_OK ||
+      sl_output_stream_end(sl) != SL_OK) {
+    sl_destroy(sl);
+    close(slave_fd);
+    close(master_fd);
+    return 0;
+  }
+  sl_destroy(sl);
+  close(slave_fd);
+  if (read_live_pty_output(master_fd, output, sizeof(output)) == 0) {
+    close(master_fd);
+    return 0;
+  }
+  close(master_fd);
+  vt_init(&screen, 12, 30);
+  vt_apply(&screen, output);
+  answer_row = -1;
+  quote_row = -1;
+  for (row = 0; row < screen.rows; row++) {
+    if (strstr(screen.cells[row], "answer"))
+      answer_row = row;
+    if (strstr(screen.cells[row], "> question"))
+      quote_row = row;
+  }
+  return answer_row >= 0 && quote_row == answer_row + 2 &&
+         screen.cells[answer_row + 1][0] == ' ';
+}
+#endif
+
+static void test_quoted_prompt_spacing_across_sessions(void) {
+  TEST("quoted prompts keep one empty row across output sessions");
+#if SL_TEST_PTY
+  ASSERT_TRUE(quoted_prompt_has_one_empty_row_after_session("answer\n\n") &&
+                  quoted_prompt_has_one_empty_row_after_session("answer"),
+              "retained output inserted the wrong number of quote separators");
+  PASS();
+#else
+  printf("SKIP\n");
+  tests_passed++;
+#endif
+}
+
+static void test_redirected_quoted_prompt_spacing_across_sessions(void) {
+  static const char expected[] = "answer\n\n> question\n\n";
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char bytes[64];
+  ssize_t amount;
+
+  TEST("redirected quoted prompts preserve spacing across sessions");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "answer\n\n", 8) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "question") ==
+                      SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "redirected output sessions failed");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "redirected quote added an extra empty row");
+  PASS();
+}
+
+static void test_redirected_quote_spacing_after_finite_output(void) {
+  static const char expected[] = "first\n\nfinite\n\n> second\n\n";
+  struct one_chunk_once finite;
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char bytes[64];
+  ssize_t amount;
+
+  TEST("redirected finite output updates the next quoted prompt spacing");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  sl = sl_create_with_config(&cfg);
+  finite.text = "finite";
+  finite.sent = 0;
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "first\n\n", 7) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_print_above(sl, one_chunk_once_stream, &finite) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "second") == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "redirected output sequence failed");
+  sl_destroy(sl);
+  close(output[1]);
+  amount = read(output[0], bytes, sizeof(bytes));
+  close(output[0]);
+  ASSERT_TRUE(amount == (ssize_t)(sizeof(expected) - 1) &&
+                  memcmp(bytes, expected, sizeof(expected) - 1) == 0,
+              "quote spacing ignored intervening finite output");
+  PASS();
+}
+
+static void test_quoted_prompt_large_whitespace_run(void) {
+  const size_t length = 128u * 1024u;
+  sl_config_t cfg;
+  sl_t *sl;
+  char *prompt;
+  clock_t started;
+  clock_t finished;
+  int output_fd;
+
+  TEST("quoted prompt scans a large whitespace run in bounded CPU time");
+  prompt = (char *)malloc(length + 1);
+  ASSERT_TRUE(prompt != NULL, "large prompt allocation failed");
+  memset(prompt, ' ', length);
+  prompt[length] = '\0';
+  output_fd = open("/dev/null", O_WRONLY);
+  ASSERT_TRUE(output_fd >= 0, "null output setup failed");
+  sl_config_init(&cfg);
+  cfg.output_fd = output_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
+              "large quoted prompt setup failed");
+  started = clock();
+  ASSERT_TRUE(sl_output_stream_write_quoted_prompt(sl, prompt) == SL_OK,
+              "large quoted prompt failed");
+  finished = clock();
+  ASSERT_TRUE(started != (clock_t)-1 && finished != (clock_t)-1 &&
+                  (double)(finished - started) / CLOCKS_PER_SEC < 10.0,
+              "quoted prompt rescanned whitespace suffixes");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK,
+              "large quoted prompt did not end cleanly");
+  sl_destroy(sl);
+  close(output_fd);
+  free(prompt);
+  PASS();
+}
+
+static void test_quote_spacing_after_partial_invalid_write(void) {
+#if SL_TEST_PTY
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  int abc_row;
+  int x_row;
+  int quote_row;
+  int row;
+  char output[8192];
+  TEST("quote keeps blank-row separation after rejected output bytes");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 12;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 11) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\n\n", 2) == SL_OK &&
+                  sl_output_stream_write(sl, "abc\0", 4) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\n\n", 2) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[2J", 4) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "X", 1) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, "hello") == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "partial write recovery failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 12, 30);
+  vt_apply(&screen, output);
+  abc_row = -1;
+  x_row = -1;
+  quote_row = -1;
+  for (row = 0; row < screen.rows; row++) {
+    if (strstr(screen.cells[row], "abc"))
+      abc_row = row;
+    if (strstr(screen.cells[row], "X"))
+      x_row = row;
+    if (strstr(screen.cells[row], "> hello"))
+      quote_row = row;
+  }
+  if (abc_row < 0 || x_row < abc_row + 2 || quote_row < x_row + 2)
+    vt_dump(&screen);
+  ASSERT_TRUE(abc_row >= 0 && x_row >= abc_row + 2 && quote_row >= x_row + 2 &&
+                  !strstr(screen.cells[x_row], "> hello"),
+              "quoted prompt joined partially accepted output");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#else
+  TEST("quote keeps blank-row separation after rejected output bytes");
+  PASS();
+#endif
 }
 
 static ssize_t read_until_eof_with_timeout(int fd, char *buf, size_t cap) {
@@ -1491,6 +2289,16 @@ struct idle_stream_failure_state {
   int fd;
   int attempted;
   int status;
+};
+
+struct idle_stream_end_state {
+  int fd;
+  int attempted;
+};
+
+struct idle_output_boundary_state {
+  int fd;
+  int attempted;
 };
 
 struct idle_count_print_state {
@@ -1647,6 +2455,44 @@ static void idle_print_once(sl_t *sl, void *userdata) {
   (void)sl->print_above(sl, next_text_chunk, &stream);
 }
 
+static void idle_end_live_stream_once(sl_t *sl, void *userdata) {
+  struct idle_stream_end_state *state;
+  char result;
+  state = (struct idle_stream_end_state *)userdata;
+  if (!state || state->attempted)
+    return;
+  state->attempted = 1;
+  result = sl_output_stream_begin(sl) == SL_OK &&
+                   sl_output_stream_write(sl, "notice\n", 7) == SL_OK &&
+                   sl_output_stream_end(sl) == SL_OK
+               ? 'R'
+               : 'E';
+  (void)write(state->fd, &result, 1);
+}
+
+static void idle_output_boundary_once(sl_t *sl, void *userdata) {
+  struct idle_output_boundary_state *state;
+  struct one_chunk_once middle;
+  char result;
+  state = (struct idle_output_boundary_state *)userdata;
+  if (!state || state->attempted)
+    return;
+  state->attempted = 1;
+  middle.text = "middle\n";
+  middle.sent = 0;
+  result =
+      sl_output_stream_begin(sl) == SL_OK &&
+              sl_output_stream_write(sl, "first\n", 6) == SL_OK &&
+              sl_output_stream_end(sl) == SL_OK &&
+              sl_print_above(sl, one_chunk_once_stream, &middle) == SL_OK &&
+              sl_output_stream_begin(sl) == SL_OK &&
+              sl_output_stream_write(sl, "last\n", 5) == SL_OK &&
+              sl_output_stream_end(sl) == SL_OK
+          ? 'R'
+          : 'E';
+  (void)write(state->fd, &result, 1);
+}
+
 static void idle_print_through_scroll_region(sl_t *sl, void *userdata) {
   struct idle_scroll_region_state *state;
   struct text_stream_state stream;
@@ -1713,6 +2559,12 @@ static void idle_finish_after_two_ticks(sl_t *sl, void *userdata) {
   if (state->text)
     (void)sl->insert(sl, state->text);
   (void)sl->submit(sl);
+}
+
+static void idle_release_after_steer_queued(sl_t *sl, void *userdata) {
+  (void)userdata;
+  if (sl_prompt_queue_count(sl) == 2)
+    (void)sl_set_status_busy(sl, 0);
 }
 
 static int idle_quiet_watch_callback(sl_t *sl, const sl_watch_event_t *event,
@@ -2368,7 +3220,7 @@ static int run_pty_themed_readline_case(sl_prompt_theme_t theme, char *terminal,
   }
   if (write(master_fd, "ok\r", 3) != 3)
     return -1;
-  n = read_some_with_timeout(result_pipe[0], result, result_cap - 1);
+  n = read_some_with_timeout_ms(result_pipe[0], result, result_cap - 1, 10000);
   if (n <= 0)
     return -1;
   result[n] = '\0';
@@ -2423,6 +3275,64 @@ static int set_status_busy_spinner_key(sl_t *sl, sl_key_t key, void *userdata,
   return SL_OK;
 }
 
+static int set_status_message_style_key(sl_t *sl, sl_key_t key, void *userdata,
+                                        sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_message_prefix(sl, "? ") != SL_OK ||
+      sl_set_status_message_colors(sl, SL_THEME_COLOR_ELEMENT_2,
+                                   SL_THEME_COLOR_MUTED) != SL_OK ||
+      sl_set_status_message(sl, "Changed") != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static int hide_status_message_prefix_key(sl_t *sl, sl_key_t key,
+                                          void *userdata,
+                                          sl_key_action_t *action) {
+  (void)key;
+  (void)userdata;
+  if (!action || sl_set_status_message_prefix(sl, "") != SL_OK ||
+      sl_set_status_message(sl, "Bare") != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static int wait_for_status_output(int fd, char *terminal, size_t capacity,
+                                  size_t *length, size_t mark,
+                                  const char *marker, const char *stage) {
+  struct timespec deadline;
+  struct timespec now;
+  ssize_t amount;
+  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
+    return -1;
+  deadline.tv_sec += 10;
+  while (!contains_bytes(terminal + mark, marker)) {
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
+        now.tv_sec > deadline.tv_sec ||
+        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+      fprintf(stderr, "status PTY %s marker timed out after %lu bytes\n", stage,
+              (unsigned long)*length);
+      return -1;
+    }
+    if (*length >= capacity - 1)
+      return -1;
+    amount = read_some_with_timeout_ms(fd, terminal + *length,
+                                       capacity - 1 - *length, 100);
+    if (amount < 0) {
+      fprintf(stderr, "status PTY %s read failed: errno=%d\n", stage, errno);
+      return -1;
+    }
+    if (amount > 0) {
+      *length += (size_t)amount;
+      terminal[*length] = '\0';
+    }
+  }
+  return 0;
+}
+
 static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
                                    size_t terminal_cap, char *result,
                                    size_t result_cap, int *exit_status) {
@@ -2436,12 +3346,15 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
   int result_pipe[2];
   pid_t pid;
   size_t terminal_len;
+  size_t output_mark;
   ssize_t n;
   int status;
-  int tries;
   const char *idle_style;
   const char *busy_style;
   const char *element_style;
+  const char *dash_style;
+  const char *changed_style;
+  const char *bare_style;
 
   if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
       pipe(result_pipe) != 0)
@@ -2466,6 +3379,9 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     cfg.status_busy = 0;
     sl = sl_create_with_config(&cfg);
     if (!sl ||
+        sl_set_status_message(
+            sl, "Hello world, this is a long status line, that continues on "
+                "multiple lines.") != SL_OK ||
         sl_set_status_elements(sl, elements,
                                sizeof(elements) / sizeof(elements[0])) != SL_OK)
       _exit(2);
@@ -2478,6 +3394,12 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
     if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'p'),
                     set_status_busy_spinner_key, NULL) != SL_OK)
       _exit(6);
+    if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'z'),
+                    set_status_message_style_key, NULL) != SL_OK)
+      _exit(7);
+    if (sl_bind_key(sl, (sl_key_t)(SL_KEY_ALT_BASE + 'y'),
+                    hide_status_message_prefix_key, NULL) != SL_OK)
+      _exit(8);
     line = sl_readline(sl, "status> ");
     if (!line)
       _exit(3);
@@ -2497,92 +3419,47 @@ static int run_pty_statusline_case(sl_prompt_theme_t theme, char *terminal,
   element_style = theme == SL_PROMPT_THEME_DEFAULT
                       ? "\r  \033[97me0"
                       : "\r  \033[38;2;172;164;184me0";
+  dash_style = theme == SL_PROMPT_THEME_DEFAULT ? "\033[32m- "
+                                                : "\033[38;2;57;255;20m- ";
+  changed_style = theme == SL_PROMPT_THEME_DEFAULT
+                      ? "\033[35m? \033[0m\033[3;2;90mChanged"
+                      : "\033[38;2;185;103;255m? "
+                        "\033[0m\033[3;38;2;72;76;105mChanged";
+  bare_style = theme == SL_PROMPT_THEME_DEFAULT ? "\033[3;2;90mBare"
+                                                : "\033[3;38;2;72;76;105mBare";
   terminal_len = 0;
   terminal[0] = '\0';
-  while (!contains_bytes(terminal, "status> ")) {
-    n = read_some_with_timeout(master_fd, terminal + terminal_len,
-                               terminal_cap - 1 - terminal_len);
-    if (n <= 0)
-      return -1;
-    terminal_len += (size_t)n;
-    terminal[terminal_len] = '\0';
-    if (terminal_len >= terminal_cap - 1)
-      return -1;
-  }
-  tries = 0;
-  while (!contains_bytes(terminal, idle_style) && tries < 20) {
-    n = read_some_with_timeout(master_fd, terminal + terminal_len,
-                               terminal_cap - 1 - terminal_len);
-    if (n < 0)
-      return -1;
-    if (n > 0) {
-      terminal_len += (size_t)n;
-      terminal[terminal_len] = '\0';
-      if (terminal_len >= terminal_cap - 1)
-        return -1;
-    }
-    tries++;
-  }
-  if (!contains_bytes(terminal, idle_style))
+  if (wait_for_status_output(master_fd, terminal, terminal_cap, &terminal_len,
+                             0, "status> ", "prompt") != 0 ||
+      wait_for_status_output(master_fd, terminal, terminal_cap, &terminal_len,
+                             0, idle_style, "initial idle") != 0)
     return -1;
-  if (write(master_fd, "\033p", 2) != 2)
+  output_mark = terminal_len;
+  if (write(master_fd, "\033p", 2) != 2 ||
+      wait_for_status_output(master_fd, terminal, terminal_cap, &terminal_len,
+                             output_mark, busy_style, "busy spinner") != 0)
     return -1;
-  tries = 0;
-  while (!contains_bytes(terminal, busy_style) && tries < 20) {
-    n = read_some_with_timeout(master_fd, terminal + terminal_len,
-                               terminal_cap - 1 - terminal_len);
-    if (n < 0)
-      return -1;
-    if (n > 0) {
-      terminal_len += (size_t)n;
-      terminal[terminal_len] = '\0';
-      if (terminal_len >= terminal_cap - 1)
-        return -1;
-    }
-    tries++;
-  }
-  if (!contains_bytes(terminal, busy_style))
+  output_mark = terminal_len;
+  if (write(master_fd, "\033m", 2) != 2 ||
+      wait_for_status_output(master_fd, terminal, terminal_cap, &terminal_len,
+                             output_mark, element_style,
+                             "blank idle marker") != 0)
     return -1;
-  if (write(master_fd, "\033m", 2) != 2)
+  output_mark = terminal_len;
+  if (write(master_fd, "\033n", 2) != 2 ||
+      wait_for_status_output(master_fd, terminal, terminal_cap, &terminal_len,
+                             output_mark, dash_style, "idle dash") != 0)
     return -1;
-  tries = 0;
-  while (!contains_bytes(terminal, element_style) && tries < 20) {
-    n = read_some_with_timeout(master_fd, terminal + terminal_len,
-                               terminal_cap - 1 - terminal_len);
-    if (n < 0)
-      return -1;
-    if (n > 0) {
-      terminal_len += (size_t)n;
-      terminal[terminal_len] = '\0';
-      if (terminal_len >= terminal_cap - 1)
-        return -1;
-    }
-    tries++;
-  }
-  if (!contains_bytes(terminal, element_style))
+  output_mark = terminal_len;
+  if (write(master_fd, "\033z", 2) != 2 ||
+      wait_for_status_output(master_fd, terminal, terminal_cap, &terminal_len,
+                             output_mark, changed_style,
+                             "changed message") != 0)
     return -1;
-  if (write(master_fd, "\033n", 2) != 2)
-    return -1;
-  tries = 0;
-  while (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
-                                       ? "\033[32m- "
-                                       : "\033[38;2;57;255;20m- ") &&
-         tries < 20) {
-    n = read_some_with_timeout(master_fd, terminal + terminal_len,
-                               terminal_cap - 1 - terminal_len);
-    if (n < 0)
-      return -1;
-    if (n > 0) {
-      terminal_len += (size_t)n;
-      terminal[terminal_len] = '\0';
-      if (terminal_len >= terminal_cap - 1)
-        return -1;
-    }
-    tries++;
-  }
-  if (!contains_bytes(terminal, theme == SL_PROMPT_THEME_DEFAULT
-                                    ? "\033[32m- "
-                                    : "\033[38;2;57;255;20m- "))
+  output_mark = terminal_len;
+  if (write(master_fd, "\033y", 2) != 2 ||
+      wait_for_status_output(master_fd, terminal, terminal_cap, &terminal_len,
+                             output_mark, bare_style, "bare message") != 0)
     return -1;
   if (write(master_fd, "ok\r", 3) != 3)
     return -1;
@@ -2817,8 +3694,13 @@ static void test_normal_wrapped_prompt_proceeds_after_output(void) {
   ASSERT_TRUE(write(master_fd, input, strlen(input)) == (ssize_t)strlen(input),
               "write input failed");
   tries = 0;
-  while (!contains_after_bytes(terminal, "submitted:", "softline> ") &&
-         tries < 300) {
+  while (tries < 300) {
+    vt_init(&screen, 8, 80);
+    vt_apply(&screen, terminal);
+    if (contains_after_bytes(terminal, "submitted:", "softline> ") &&
+        vt_contains(&screen, "submitted: hello world jspdi jsdip") &&
+        vt_contains(&screen, "softline>"))
+      break;
     n = read_some_with_timeout_ms(master_fd, buf, sizeof(buf), 20);
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
@@ -2826,6 +3708,9 @@ static void test_normal_wrapped_prompt_proceeds_after_output(void) {
   }
   vt_init(&screen, 8, 80);
   vt_apply(&screen, terminal);
+  if (!vt_contains(&screen, "submitted: hello world jspdi jsdip") ||
+      !vt_contains(&screen, "softline>"))
+    vt_dump(&screen);
   ASSERT_TRUE(vt_contains(&screen, "submitted: hello world jspdi jsdip"),
               "submitted output missing");
   ASSERT_TRUE(vt_contains(&screen, "softline>"),
@@ -3495,6 +4380,16 @@ static void test_statusline_uses_palette_offset_and_truncation(void) {
                   !contains_bytes(terminal, "e31") &&
                   contains_bytes(terminal, "..."),
               "status line did not retain 31 elements plus ellipsis");
+  ASSERT_TRUE(
+      contains_bytes(terminal, "\033[38;2;72;76;105m! \033[0m") &&
+          contains_bytes(terminal,
+                         "\033[3;38;2;172;164;184mHello world, this is a") &&
+          contains_bytes(terminal,
+                         "  \033[3;38;2;172;164;184mlong status line, that") &&
+          contains_bytes(terminal,
+                         "  \033[3;38;2;172;164;184mcontinues on multiple") &&
+          contains_bytes(terminal, "  \033[3;38;2;172;164;184mlines."),
+      "status message styles or word wrapping failed");
   ASSERT_TRUE(contains_after_bytes(terminal, "e7", "\n"),
               "status elements did not wrap between elements");
   PASS();
@@ -3523,6 +4418,13 @@ static void test_default_statusline_uses_ansi_palette(void) {
                   contains_bytes(terminal, "\033[90m : ") &&
                   !contains_bytes(terminal, "\033[38;2;"),
               "default status palette did not use ANSI colours");
+  ASSERT_TRUE(
+      contains_bytes(terminal,
+                     "\033[2;90m! \033[0m\033[3;90mHello world, this is a") &&
+          contains_bytes(terminal, "  \033[3;90mlong status line, that") &&
+          contains_bytes(terminal, "  \033[3;90mcontinues on multiple") &&
+          contains_bytes(terminal, "  \033[3;90mlines."),
+      "default status colors or word wrapping failed");
   PASS();
 }
 
@@ -4095,19 +4997,21 @@ static void test_bounded_print_above_uses_scroll_region(void) {
   PASS();
 }
 
-static void test_bounded_print_above_rejects_narrow_scroll(void) {
+static void test_bounded_print_above_supports_narrow_surface(void) {
   int master_fd;
   int slave_fd;
   int result_pipe[2];
   pid_t pid;
   struct winsize ws;
-  char terminal[256];
+  char terminal[8192];
   char result[64];
+  struct vt_screen screen;
+  size_t terminal_len;
   ssize_t n;
   int status;
   int rc;
 
-  TEST("bounded print_above rejects narrow scroll region");
+  TEST("narrow print_above clears stale cells and recovers after partial ANSI");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 20;
   ws.ws_row = 5;
@@ -4119,6 +5023,7 @@ static void test_bounded_print_above_rejects_narrow_scroll(void) {
   if (pid == 0) {
     sl_config_t cfg;
     sl_t *sl;
+    struct one_chunk_once stream;
     char msg[32];
     int written;
     close(master_fd);
@@ -4131,8 +5036,21 @@ static void test_bounded_print_above_rejects_narrow_scroll(void) {
       _exit(2);
     if (sl->set_bounds(sl, 5, 0, 10, 5) != SL_OK)
       _exit(3);
-    rc = sl->print_above(sl, one_chunk_stream, "hello\n");
-    written = snprintf(msg, sizeof(msg), "%d", rc);
+    if (write(slave_fd, "\033[4;6HOLD-TEXT", 14) != 14)
+      _exit(4);
+    stream.text = "Hi\n";
+    stream.sent = 0;
+    rc = sl->print_above(sl, one_chunk_once_stream, &stream);
+    stream.text = "\033[31";
+    stream.sent = 0;
+    rc = rc == SL_OK && sl->print_above(sl, one_chunk_once_stream, &stream) ==
+                            SL_ERROR_INVALID
+             ? SL_OK
+             : SL_ERROR;
+    stream.text = "OK\n";
+    stream.sent = 0;
+    written = snprintf(msg, sizeof(msg), "%d:%d", rc,
+                       sl->print_above(sl, one_chunk_once_stream, &stream));
     if (written > 0)
       (void)write(result_pipe[1], msg, (size_t)written);
     sl->destroy(sl);
@@ -4142,19 +5060,43 @@ static void test_bounded_print_above_rejects_narrow_scroll(void) {
   }
   close(slave_fd);
   close(result_pipe[1]);
-  n = read_until_eof_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  n = 0;
+  for (rc = 0; rc < 300 && n <= 0; rc++) {
+    ssize_t amount;
+    amount = read_some_with_timeout_ms(master_fd, terminal + terminal_len,
+                                       sizeof(terminal) - 1 - terminal_len, 20);
+    if (amount > 0) {
+      terminal_len += (size_t)amount;
+      terminal[terminal_len] = '\0';
+    }
+    n = read_some_with_timeout_ms(result_pipe[0], result, sizeof(result) - 1,
+                                  20);
+  }
   ASSERT_TRUE(n > 0, "read result failed");
   result[n] = '\0';
-  terminal[0] = '\0';
-  n = read_some_with_timeout_ms(master_fd, terminal, sizeof(terminal) - 1, 20);
-  if (n > 0)
-    terminal[n] = '\0';
+  while (terminal_len < sizeof(terminal) - 1) {
+    n = read_some_with_timeout_ms(master_fd, terminal + terminal_len,
+                                  sizeof(terminal) - 1 - terminal_len, 20);
+    if (n <= 0)
+      break;
+    terminal_len += (size_t)n;
+    terminal[terminal_len] = '\0';
+  }
   close(master_fd);
   close(result_pipe[0]);
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
-  ASSERT_TRUE(strcmp(result, "-2") == 0, "narrow print_above did not fail");
+  ASSERT_TRUE(strcmp(result, "0:0") == 0,
+              "finite print did not recover from incomplete ANSI");
+  vt_init(&screen, 5, 20);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "Hi") && vt_contains(&screen, "OK"),
+              "narrow print_above did not render both calls");
+  ASSERT_TRUE(!vt_contains(&screen, "HiD-TEXT"),
+              "stale terminal text remained under the first output row");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[1;4r"),
               "narrow print_above emitted full-row scroll region");
   PASS();
@@ -4314,7 +5256,7 @@ static void test_dynamic_bounds_origin_uses_remaining_terminal_area(void) {
   int result_pipe[2];
   pid_t pid;
   struct winsize ws;
-  char terminal[8192];
+  char terminal[32768];
   char result[256];
   struct vt_screen screen;
   size_t terminal_len;
@@ -4380,13 +5322,17 @@ static void test_dynamic_bounds_origin_uses_remaining_terminal_area(void) {
   saw_explicit_continuation = 0;
   saw_offscreen_cursor = 0;
   tries = 0;
-  while (tries < 80 && !saw_first) {
+  /* Do not send the continuation after seeing only a partial first render. */
+  while (tries < 400 && !saw_first) {
     vt_init(&screen, 5, 20);
     vt_apply(&screen, terminal);
-    if (vt_contains(&screen, "p> abcdefg") || vt_contains(&screen, "p> abc"))
+    if (vt_contains(&screen, "p> abcdefg") ||
+        (vt_contains(&screen, "p> abc") && vt_contains(&screen, "defg")))
       saw_first = 1;
     if (contains_bytes(terminal, "\033[4;24H"))
       saw_offscreen_cursor = 1;
+    ASSERT_TRUE(terminal_len + 1 < sizeof(terminal),
+                "dynamic bounds output exceeded test buffer");
     n = read_some_with_timeout_ms(master_fd, terminal + terminal_len,
                                   sizeof(terminal) - 1 - terminal_len, 25);
     if (n > 0) {
@@ -4398,7 +5344,7 @@ static void test_dynamic_bounds_origin_uses_remaining_terminal_area(void) {
   ASSERT_TRUE(write(master_fd, "hij", 3) == 3,
               "write continuation input failed");
   tries = 0;
-  while (tries < 80 && !saw_second) {
+  while (tries < 400 && !saw_second) {
     vt_init(&screen, 5, 20);
     vt_apply(&screen, terminal);
     if (vt_contains(&screen, "hij"))
@@ -4408,6 +5354,8 @@ static void test_dynamic_bounds_origin_uses_remaining_terminal_area(void) {
       saw_explicit_continuation = 1;
     if (contains_bytes(terminal, "\033[4;24H"))
       saw_offscreen_cursor = 1;
+    ASSERT_TRUE(terminal_len + 1 < sizeof(terminal),
+                "dynamic bounds output exceeded test buffer");
     n = read_some_with_timeout_ms(master_fd, terminal + terminal_len,
                                   sizeof(terminal) - 1 - terminal_len, 25);
     if (n > 0) {
@@ -4522,6 +5470,120 @@ static void test_bounded_redraw_clears_only_box_width(void) {
   ASSERT_TRUE(strcmp(result, "abc") == 0, "bounded redraw result mismatch");
   ASSERT_TRUE(!contains_bytes(terminal, "\033[0K"),
               "bounded redraw used erase-to-end-of-line");
+  PASS();
+}
+
+struct resized_prompt_clear_state {
+  int master_fd;
+  int slave_fd;
+  int fired;
+  int status;
+};
+
+static size_t read_live_pty_output(int fd, char *bytes, size_t capacity);
+
+static void resized_prompt_clear_idle(sl_t *sl, void *userdata) {
+  struct resized_prompt_clear_state *state;
+  struct winsize ws;
+  state = (struct resized_prompt_clear_state *)userdata;
+  if (state->fired)
+    return;
+  state->fired = 1;
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  state->status = ioctl(state->master_fd, TIOCSWINSZ, &ws) == 0 &&
+                          write(state->slave_fd, "\033[7;1HGUARD", 11) == 11 &&
+                          sl_set_bounds(sl, 5, 1, 0, 5) == SL_OK
+                      ? 0
+                      : -1;
+  if (state->status == 0 && write(state->slave_fd, "\033[7;1HEND1", 10) != 10)
+    state->status = -1;
+  ws.ws_col = 40;
+  if (state->status == 0 && (ioctl(state->master_fd, TIOCSWINSZ, &ws) != 0 ||
+                             sl_set_bounds(sl, 5, 1, 30, 5) != SL_OK))
+    state->status = -1;
+  ws.ws_col = 20;
+  if (state->status == 0 &&
+      (ioctl(state->master_fd, TIOCSWINSZ, &ws) != 0 ||
+       write(state->slave_fd, "\033[7;1HGUARD", 11) != 11 ||
+       sl_set_screen_width(sl, 0) != SL_OK))
+    state->status = -1;
+  if (sl_submit(sl) != SL_OK)
+    state->status = -1;
+}
+
+static void test_active_bounded_prompt_clear_clips_after_shrink(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct resized_prompt_clear_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+  const char *cursor;
+  const char *end;
+  const char *second;
+
+  TEST("active bounded prompt clear respects physical terminal shrink");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 5, 1, 30, 5) == SL_OK,
+              "fixed prompt setup failed");
+  memset(&state, 0, sizeof(state));
+  state.master_fd = master_fd;
+  state.slave_fd = slave_fd;
+  ASSERT_TRUE(sl_set_idle_callback(sl, resized_prompt_clear_idle, &state) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "p> ");
+  ASSERT_TRUE(line && state.fired && state.status == 0,
+              "active bounds and width updates failed");
+  sl_free_string(sl, line);
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "resize output missing");
+  cursor = strstr(output, "GUARD");
+  ASSERT_TRUE(cursor != NULL, "outside-cell seed missing");
+  end = strstr(cursor, "END1");
+  second = end ? strstr(end, "\033[7;1HGUARD") : NULL;
+  ASSERT_TRUE(end && second, "resize phases missing");
+  while (cursor < end) {
+    if (*cursor == ' ') {
+      size_t spaces;
+      spaces = strspn(cursor, " ");
+      ASSERT_TRUE(spaces <= 15, "old prompt clear exceeded physical width");
+      cursor += spaces;
+    } else {
+      cursor++;
+    }
+  }
+  cursor = second;
+  while (*cursor) {
+    if (*cursor == ' ') {
+      size_t spaces;
+      spaces = strspn(cursor, " ");
+      ASSERT_TRUE(spaces <= 15, "width setter clear exceeded physical width");
+      cursor += spaces;
+    } else {
+      cursor++;
+    }
+  }
+  vt_init(&screen, 8, 20);
+  vt_apply(&screen, second);
+  ASSERT_TRUE(vt_contains(&screen, "GUARD"),
+              "old prompt clear overwrote cells outside the box");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
   PASS();
 }
 
@@ -6277,6 +7339,179 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
   PASS();
 }
 
+static void test_live_output_end_restores_unbounded_cursor(void) {
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[4096];
+  char buf[512];
+  char ready;
+  const char *last_hide;
+  const char *last_show;
+  const char *next;
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("ending unbounded live output restores the active editor cursor");
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0 &&
+                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
+              "pty or pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    struct idle_stream_end_state state;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    state.fd = ready_pipe[1];
+    state.attempted = 0;
+    if (sl_set_idle_callback(sl, idle_end_live_stream_once, &state) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(result_pipe[1]);
+  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
+                  ready == 'R',
+              "idle stream did not finish");
+  terminal_len = 0;
+  terminal[0] = '\0';
+  for (tries = 0; tries < 100 && terminal_len < sizeof(terminal) - 1; tries++) {
+    n = read_some_with_timeout_ms(master_fd, buf, sizeof(buf), 20);
+    if (n <= 0)
+      break;
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  }
+  ASSERT_TRUE(contains_bytes(terminal, "notice") &&
+                  contains_bytes(terminal, "p> "),
+              "stream or prompt output missing");
+  last_hide = NULL;
+  last_show = NULL;
+  next = terminal;
+  while ((next = strstr(next, "\033[?25l")) != NULL) {
+    last_hide = next;
+    next++;
+  }
+  next = terminal;
+  while ((next = strstr(next, "\033[?25h")) != NULL) {
+    last_show = next;
+    next++;
+  }
+  ASSERT_TRUE(last_show && (!last_hide || last_show > last_hide),
+              "stream end left the editor cursor hidden");
+  ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], buf, sizeof(buf) - 1);
+  ASSERT_TRUE(n == 2 && memcmp(buf, "ok", 2) == 0, "editor result mismatch");
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "child editor failed");
+  PASS();
+}
+
+static void test_unbounded_finite_output_preserves_active_prompt(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[8192];
+  char result[16];
+  char ready;
+  ssize_t n;
+  int status;
+
+  TEST("unbounded finite output preserves an active editor between sessions");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0 &&
+                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
+              "pty or pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    struct idle_output_boundary_state state;
+    char *line;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl)
+      _exit(2);
+    state.fd = ready_pipe[1];
+    state.attempted = 0;
+    if (sl_set_idle_callback(sl, idle_output_boundary_once, &state) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "p> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(result_pipe[1]);
+  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
+                  ready == 'R',
+              "active editor output sequence failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, terminal, sizeof(terminal)) > 0,
+              "active editor output missing");
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "first") && vt_contains(&screen, "middle") &&
+                  vt_contains(&screen, "last") && vt_contains(&screen, "p> "),
+              "finite output erased transcript or active prompt");
+  ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 2 && memcmp(result, "ok", 2) == 0,
+              "active editor lost its input after finite output");
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "active editor child failed");
+  PASS();
+}
+
 static void test_idle_callback_prints_above_active_prompt(void) {
   int master_fd;
   int slave_fd;
@@ -6770,7 +8005,7 @@ static void test_unicode_width_wraps_japanese_and_emoji(void) {
   ASSERT_TRUE(contains_bytes(terminal, "p> \346\227\245\346\234\254"
                                        "\350\252\236\346\227\245"),
               "wide first row missing");
-  ASSERT_TRUE(contains_bytes(terminal, "   \346\227\245\346\234\254\350\252\236"
+  ASSERT_TRUE(contains_bytes(terminal, "   \346\234\254\350\252\236"
                                        "\360\237\231\202x"),
               "wide continuation row missing");
   PASS();
@@ -6809,11 +8044,10 @@ static void test_queued_turns_profile_promotes_manually(void) {
   pid_t pid;
   char result[128];
   char terminal[8192];
-  char *editor_closed;
   size_t terminal_len;
   ssize_t n;
 
-  TEST("queued-turns profile immediately submits and promotes with Alt-Enter");
+  TEST("queued-turns profile records steer mode for host-controlled delivery");
   if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) != 0 ||
       pipe(result_pipe) != 0) {
     FAIL("pty setup failed");
@@ -6826,6 +8060,8 @@ static void test_queued_turns_profile_promotes_manually(void) {
     sl_prompt_source_t source;
     sl_t *sl;
     char *line;
+    char *steer;
+    sl_prompt_queue_mode_t mode;
     char output[128];
     int written;
     close(master_fd);
@@ -6838,7 +8074,9 @@ static void test_queued_turns_profile_promotes_manually(void) {
     if (!sl ||
         sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
             SL_OK ||
-        sl_set_status_busy(sl, 1) != SL_OK)
+        sl_set_status_busy(sl, 1) != SL_OK ||
+        sl_set_idle_callback(sl, idle_release_after_steer_queued, NULL) !=
+            SL_OK)
       _exit(2);
     source = SL_PROMPT_SOURCE_NONE;
     line = sl_next_prompt(sl, "turn> ", &source);
@@ -6848,15 +8086,16 @@ static void test_queued_turns_profile_promotes_manually(void) {
     sl_free_string(sl, line);
     if (written < 0 || written >= (int)sizeof(output))
       _exit(4);
-    source = SL_PROMPT_SOURCE_NONE;
-    line = sl_next_prompt(sl, "turn> ", &source);
-    if (!line)
+    if (source != SL_PROMPT_SOURCE_QUEUED)
       _exit(5);
-    written += snprintf(output + written, sizeof(output) - (size_t)written,
-                        "|%d:%s", (int)source, line);
-    sl_free_string(sl, line);
-    if (written < 0 || written >= (int)sizeof(output))
+    if (sl_prompt_queue_count(sl) != 1 ||
+        sl_prompt_queue_get_mode(sl, 0, &mode) != SL_OK ||
+        mode != SL_PROMPT_QUEUE_MODE_STEER ||
+        sl_prompt_queue_take(sl, 0, &steer) != SL_OK)
       _exit(6);
+    written += snprintf(output + written, sizeof(output) - (size_t)written,
+                        "|%s", steer);
+    sl_free_string(sl, steer);
     (void)write(result_pipe[1], output, (size_t)written);
     sl_destroy(sl);
     close(slave_fd);
@@ -6881,20 +8120,16 @@ static void test_queued_turns_profile_promotes_manually(void) {
       "queued-turns input write failed");
   terminal_len = 0;
   terminal[0] = '\0';
-  editor_closed = NULL;
-  while (!editor_closed || !strstr(editor_closed + 8, "\033[?2004h")) {
+  while (!contains_bytes(terminal, "S 2. steer")) {
     n = read_some_with_timeout(master_fd, terminal + terminal_len,
                                sizeof(terminal) - 1 - terminal_len);
     if (n <= 0)
-      FAIL("queued-turns editor did not resume after submission");
+      FAIL("steer queue preview missing");
     terminal_len += (size_t)n;
     terminal[terminal_len] = '\0';
-    editor_closed = strstr(terminal, "\033[?2004l");
   }
-  ASSERT_TRUE(write(master_fd, "\033\r", strlen("\033\r")) ==
-                  (ssize_t)strlen("\033\r"),
-              "queued-turns promotion write failed");
-  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  n = read_some_with_timeout_ms(result_pipe[0], result, sizeof(result) - 1,
+                                5000);
   ASSERT_TRUE(n > 0, "queued-turns result missing");
   result[n] = '\0';
   close(master_fd);
@@ -6902,7 +8137,7 @@ static void test_queued_turns_profile_promotes_manually(void) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "queued-turns wait failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "queued-turns child failed");
-  ASSERT_TRUE(strcmp(result, "1:steer|3:queued") == 0,
+  ASSERT_TRUE(strcmp(result, "2:queued|steer") == 0,
               "queued-turns source or ordering mismatch");
   PASS();
 }
@@ -8167,7 +9402,1812 @@ static void test_watch_lifecycle_reports_terminal_events(void) {
               "watch lifecycle did not preserve event semantics");
   PASS();
 }
+
+struct live_output_test_state {
+  int fd;
+};
+
+static int live_output_test_watch(sl_t *sl, const sl_watch_event_t *event,
+                                  void *userdata) {
+  struct live_output_test_state *state;
+  char command;
+  state = (struct live_output_test_state *)userdata;
+  if (!event || !state || (event->events & SL_WATCH_READ) == 0 ||
+      read(state->fd, &command, 1) != 1)
+    return SL_ERROR_IO;
+  if (command == '1')
+    return sl_output_stream_write(sl, "Hello", 5);
+  if (command == '2')
+    return sl_output_stream_write(sl, " world", 6);
+  if (command == '3') {
+    if (sl_set_bounds(sl, 8, 1, 18, 6) != SL_OK ||
+        sl_set_screen_width(sl, 18) != SL_OK)
+      return SL_ERROR;
+    return sl_output_stream_write(sl, "\nnext", 5);
+  }
+  return SL_ERROR_INVALID;
+}
+
+static void test_live_output_stream_across_narrow_bounds(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[32768];
+  char chunk[1024];
+  char result[64];
+  size_t terminal_len;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("live output continues one row while typing and changing narrow bounds");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0 && pipe(result_pipe) == 0,
+              "pipe setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct live_output_test_state state;
+    char *line;
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || write(slave_fd, "\033[1;1HLEFT", 10) != 10 ||
+        sl_set_bounds(sl, 4, 1, 24, 6) != SL_OK ||
+        sl_output_stream_begin(sl) != SL_OK)
+      _exit(2);
+    state.fd = wake_pipe[0];
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ, live_output_test_watch,
+                     &state, &watch_id) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "chat> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    if (sl_output_stream_end(sl) != SL_OK)
+      _exit(5);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  tries = 0;
+  while (tries++ < 10) {
+    vt_init(&screen, 8, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "chat> "))
+      break;
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0 && terminal_len + (size_t)n < sizeof(terminal),
+                "initial live prompt missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  ASSERT_TRUE(write(wake_pipe[1], "1", 1) == 1, "first live write failed");
+  tries = 0;
+  while (tries++ < 10) {
+    vt_init(&screen, 8, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "Hello"))
+      break;
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0 && terminal_len + (size_t)n < sizeof(terminal),
+                "first live fragment missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  ASSERT_TRUE(vt_contains(&screen, "chat> "),
+              "editable prompt disappeared during live output");
+  ASSERT_TRUE(write(master_fd, "abc", 3) == 3, "typing failed");
+  ASSERT_TRUE(write(wake_pipe[1], "2", 1) == 1, "second live write failed");
+  tries = 0;
+  while (tries++ < 300) {
+    vt_init(&screen, 8, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "Hello world") &&
+        vt_contains(&screen, "chat> abc"))
+      break;
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0 && terminal_len + (size_t)n < sizeof(terminal),
+                "live continuation or typed draft missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  ASSERT_TRUE(vt_contains(&screen, "Hello world"),
+              "chunk boundary split the transcript row");
+  ASSERT_TRUE(write(wake_pipe[1], "3", 1) == 1,
+              "geometry change command failed");
+  tries = 0;
+  while (tries++ < 300) {
+    vt_init(&screen, 8, 40);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "Hello world") && vt_contains(&screen, "next") &&
+        vt_contains(&screen, "chat> abc"))
+      break;
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0 && terminal_len + (size_t)n < sizeof(terminal),
+                "resized live output missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  if (!vt_contains(&screen, "Hello world") || !vt_contains(&screen, "next"))
+    vt_dump(&screen);
+  ASSERT_TRUE(vt_contains(&screen, "Hello world") &&
+                  vt_contains(&screen, "next"),
+              "geometry change lost transcript content");
+  ASSERT_TRUE(strncmp(screen.cells[0], "LEFT", 4) == 0,
+              "narrow transcript touched unrelated terminal cells");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "live prompt result missing");
+  result[n] = '\0';
+  close(master_fd);
+  close(wake_pipe[1]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "live output child wait failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "live output child failed");
+  ASSERT_TRUE(strcmp(result, "abc") == 0, "live output lost typed draft");
+  PASS();
+}
+
+static void test_live_output_stream_chunk_protocol(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char terminal[8192];
+  size_t used;
+  ssize_t amount;
+  int tries;
+
+  TEST("live output preserves split ANSI and UTF-8 and validates end");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 7;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL && sl_set_bounds(sl, 3, 1, 18, 5) == SL_OK,
+              "setup failed");
+  ASSERT_TRUE(sl->output_stream_begin(sl) == SL_OK, "receiver begin failed");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_ERROR_INVALID,
+              "overlapping begin accepted");
+  ASSERT_TRUE(sl_output_stream_write(sl, NULL, 0) == SL_OK &&
+                  sl_output_stream_write(sl, NULL, 1) == SL_ERROR_INVALID,
+              "invalid byte-span handling failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "\033[2J", 4) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "ok", 2) == SL_OK,
+              "unsupported CSI command did not fail at its write boundary");
+  ASSERT_TRUE(sl_output_stream_write(sl, "\033[1;31", 6) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_ERROR_INVALID,
+              "incomplete ANSI sequence ended silently");
+  ASSERT_TRUE(sl->output_stream_write(sl, "m\xc3", 2) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_ERROR_INVALID,
+              "incomplete UTF-8 sequence ended silently");
+  ASSERT_TRUE(sl_output_stream_write(sl, "\x84", 1) == SL_OK &&
+                  sl_output_stream_write(sl, " e\xcc", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "\x81", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[0m\n", 5) == SL_OK,
+              "split styled UTF-8 bytes failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "\xf0\x80\x80\x80", 4) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\x80", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xc2", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "\x9b", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xc3", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "x", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "R", 1) == SL_OK,
+              "malformed UTF-8 or C1 control left the live parser unusable");
+  ASSERT_TRUE(sl->output_stream_end(sl) == SL_OK, "receiver end failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "x", 1) == SL_ERROR_INVALID &&
+                  sl_output_stream_end(sl) == SL_ERROR_INVALID,
+              "write or end after closure accepted");
+  ASSERT_TRUE(sl_set_bounds(sl, 3, 1, 18, 1) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "x", 1) == SL_ERROR_INVALID &&
+                  sl_set_bounds(sl, 3, 1, 18, 5) == SL_OK &&
+                  sl_output_stream_write(sl, "ok", 2) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "output session did not recover after a no-space write");
+  sl_destroy(sl);
+  close(slave_fd);
+  used = 0;
+  terminal[0] = '\0';
+  for (tries = 0; tries < 100 && used < sizeof(terminal) - 1; tries++) {
+    amount = read_some_with_timeout_ms(master_fd, terminal + used,
+                                       sizeof(terminal) - 1 - used, 20);
+    if (amount <= 0)
+      break;
+    used += (size_t)amount;
+    terminal[used] = '\0';
+  }
+  close(master_fd);
+  ASSERT_TRUE(contains_bytes(terminal, "\033[0;1;31m") &&
+                  contains_bytes(terminal, "\xc3\x84") &&
+                  contains_bytes(terminal, "e\xcc\x81") &&
+                  contains_bytes(terminal, "ok"),
+              "styled Unicode was not emitted before stream end");
+  PASS();
+}
+
+static void test_live_output_stream_changes_unbounded_width(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char terminal[8192];
+  size_t used;
+  ssize_t amount;
+  int tries;
+  int row;
+  int wrapped;
+
+  TEST("live unbounded output honors a midstream width setter");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 7;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl != NULL && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_screen_width(sl, 6) == SL_OK &&
+                  sl_output_stream_write(sl, "abcdefg", 7) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "width update failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  used = 0;
+  terminal[0] = '\0';
+  for (tries = 0; tries < 100 && used < sizeof(terminal) - 1; tries++) {
+    amount = read_some_with_timeout_ms(master_fd, terminal + used,
+                                       sizeof(terminal) - 1 - used, 20);
+    if (amount <= 0)
+      break;
+    used += (size_t)amount;
+    terminal[used] = '\0';
+  }
+  close(master_fd);
+  vt_init(&screen, 7, 30);
+  vt_apply(&screen, terminal);
+  wrapped = 0;
+  for (row = 0; row + 1 < screen.rows; row++) {
+    if (strncmp(screen.cells[row], "abcdef", 6) == 0 &&
+        screen.cells[row + 1][0] == 'g')
+      wrapped = 1;
+  }
+  ASSERT_TRUE(wrapped, "stream ignored the new six-column width");
+  PASS();
+}
+
+static size_t read_live_pty_output(int fd, char *bytes, size_t capacity) {
+  size_t used;
+  ssize_t amount;
+  used = 0;
+  while (used + 1 < capacity) {
+    amount =
+        read_some_with_timeout_ms(fd, bytes + used, capacity - used - 1, 20);
+    if (amount <= 0)
+      break;
+    used += (size_t)amount;
+  }
+  bytes[used] = '\0';
+  return used;
+}
+
+static void test_live_output_preserves_viewport_between_sessions(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char terminal[16384];
+  struct one_chunk_once middle;
+  struct one_chunk_once after_partial;
+  size_t used;
+
+  TEST("narrow live output retains visible rows across sessions");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 10;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 4, 1, 20, 8) == SL_OK,
+              "narrow live output setup failed");
+  middle.text = "MIDDLE\n";
+  middle.sent = 0;
+  after_partial.text = "AFTER\n";
+  after_partial.sent = 0;
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FIRST\n", 6) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "SECOND\n", 7) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_print_above(sl, one_chunk_once_stream, &middle) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[31mTHIRD", 10) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_print_above(sl, one_chunk_once_stream, &after_partial) ==
+                      SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FOURTH\n", 7) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "consecutive live output sessions failed");
+  used = read_live_pty_output(master_fd, terminal, sizeof(terminal));
+  ASSERT_TRUE(used > 0, "live output was not rendered");
+  vt_init(&screen, 10, 30);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(
+      vt_contains(&screen, "FIRST") && vt_contains(&screen, "SECOND") &&
+          vt_contains(&screen, "MIDDLE") && vt_contains(&screen, "THIRD") &&
+          vt_contains(&screen, "AFTER") && vt_contains(&screen, "FOURTH"),
+      "a later session erased earlier visible output");
+  ASSERT_TRUE(vt_count(&screen, "THIRDAFTER") == 0 &&
+                  vt_count(&screen, "AFTERFOURTH") == 0,
+              "a new session continued the previous partial row");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[0mAFTER"),
+              "finite output inherited the previous session's style");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_unbounded_finite_output_between_sessions(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct one_chunk_once middle;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("unbounded finite output remains visible between live sessions");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  middle.text = "middle\n";
+  middle.sent = 0;
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "first\n", 6) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_print_above(sl, one_chunk_once_stream, &middle) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "last\n", 5) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "unbounded output sessions failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "unbounded output missing");
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "first") && vt_contains(&screen, "middle") &&
+                  vt_contains(&screen, "last") &&
+                  !vt_contains(&screen, "lastle"),
+              "unbounded finite output was overwritten by a later session");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_unbounded_stream_then_readline_preserves_transcript(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[8192];
+  char result[16];
+  char ready;
+  ssize_t n;
+  int status;
+
+  TEST("readline after unbounded stream preserves its final transcript row");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0 &&
+                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
+              "pty or pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    struct idle_ready_state idle;
+    char *line;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+        sl_output_stream_write(sl, "FIRST", 5) != SL_OK ||
+        sl_output_stream_end(sl) != SL_OK)
+      _exit(2);
+    idle.fd = ready_pipe[1];
+    idle.ready = 0;
+    if (sl_set_idle_callback(sl, idle_signal_ready_once, &idle) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(result_pipe[1]);
+  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
+                  ready == 'R',
+              "readline did not become idle after the stream");
+  ASSERT_TRUE(read_live_pty_output(master_fd, terminal, sizeof(terminal)) > 0,
+              "stream and readline output missing");
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST") && vt_contains(&screen, "> "),
+              "readline overwrote the stream's final transcript row");
+  ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 2 && memcmp(result, "ok", 2) == 0,
+              "readline did not return submitted input");
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "readline child failed");
+  PASS();
+}
+
+static void
+test_finite_viewport_output_then_readline_preserves_transcript(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[8192];
+  char result[16];
+  char ready;
+  size_t used;
+  ssize_t n;
+  int status;
+
+  TEST("readline after finite viewport output preserves its final row");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0 &&
+                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
+              "pty or pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    struct idle_ready_state idle;
+    struct one_chunk_once middle;
+    char *line;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 10;
+    sl = sl_create_with_config(&cfg);
+    middle.text = "MIDDLE\n";
+    middle.sent = 0;
+    if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+        sl_output_stream_write(sl, "FIRST\n", 6) != SL_OK ||
+        sl_output_stream_end(sl) != SL_OK ||
+        sl_print_above(sl, one_chunk_once_stream, &middle) != SL_OK)
+      _exit(2);
+    idle.fd = ready_pipe[1];
+    idle.ready = 0;
+    if (sl_set_idle_callback(sl, idle_signal_ready_once, &idle) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(result_pipe[1]);
+  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
+                  ready == 'R',
+              "readline did not become idle after finite output");
+  used = read_live_pty_output(master_fd, terminal, sizeof(terminal));
+  ASSERT_TRUE(used > 0 && write(master_fd, "draft", 5) == 5,
+              "finite output or input missing");
+  used +=
+      read_live_pty_output(master_fd, terminal + used, sizeof(terminal) - used);
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST") && vt_contains(&screen, "MIDDLE") &&
+                  vt_contains(&screen, "> draft"),
+              "readline overwrote finite viewport output");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 5 && memcmp(result, "draft", 5) == 0,
+              "readline did not return submitted input");
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "finite output child failed");
+  PASS();
+}
+
+struct multiline_stream_end_state {
+  int master_fd;
+  int attempted;
+  int failed;
+  unsigned int history_before_end;
+  unsigned int history_after_end;
+  unsigned int history_after_resize;
+  struct vt_screen screen;
+};
+
+static void
+multiline_stream_end_snapshot(struct multiline_stream_end_state *state) {
+  char bytes[16384];
+  if (read_live_pty_output(state->master_fd, bytes, sizeof(bytes)) == 0) {
+    state->failed = 1;
+    return;
+  }
+  vt_apply(&state->screen, bytes);
+}
+
+static void idle_end_multiline_stream_once(sl_t *sl, void *userdata) {
+  struct multiline_stream_end_state *state;
+  state = (struct multiline_stream_end_state *)userdata;
+  if (state->attempted)
+    return;
+  state->attempted = 1;
+  if (sl_set_buffer(sl, "one\ntwo") != SL_OK ||
+      sl_output_stream_write(sl, "A\nB\nC\nD\nE\nF", 11) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  multiline_stream_end_snapshot(state);
+  state->history_before_end = state->screen.history_count;
+  if (sl_output_stream_end(sl) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  multiline_stream_end_snapshot(state);
+  state->history_after_end = state->screen.history_count;
+  if (sl_output_stream_begin(sl) != SL_OK ||
+      sl_set_screen_width(sl, 19) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  multiline_stream_end_snapshot(state);
+  state->history_after_resize = state->screen.history_count;
+finish:
+  (void)sl_submit(sl);
+}
+
+static void test_multiline_stream_end_preserves_transcript_position(void) {
+  struct winsize ws;
+  struct multiline_stream_end_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char *line;
+
+  TEST("multiline editor stream teardown and resize keep transcript position");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  memset(&state, 0, sizeof(state));
+  state.master_fd = master_fd;
+  vt_init(&state.screen, 8, 20);
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_idle_callback(sl, idle_end_multiline_stream_once,
+                                       &state) == SL_OK,
+              "multiline stream setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line && strcmp(line, "one\ntwo") == 0 && state.attempted &&
+                  !state.failed &&
+                  state.history_after_end == state.history_before_end &&
+                  state.history_after_resize == state.history_before_end &&
+                  !vt_history_contains(&state.screen, "A") &&
+                  vt_contains(&state.screen, "A") &&
+                  vt_contains(&state.screen, "F"),
+              "stream teardown scrolled or duplicated retained transcript");
+  sl_free_string(sl, line);
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_preserves_reverse_search_prompt(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int wake_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[32768];
+  char chunk[4096];
+  char result[64];
+  size_t terminal_len;
+  size_t output_mark;
+  unsigned int history_before;
+  ssize_t n;
+  int status;
+  int tries;
+
+  TEST("live output preserves reverse-search prompt and stable history");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 16;
+  ws.ws_row = 6;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(pipe(wake_pipe) == 0 && pipe(result_pipe) == 0,
+              "pipe setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    sl_watch_id_t watch_id;
+    struct live_output_test_state state;
+    char *line;
+    close(master_fd);
+    close(wake_pipe[1]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_history_add(sl, "alpha") != SL_OK ||
+        sl_output_stream_begin(sl) != SL_OK)
+      _exit(2);
+    state.fd = wake_pipe[0];
+    watch_id = 0;
+    if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ, live_output_test_watch,
+                     &state, &watch_id) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "chat> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    if (sl_output_stream_end(sl) != SL_OK)
+      _exit(5);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(wake_pipe[0]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(wake_pipe[0]);
+  close(result_pipe[1]);
+  terminal_len = 0;
+  terminal[0] = '\0';
+  for (tries = 0; tries < 10 && !contains_bytes(terminal, "chat> "); tries++) {
+    n = (ssize_t)read_live_pty_output(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0, "initial prompt missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  ASSERT_TRUE(write(master_fd, "\022", 1) == 1, "reverse search input failed");
+  for (tries = 0; tries < 40; tries++) {
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0, "reverse search prompt missing");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+    if (contains_bytes(terminal, "(r-search)`':"))
+      break;
+  }
+  ASSERT_TRUE(tries < 40, "reverse search did not become visible");
+  n = (ssize_t)read_live_pty_output(master_fd, chunk, sizeof(chunk));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  vt_init(&screen, 6, 16);
+  vt_apply(&screen, terminal);
+  history_before = screen.history_count;
+  output_mark = terminal_len;
+  ASSERT_TRUE(write(wake_pipe[1], "1", 1) == 1, "live write signal failed");
+  for (tries = 0;
+       tries < 10 && !contains_bytes(terminal + output_mark, "Hello");
+       tries++) {
+    n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+    ASSERT_TRUE(n > 0, "live write missing during reverse search");
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+  }
+  ASSERT_TRUE(!contains_bytes(terminal + output_mark, "chat> "),
+              "live output redrew the ordinary prompt over reverse search");
+  vt_init(&screen, 6, 16);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(screen.history_count == history_before,
+              "live output moved or replaced the reverse-search prompt");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "search submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
+  ASSERT_TRUE(n > 0, "search result missing");
+  result[n] = '\0';
+  close(wake_pipe[1]);
+  close(result_pipe[0]);
+  /* The child still ends its output stream after sending the result. Keep
+   * the PTY master open until that final terminal write has completed. */
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "search child wait failed");
+  close(master_fd);
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  strcmp(result, "alpha") == 0,
+              "reverse search result changed after live output");
+  PASS();
+}
+
+struct live_submit_state {
+  int fired;
+  int status;
+};
+
+static void live_submit_draft_idle(sl_t *sl, void *userdata) {
+  struct live_submit_state *state;
+  state = (struct live_submit_state *)userdata;
+  if (state->fired)
+    return;
+  state->fired = 1;
+  state->status = sl_set_buffer(sl, "draft");
+  if (state->status == SL_OK)
+    state->status = sl_submit(sl);
+}
+
+static void test_live_output_after_readline_submit_clears_editor(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct live_submit_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+
+  TEST("live output after readline submission excludes old editor cells");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
+              "live stream setup failed");
+  memset(&state, 0, sizeof(state));
+  ASSERT_TRUE(sl_set_idle_callback(sl, live_submit_draft_idle, &state) == SL_OK,
+              "idle submit setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line && strcmp(line, "draft") == 0 && state.fired &&
+                  state.status == SL_OK,
+              "live readline submission failed");
+  sl_free_string(sl, line);
+  ASSERT_TRUE(sl_output_stream_write(sl, "\nX", 2) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "post-submit live output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 8, 20);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "X") && !vt_contains(&screen, "draft"),
+              "completed editor text leaked into the live transcript");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_retained_stream_tracks_readline_scrollback(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct live_submit_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[32768];
+  char *line;
+  int turn;
+
+  TEST("retained stream follows scrollback through ordinary readline turns");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FIRST", 5) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "initial output stream failed");
+  vt_init(&screen, 8, 20);
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "initial transcript output missing");
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST"), "initial transcript row missing");
+  memset(&state, 0, sizeof(state));
+  ASSERT_TRUE(sl_set_idle_callback(sl, live_submit_draft_idle, &state) == SL_OK,
+              "idle callback setup failed");
+  for (turn = 0; turn < 8; turn++) {
+    state.fired = 0;
+    line = sl_readline(sl, "> ");
+    ASSERT_TRUE(line && strcmp(line, "draft") == 0 && state.status == SL_OK,
+                "ordinary readline submission failed");
+    sl_free_string(sl, line);
+    ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+                "readline output missing");
+    vt_apply(&screen, output);
+  }
+  ASSERT_TRUE(vt_history_contains(&screen, "FIRST") &&
+                  !vt_contains(&screen, "FIRST"),
+              "old transcript did not move into scrollback");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "SECOND", 6) == SL_OK &&
+                  sl_set_screen_width(sl, 19) == SL_OK,
+              "restarted stream or resize failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "resized stream output missing");
+  vt_apply(&screen, output);
+  ASSERT_TRUE(
+      vt_history_contains(&screen, "FIRST") && !vt_contains(&screen, "FIRST") &&
+          vt_contains(&screen, "SECOND") && vt_contains(&screen, "draft"),
+      "resize replayed scrollback or erased a newer submitted turn");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+struct retained_growth_state {
+  int master_fd;
+  int fired;
+  int failed;
+  unsigned int history_after_growth;
+  struct vt_screen screen;
+};
+
+static void retained_growth_snapshot(struct retained_growth_state *state) {
+  char bytes[32768];
+  if (read_live_pty_output(state->master_fd, bytes, sizeof(bytes)) == 0) {
+    state->failed = 1;
+    return;
+  }
+  vt_apply(&state->screen, bytes);
+}
+
+static void retained_growth_idle(sl_t *sl, void *userdata) {
+  struct retained_growth_state *state;
+  state = (struct retained_growth_state *)userdata;
+  if (state->fired)
+    return;
+  state->fired = 1;
+  if (sl_output_stream_write(sl, "A\nB\nC\nD\nE\nF", 11) != SL_OK ||
+      sl_output_stream_end(sl) != SL_OK ||
+      sl_set_buffer(sl, "one\ntwo\nthree") != SL_OK ||
+      sl_set_status_message(sl, "message") != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  retained_growth_snapshot(state);
+  state->history_after_growth = state->screen.history_count;
+  if (!vt_contains(&state->screen, "C") || !vt_contains(&state->screen, "D") ||
+      !vt_contains(&state->screen, "E") || !vt_contains(&state->screen, "F") ||
+      sl_output_stream_begin(sl) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  retained_growth_snapshot(state);
+  if (state->screen.history_count != state->history_after_growth ||
+      !vt_contains(&state->screen, "C") || !vt_contains(&state->screen, "D") ||
+      !vt_contains(&state->screen, "E") || !vt_contains(&state->screen, "F"))
+    state->failed = 1;
+finish:
+  (void)sl_submit(sl);
+}
+
+static void test_retained_stream_survives_prompt_growth(void) {
+  struct winsize ws;
+  struct retained_growth_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char *line;
+
+  TEST("retained transcript survives prompt growth and stream reopening");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  memset(&state, 0, sizeof(state));
+  state.master_fd = master_fd;
+  vt_init(&state.screen, 8, 20);
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_idle_callback(sl, retained_growth_idle, &state) ==
+                      SL_OK,
+              "retained stream setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line && strcmp(line, "one\ntwo\nthree") == 0 && state.fired &&
+                  !state.failed,
+              "prompt growth or stream reopen displaced retained rows");
+  sl_free_string(sl, line);
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void retained_shrink_idle(sl_t *sl, void *userdata) {
+  struct retained_growth_state *state;
+  state = (struct retained_growth_state *)userdata;
+  if (state->fired)
+    return;
+  state->fired = 1;
+  if (sl_set_buffer(sl, "one\ntwo") != SL_OK ||
+      sl_output_stream_write(sl, "TRANSCRIPT", 10) != SL_OK ||
+      sl_output_stream_end(sl) != SL_OK || sl_set_buffer(sl, "x") != SL_OK ||
+      sl_set_status_message(sl, NULL) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  retained_growth_snapshot(state);
+  if (strncmp(state->screen.cells[5], "TRANSCRIPT", 10) != 0 ||
+      strncmp(state->screen.cells[6], "> x", 3) != 0 ||
+      state->screen.row != 6 || state->screen.col != 3 ||
+      sl_set_buffer(sl, "three\nfour") != SL_OK ||
+      sl_set_status_message(sl, NULL) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  retained_growth_snapshot(state);
+  if (strncmp(state->screen.cells[5], "TRANSCRIPT", 10) != 0 ||
+      strncmp(state->screen.cells[6], "> three", 7) != 0 ||
+      strncmp(state->screen.cells[7], "  four", 6) != 0 ||
+      sl_output_stream_begin(sl) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  retained_growth_snapshot(state);
+  if (!vt_contains(&state->screen, "TRANSCRIPT") ||
+      !vt_contains(&state->screen, "> three") ||
+      !vt_contains(&state->screen, "four"))
+    state->failed = 1;
+finish:
+  (void)sl_submit(sl);
+}
+
+static void test_retained_stream_survives_prompt_shrink(void) {
+  struct winsize ws;
+  struct retained_growth_state state;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char *line;
+
+  TEST("retained transcript survives draft shrink and regrowth");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  memset(&state, 0, sizeof(state));
+  state.master_fd = master_fd;
+  vt_init(&state.screen, 8, 20);
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_idle_callback(sl, retained_shrink_idle, &state) ==
+                      SL_OK,
+              "retained stream setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line && strcmp(line, "three\nfour") == 0 && state.fired &&
+                  !state.failed,
+              "draft resize displaced the prompt or retained transcript");
+  sl_free_string(sl, line);
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+struct native_scroll_probe {
+  int master_fd;
+  int output_fd;
+  int resize;
+  int fired;
+  int result;
+};
+
+static void native_scroll_probe_idle(sl_t *sl, void *userdata) {
+  struct native_scroll_probe *probe;
+  struct winsize ws;
+  const char *bytes;
+  probe = (struct native_scroll_probe *)userdata;
+  if (probe->fired)
+    return;
+  probe->fired = 1;
+  if (probe->resize) {
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = 30;
+    ws.ws_row = 8;
+    if (ioctl(probe->master_fd, TIOCSWINSZ, &ws) != 0 ||
+        write(probe->output_fd, "\033[1;25HOUTSID", 13) != 13) {
+      probe->result = SL_ERROR_IO;
+      (void)sl_cancel(sl);
+      return;
+    }
+    bytes = "FIRST\nSECOND\nTHIRD";
+  } else {
+    bytes = "\033[41mRED\nNEXT";
+  }
+  probe->result = sl_output_stream_write(sl, bytes, strlen(bytes));
+  (void)sl_cancel(sl);
+}
+
+static void test_live_output_disables_native_scroll_after_widening(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  struct native_scroll_probe probe;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+
+  TEST("widening terminal disables native scroll for fixed-width bounds");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 8) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "full-width setup failed");
+  memset(&probe, 0, sizeof(probe));
+  probe.master_fd = master_fd;
+  probe.output_fd = slave_fd;
+  probe.resize = 1;
+  ASSERT_TRUE(sl_set_idle_callback(sl, native_scroll_probe_idle, &probe) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line == NULL && probe.fired && probe.result == SL_OK,
+              "resized live write failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(strncmp(screen.cells[0] + 24, "OUTSID", 6) == 0 &&
+                  vt_contains(&screen, "FIRST") &&
+                  vt_contains(&screen, "SECOND") &&
+                  vt_contains(&screen, "THIRD") &&
+                  !contains_bytes(output, "\033[?2026h"),
+              "native scroll modified cells outside widened box");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_native_scroll_resets_prompt_style(void) {
+  struct winsize ws;
+  struct native_scroll_probe probe;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[16384];
+  char *line;
+  const char *sync_start;
+  const char *reset;
+  const char *prompt;
+
+  TEST("native scroll resets streamed style before plain prompt redraw");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  cfg.prompt_theme = SL_PROMPT_THEME_PLAIN;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
+              "plain stream setup failed");
+  memset(&probe, 0, sizeof(probe));
+  probe.master_fd = master_fd;
+  probe.output_fd = slave_fd;
+  ASSERT_TRUE(sl_set_idle_callback(sl, native_scroll_probe_idle, &probe) ==
+                  SL_OK,
+              "idle callback setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line == NULL && probe.fired && probe.result == SL_OK,
+              "styled live write failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  sync_start = strstr(output, "\033[?2026h");
+  reset = sync_start ? strstr(sync_start, "\033[0m") : NULL;
+  prompt = sync_start ? strstr(sync_start, "> ") : NULL;
+  ASSERT_TRUE(sync_start && reset && prompt && reset < prompt,
+              "plain prompt inherited streamed background colour");
+  ASSERT_TRUE(contains_bytes(output, "\033[0;41mNEXT"),
+              "native scroll lost the stream's logical ANSI style");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_short_full_width_box_uses_viewport(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("short full-width box keeps streamed rows inside its viewport");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 4) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FIRST\nSECOND\nTHIRD", 18) ==
+                      SL_OK,
+              "short-box stream failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  vt_init(&screen, 8, 20);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST") && vt_contains(&screen, "SECOND") &&
+                  vt_contains(&screen, "THIRD") &&
+                  !contains_bytes(output, "\033[?2026h"),
+              "short box used physical scroll or lost a row");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_prompt_growth_preserves_history(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  pid_t pid;
+  char output[32768];
+  char chunk[2048];
+  size_t used;
+  ssize_t amount;
+  int tries;
+  int status;
+
+  TEST("prompt growth scrolls displaced transcript into native history");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    char *line;
+    close(master_fd);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+        sl_output_stream_write(
+            sl, "ONE\nTWO\nTHREE\nFOUR\nFIVE\nSIX\nSEVEN",
+            strlen("ONE\nTWO\nTHREE\nFOUR\nFIVE\nSIX\nSEVEN")) != SL_OK ||
+        sl_set_statusline(sl, 1, 0) != SL_OK)
+      _exit(2);
+    line = sl_readline(sl, "> ");
+    if (!line)
+      _exit(3);
+    sl_free_string(sl, line);
+    if (sl_output_stream_end(sl) != SL_OK)
+      _exit(4);
+    sl_destroy(sl);
+    close(slave_fd);
+    _exit(0);
+  }
+  close(slave_fd);
+  used = 0;
+  output[0] = '\0';
+  for (tries = 0; tries < 100; tries++) {
+    vt_init(&screen, 8, 20);
+    vt_apply(&screen, output);
+    if (vt_history_contains(&screen, "ONE") &&
+        vt_history_contains(&screen, "TWO") && vt_contains(&screen, "THREE") &&
+        vt_contains(&screen, "SEVEN") && vt_contains(&screen, "> "))
+      break;
+    amount = read_some_with_timeout_ms(master_fd, chunk, sizeof(chunk), 50);
+    if (amount <= 0)
+      continue;
+    ASSERT_TRUE(used + (size_t)amount < sizeof(output),
+                "prompt growth output exceeded test buffer");
+    append_terminal_bytes(output, &used, sizeof(output), chunk, amount);
+  }
+  if (!vt_history_contains(&screen, "ONE") ||
+      !vt_history_contains(&screen, "TWO") || !vt_contains(&screen, "THREE") ||
+      !vt_contains(&screen, "SEVEN"))
+    vt_dump(&screen);
+  ASSERT_TRUE(vt_history_contains(&screen, "ONE") &&
+                  vt_history_contains(&screen, "TWO") &&
+                  vt_contains(&screen, "THREE") &&
+                  vt_contains(&screen, "SEVEN"),
+              "prompt growth discarded transcript rows");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "prompt growth child failed");
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_error_resets_terminal_style(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[4096];
+  const char *styled;
+  const char *last_reset;
+  const char *next;
+
+  TEST("invalid live output resets terminal styling before returning");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 6;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 20, 4) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "live output setup failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl, "\033[31mred\001", 9) ==
+                  SL_ERROR_INVALID,
+              "invalid styled output was accepted");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "styled output missing");
+  styled = strstr(output, "red");
+  last_reset = NULL;
+  next = output;
+  while ((next = strstr(next, "\033[0m")) != NULL) {
+    last_reset = next;
+    next++;
+  }
+  ASSERT_TRUE(styled && last_reset && last_reset > styled,
+              "terminal style remained active after invalid output");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK, "second stream failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl, "\033[31;8msecret",
+                                     strlen("\033[31;8msecret")) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "visible", 7) == SL_OK,
+              "unsupported SGR attribute was accepted");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  contains_bytes(output, "visible") &&
+                  !contains_bytes(output, "secret") &&
+                  contains_bytes(output, "\033[0mvisible"),
+              "unsupported SGR changed rendered output or style");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "second stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_reconciles_physical_resize(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("live output reconciles a physical resize without an active prompt");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "hello", 5) == SL_OK,
+              "initial output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ws.ws_row = 3;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "resize failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, " world", 6) == SL_OK,
+              "resized output failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "resized output missing");
+  ASSERT_TRUE(!contains_bytes(output, "\033[7;") &&
+                  contains_bytes(output, "\033[2;6H"),
+              "resized output used the old terminal row");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_clears_promptless_scroll_row(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+  size_t used;
+
+  TEST("promptless native scroll clears stale bottom-row text");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 10;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
+              "promptless stream setup failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(write(slave_fd, "\033[5;1HGHOST", 11) == 11,
+              "bottom-row seed failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "line\nX", 6) == SL_OK,
+              "promptless native scroll failed");
+  used = read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(used > 0, "promptless output missing");
+  vt_init(&screen, 5, 10);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(vt_contains(&screen, "line") && vt_contains(&screen, "X") &&
+                  !vt_contains(&screen, "XHOST"),
+              "stale bottom-row text contaminated live output");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_rejects_unattached_combining_mark(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("leading combining mark cannot move outside a live viewport");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 12;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 2, 0, 5, 4) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "offset stream setup failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl,
+                                     "\xcc\x81"
+                                     "A",
+                                     3) == SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "\xcc\x81", 2) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "A", 1) == SL_OK,
+              "unattached combining mark was accepted");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  !contains_bytes(output, "\xcc\x81") &&
+                  contains_bytes(output, "\033[3;3H\033[0mA"),
+              "combining mark changed the physical cursor or nearby cells");
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_rejects_fixed_bounds_after_shrink(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+
+  TEST("fixed live output rejects off-screen bounds after terminal shrink");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 6;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 5, 1, 10, 4) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "A", 1) == SL_OK,
+              "initial bounded output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ws.ws_col = 12;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "shrink failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "ABCDEFGHIJ", 10) == SL_ERROR_INVALID,
+              "off-screen fixed bounds were accepted");
+  ASSERT_TRUE(strstr(sl_last_error(sl), "bounds exceed") != NULL,
+              "resize error did not explain the bounds failure");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) == 0,
+              "rejected output wrote outside the box");
+  ws.ws_col = 20;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0 &&
+                  sl_output_stream_write(sl, "B", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "stream did not recover after terminal widened");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_clips_clear_after_narrowing(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+  const char *cursor;
+
+  TEST("live output clips old surface clearing after a physical shrink");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 5, 1, 0, 0) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "old", 3) == SL_OK,
+              "initial bounded output failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ws.ws_col = 20;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "resize failed");
+  ASSERT_TRUE(sl_output_stream_write(sl, "new", 3) == SL_OK,
+              "narrowed output failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "narrowed output missing");
+  ASSERT_TRUE(strstr(output, "\033[3X") != NULL &&
+                  strstr(output, "        ") == NULL,
+              "surface resize did not erase old cells without padding bytes");
+  cursor = output;
+  while (*cursor) {
+    if (*cursor == ' ') {
+      size_t spaces;
+      spaces = strspn(cursor, " ");
+      ASSERT_TRUE(spaces <= 15, "old surface clear exceeded terminal width");
+      cursor += spaces;
+    } else {
+      cursor++;
+    }
+  }
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
+static void test_live_output_emoji_cluster_width(void) {
+  static const char long_emoji[] =
+      "\xf0\x9f\x91\xa9\xf0\x9f\x8f\xbf\xe2\x80\x8d"
+      "\xe2\x9d\xa4\xef\xb8\x8f\xe2\x80\x8d\xf0\x9f\x92\x8b"
+      "\xe2\x80\x8d\xf0\x9f\x91\xa8\xf0\x9f\x8f\xbf";
+  static const struct {
+    const char *first;
+    const char *second;
+    const char *third;
+    const char *cluster;
+  } cases[] = {
+      {"\xe2\x9d\xa4", "\xef\xb8\x8f", NULL, "\xe2\x9d\xa4\xef\xb8\x8f"},
+      {"\xf0\x9f\x87\xb8", "\xf0\x9f\x87\xaa", NULL,
+       "\xf0\x9f\x87\xb8\xf0\x9f\x87\xaa"},
+      {"\xf0\x9f\x91\xa9", "\xe2\x80\x8d", "\xf0\x9f\x92\xbb",
+       "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb"},
+      {"\xf0\x9f\x91\x8d", "\xf0\x9f\x8f\xbd", NULL,
+       "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd"},
+      {long_emoji, "", NULL, long_emoji}};
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+  size_t i;
+
+  TEST("split emoji clusters occupy two viewport cells before wrap");
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = 10;
+    ws.ws_row = 4;
+    ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+                "openpty failed");
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 3, 3) == SL_OK &&
+                    sl_output_stream_begin(sl) == SL_OK,
+                "emoji stream setup failed");
+    (void)read_live_pty_output(master_fd, output, sizeof(output));
+    ASSERT_TRUE(sl_output_stream_write(sl, cases[i].first,
+                                       strlen(cases[i].first)) == SL_OK &&
+                    sl_output_stream_write(sl, cases[i].second,
+                                           strlen(cases[i].second)) == SL_OK &&
+                    (!cases[i].third ||
+                     sl_output_stream_write(sl, cases[i].third,
+                                            strlen(cases[i].third)) == SL_OK),
+                "split emoji output failed");
+    ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+                "emoji cluster output missing");
+    ASSERT_TRUE(contains_bytes(output, cases[i].cluster),
+                "emoji cluster was split across terminal draws");
+    ASSERT_TRUE(sl_output_stream_write(sl, "a", 1) == SL_OK,
+                "glyph after emoji failed");
+    (void)read_live_pty_output(master_fd, output, sizeof(output));
+    ASSERT_TRUE(sl_output_stream_write(sl, "b", 1) == SL_OK,
+                "emoji wrap output failed");
+    ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                    contains_bytes(output, "\033[2;1H"),
+                "emoji cluster did not wrap at its two-cell width");
+    ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
+    sl_destroy(sl);
+    close(slave_fd);
+    close(master_fd);
+  }
+  PASS();
+}
+
+static void test_live_output_cluster_limit(void) {
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char cluster[129];
+  char output[8192];
+  size_t i;
+
+  TEST("oversized live output cluster fails without splitting its cell");
+  cluster[0] = 'a';
+  for (i = 0; i < 64; i++) {
+    cluster[1 + 2 * i] = (char)0xcc;
+    cluster[2 + 2 * i] = (char)0x81;
+  }
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 5;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 5, 3) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK,
+              "cluster limit setup failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl, cluster, sizeof(cluster)) ==
+                      SL_ERROR_INVALID &&
+                  sl_output_stream_write(sl, "b", 1) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "oversized cluster did not fail cleanly");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  contains_bytes(output, "b"),
+              "stream did not recover after oversized cluster");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
 #else
+static void test_live_output_preserves_reverse_search_prompt(void) {
+  TEST("live output preserves reverse-search prompt and stable history");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_after_readline_submit_clears_editor(void) {
+  TEST("live output after readline submission excludes old editor cells");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_retained_stream_tracks_readline_scrollback(void) {
+  TEST("retained stream follows scrollback through ordinary readline turns");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_disables_native_scroll_after_widening(void) {
+  TEST("widening terminal disables native scroll for fixed-width bounds");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_native_scroll_resets_prompt_style(void) {
+  TEST("native scroll resets streamed style before plain prompt redraw");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_short_full_width_box_uses_viewport(void) {
+  TEST("short full-width box keeps streamed rows inside its viewport");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_prompt_growth_preserves_history(void) {
+  TEST("prompt growth scrolls displaced transcript into native history");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_stream_across_narrow_bounds(void) {
+  TEST("live output continues one row while typing and changing narrow bounds");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_preserves_viewport_between_sessions(void) {
+  TEST("narrow live output retains visible rows across sessions");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_unbounded_finite_output_between_sessions(void) {
+  TEST("unbounded finite output remains visible between live sessions");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_unbounded_stream_then_readline_preserves_transcript(void) {
+  TEST("readline after unbounded stream preserves its final transcript row");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void
+test_finite_viewport_output_then_readline_preserves_transcript(void) {
+  TEST("readline after finite viewport output preserves its final row");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_multiline_stream_end_preserves_transcript_position(void) {
+  TEST("multiline editor stream teardown and resize keep transcript position");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_stream_chunk_protocol(void) {
+  TEST("live output preserves split ANSI and UTF-8 and validates end");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_stream_changes_unbounded_width(void) {
+  TEST("live unbounded output honors a midstream width setter");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_queued_turns_profile_promotes_manually(void) {
   TEST("queued-turns profile submits and promotes under manual delivery");
   printf("SKIP\n");
@@ -8417,6 +11457,11 @@ static void test_bounded_redraw_clears_only_box_width(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_active_bounded_prompt_clear_clips_after_shrink(void) {
+  TEST("active bounded prompt clear respects physical terminal shrink");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_bounded_wrapped_shrink_clears_continuation_tail(void) {
   TEST("bounded wrapped shrink clears continuation row tail");
   printf("SKIP\n");
@@ -8525,6 +11570,16 @@ static void test_narrow_terminal_does_not_submit_before_enter(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_live_output_end_restores_unbounded_cursor(void) {
+  TEST("ending unbounded live output restores the active editor cursor");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_unbounded_finite_output_preserves_active_prompt(void) {
+  TEST("unbounded finite output preserves an active editor between sessions");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_idle_callback_prints_above_active_prompt(void) {
   TEST("idle callback prints above active prompt");
   printf("SKIP\n");
@@ -8560,6 +11615,52 @@ static void test_unicode_backspace_deletes_clusters(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+
+static void test_live_output_reconciles_physical_resize(void) {
+  TEST("live output reconciles a physical resize without an active prompt");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
+static void test_live_output_clears_promptless_scroll_row(void) {
+  TEST("promptless native scroll clears stale bottom-row text");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
+static void test_live_output_rejects_unattached_combining_mark(void) {
+  TEST("leading combining mark cannot move outside a live viewport");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
+static void test_live_output_rejects_fixed_bounds_after_shrink(void) {
+  TEST("fixed live output rejects off-screen bounds after terminal shrink");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
+static void test_live_output_clips_clear_after_narrowing(void) {
+  TEST("live output clips old surface clearing after a physical shrink");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
+static void test_live_output_emoji_cluster_width(void) {
+  TEST("split emoji clusters occupy two viewport cells before wrap");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_cluster_limit(void) {
+  TEST("oversized live output cluster fails without splitting its cell");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_error_resets_terminal_style(void) {
+  TEST("invalid live output resets terminal styling before returning");
+  printf("SKIP\n");
+  tests_passed++;
+}
 #endif
 
 int main(void) {
@@ -8568,6 +11669,9 @@ int main(void) {
 
   test_config_init();
   test_receiver_shell();
+  test_status_message_api();
+  test_parser_only_stream_allows_geometry_changes();
+  test_live_output_retains_row_with_full_editor();
   test_free_function_wrappers_use_receiver_methods();
   test_prompt_queue_control_api();
   test_set_cursor_clamps_to_utf8_cluster_boundary();
@@ -8589,6 +11693,7 @@ int main(void) {
   test_history_rejects_oversized_entries();
   test_stream_failures_are_reported();
   test_print_above_uses_lf_for_non_tty_output();
+  test_bounded_print_above_with_redirected_output();
   test_bounded_print_above_without_space_is_error();
   test_pty_enter_and_ctrl_j();
   test_pty_readline_uses_default_prompt();
@@ -8633,13 +11738,14 @@ int main(void) {
   test_non_ctrl_c_signal_does_not_interrupt_readline();
   test_pty_multiline_deletes_are_buffer_wide();
   test_bounded_print_above_uses_scroll_region();
-  test_bounded_print_above_rejects_narrow_scroll();
+  test_bounded_print_above_supports_narrow_surface();
   test_bounded_prompt_starts_at_bottom();
   test_bounded_readline_leaves_output_below_prompt();
   test_readline_keeps_normal_completion_with_queueing();
   test_config_zero_bounds_start_at_terminal_bottom();
   test_dynamic_bounds_origin_uses_remaining_terminal_area();
   test_bounded_redraw_clears_only_box_width();
+  test_active_bounded_prompt_clear_clips_after_shrink();
   test_bounded_wrapped_shrink_clears_continuation_tail();
   test_bounded_viewport_follows_cursor();
   test_print_above_pulls_stream_chunks();
@@ -8669,8 +11775,46 @@ int main(void) {
   test_watch_completion_preserves_input_for_next_prompt();
   test_watch_fairness_rotates_ready_flood();
   test_watch_lifecycle_reports_terminal_events();
+  test_redirected_live_output_validates_stream();
+  test_quoted_prompt_output_api();
+  test_quoted_prompt_long_unbroken_word();
+  test_quoted_prompt_chunk_boundary();
+  test_quoted_prompt_terminal_style();
+  test_quoted_prompt_resets_inherited_style();
+  test_quoted_prompt_spacing_across_sessions();
+  test_redirected_quoted_prompt_spacing_across_sessions();
+  test_redirected_quote_spacing_after_finite_output();
+  test_quoted_prompt_large_whitespace_run();
+  test_quote_spacing_after_partial_invalid_write();
+  test_live_output_stream_across_narrow_bounds();
+  test_live_output_preserves_viewport_between_sessions();
+  test_unbounded_finite_output_between_sessions();
+  test_unbounded_stream_then_readline_preserves_transcript();
+  test_finite_viewport_output_then_readline_preserves_transcript();
+  test_multiline_stream_end_preserves_transcript_position();
+  test_live_output_preserves_reverse_search_prompt();
+  test_live_output_after_readline_submit_clears_editor();
+  test_retained_stream_tracks_readline_scrollback();
+  test_retained_stream_survives_prompt_growth();
+  test_retained_stream_survives_prompt_shrink();
+  test_live_output_disables_native_scroll_after_widening();
+  test_live_output_native_scroll_resets_prompt_style();
+  test_live_output_short_full_width_box_uses_viewport();
+  test_live_output_prompt_growth_preserves_history();
+  test_live_output_stream_chunk_protocol();
+  test_live_output_error_resets_terminal_style();
+  test_live_output_stream_changes_unbounded_width();
+  test_live_output_reconciles_physical_resize();
+  test_live_output_clears_promptless_scroll_row();
+  test_live_output_rejects_unattached_combining_mark();
+  test_live_output_rejects_fixed_bounds_after_shrink();
+  test_live_output_clips_clear_after_narrowing();
+  test_live_output_emoji_cluster_width();
+  test_live_output_cluster_limit();
   test_final_render_failure_reports_error();
   test_narrow_terminal_does_not_submit_before_enter();
+  test_live_output_end_restores_unbounded_cursor();
+  test_unbounded_finite_output_preserves_active_prompt();
   test_idle_callback_prints_above_active_prompt();
   test_normal_prompt_pins_at_bottom_for_live_output();
   test_pinned_stream_failure_restores_prompt_cursor();

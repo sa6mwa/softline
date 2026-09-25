@@ -68,10 +68,10 @@ live scroll regions, status lines, and spinners are off; the theme is
   clears and disables history.
 - `sl:history_save(filename)` writes history with owner-only permissions.
 - `sl:history_load(filename)` loads history entries into the handle.
-- `sl:set_bounds(x, y, width, height)` enables bounded prompt rendering; zero
-  width or height uses dynamic terminal bounds.
-- `sl:set_screen_width(width)` sets normal prompt wrapping width; `0` returns
-  to terminal-width probing.
+- `sl:set_bounds(x, y, width, height)` sets prompt and output geometry; zero
+  width or height follows terminal bounds.
+- `sl:set_screen_width(width)` sets prompt and output wrapping width; `0`
+  returns to terminal-width probing.
 - `sl:set_live_scroll_region(enabled)` opts an unbounded prompt into
   bottom-pinned scroll-region output after it reaches the terminal bottom.
   It is disabled by default.
@@ -102,18 +102,25 @@ live scroll regions, status lines, and spinners are off; the theme is
   indexes are one-based; `peek` and `take` return ordinary Lua strings.
 - `sl:queue_clear()` clears queued entries without changing the active draft;
   `sl:queue_draft()` atomically queues an active nonempty draft.
+- `sl:queue_mode(index)` returns `softline.QUEUE_MODE_QUEUED` or
+  `softline.QUEUE_MODE_STEER`; `sl:queue_set_mode(index, mode)` changes an
+  entry's delivery intent. The host chooses which steer to take at a safe seam.
 - `sl:set_queue_delivery("auto" | "manual")` selects automatic FIFO delivery
-  or host-controlled retention for the `default` profile;
+  or host-controlled retention. Busy `queued_turns` retains entries in either
+  mode; manual mode lets the host choose both steer and ordinary turns;
   `sl:queue_delivery()` returns that mode.
 - `sl:set_queue_profile("default" | "queued_turns")` selects the built-in
   keymap and queue policy. `queued_turns` maps Enter to enqueue while
   `sl:set_status_busy(true)` is active, Alt-E to edit-newest, and Alt-Enter
-  to submit a nonempty draft or promote the newest queued entry when empty.
-  `sl:set_status_busy(false)` releases exactly one oldest queued turn; starting
-  that turn should set busy again, leaving later turns queued. `sl:queue_profile()`
+  to queue a steer draft while busy or mark the newest queued entry as steer
+  when the editor is empty.
+  With automatic delivery, `sl:set_status_busy(false)` releases one oldest
+  ordinary queued turn; manual delivery leaves it for the host to take.
+  `sl:queue_profile()`
   returns the selected profile.
-  Alt-Enter returns a nonempty draft immediately with `PROMPT_SOURCE_DIRECT`,
-  even while busy; an empty-editor promotion returns `PROMPT_SOURCE_PROMOTED`.
+  While idle, Alt-Enter submits a nonempty draft immediately with
+  `PROMPT_SOURCE_DIRECT`, or promotes the newest queued entry with
+  `PROMPT_SOURCE_PROMOTED`.
   Cancellation retains queued drafts and stops automatic FIFO release until a
   direct submission or manual promotion resumes it.
 - `sl:queue_keys()` returns a table with `enqueue_draft`, `edit_newest`, and
@@ -128,6 +135,16 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:set_statusline(enabled, starting_element)` enables the optional status
   line and chooses the palette slot for its first element. Themes provide
   eight element colours, and subsequent elements cycle through those colours.
+- `sl:set_status_message(text)` sets or updates the status area above the
+  status line. It displays `! ` in the theme's muted colour followed by italic
+  text in the theme's secondary colour. Pass `nil` or `""` to clear it.
+  Long text wraps at words, with continuation rows indented to the prefix
+  width. The message may be changed while an output session is streaming.
+- `sl:set_status_message_prefix(prefix)` changes `! `; pass `""` to hide the
+  prefix or `nil` to restore it.
+- `sl:set_status_message_colors(prefix_color, text_color)` selects independent
+  theme roles, such as `softline.THEME_COLOR_MUTED` and
+  `softline.THEME_COLOR_ELEMENT_2`.
 - `sl:set_status_elements(elements)` replaces all status elements. At most 32
   are retained; longer input uses the first 31 followed by `...`. The limit is
   exported as `STATUS_MAX_ELEMENTS`. Elements must be valid UTF-8 and cannot
@@ -136,7 +153,8 @@ live scroll regions, status lines, and spinners are off; the theme is
   `nil` as `value` to clear it.
 - `sl:set_status_busy(busy)` selects the red busy `x` or spinner marker. With
   the `queued_turns` profile and queueing enabled, it is also the native turn
-  lifecycle signal: busy retains turns; idle releases one oldest queued turn.
+  lifecycle signal: busy retains turns; idle releases one oldest ordinary turn
+  only when automatic queue delivery is selected.
 - `sl:set_status_spinner(enabled)` enables the 500ms `/ - \\ |` busy spinner.
 - `sl:set_status_idle_marker(marker)` selects a one-byte printable ASCII green
   idle marker; it defaults to `+`. Pass `nil` to leave the reserved two-column
@@ -154,16 +172,52 @@ live scroll regions, status lines, and spinners are off; the theme is
   receives the key code and returns a `softline.KEY_ACTION_*` value, or `nil`
   to mark the key handled. Passing `nil` as the callback removes the binding.
 - `sl:print_above(source)` prints above the active prompt. Bounded prompts use
-  their output region; normal prompts clear and redraw by default, or use an
+  their output region, including narrow/offset bounds; normal prompts clear
+  and redraw by default, or use an
   enabled live scroll region after reaching the terminal bottom. `source` may
   be a string, an array-like table of string chunks, or a function that
   receives a 1-based chunk index and returns the next string or `nil`.
+- `sl:output_stream_begin()` opens one persistent output session above the
+  prompt. With no explicit bounds, the prompt is pinned to the terminal bottom
+  while the session is open. The application owns its renderer, wakeup, and
+  response/document lifecycle; Softline has no Markdown dependency.
+- `sl:output_stream_write(bytes)` sends a Lua byte string immediately into the
+  open session. Calls from a watch callback can alternate with prompt typing.
+  Chunk boundaries add no newline or response separator. The stream accepts
+  printable UTF-8, LF/CR/Tab, and ANSI SGR styling; malformed or unsupported
+  terminal controls return `nil, status`. An empty string succeeds without
+  changing the screen. No full response is buffered.
+- `sl:output_stream_write_quoted_prompt(text)` writes submitted text between
+  renderer segments as a wrapped, themed quote, repeating the prefix on every
+  visible row and keeping one empty row on each side. The text is literal, so
+  Markdown punctuation remains visible. `sl:set_quoted_prompt_prefix(prefix)`
+  changes the default `> ` prefix; `nil` restores it.
+  `sl:set_quoted_prompt_style({prefix={r,g,b}, text={r,g,b}})` overrides the
+  theme colours; `nil` restores theme defaults. The prefix stays faded and the
+  text stays italic.
+- `sl:output_stream_end()` ends the session without inserting a newline or
+  finishing an external renderer document. If the last write left an ANSI or
+  UTF-8 sequence incomplete, it returns `nil, status` and keeps the session
+  open so the missing bytes can be supplied. Only one session may be open per
+  editor. Output-session and quoted-prompt methods run on the Lua/editor owner
+  thread; foreign producers should notify a watched descriptor instead of
+  calling Lua.
+- `sl:set_bounds(x, y, width, height)` and `sl:set_screen_width(width)` may be
+  called while a session is streaming or a prompt is being edited. Softline
+  immediately redraws its visible output and prompt inside the new geometry;
+  the application updates its external renderer width separately.
 - `sl:last_readline_status()` returns the last readline status code.
 - `sl:last_error()` returns the last handle-owned diagnostic string, or `nil`.
 - `sl:close()` destroys the handle.
 
-Fallible methods other than `readline()` return `true` on success or
-`nil, status` on failure. Status constants exported by the module are:
+Fallible setter and operation methods return `true` on success or
+`nil, status` on failure; getters and prompt reads return their documented
+values. The module exports the C status, prompt-source,
+queue-mode, theme, theme-colour, watch-event, and key constants. Queue delivery
+and profile use the documented Lua strings instead of C enum integers.
+
+`KEY_NONE` disables a configurable queue action. For Alt-letter bindings
+without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 
 - `softline.READLINE_NONE`
 - `softline.READLINE_SUBMITTED`
@@ -172,10 +226,16 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.READLINE_INTERRUPTED`
 - `softline.READLINE_ERROR`
 - `softline.OK`
+- `softline.ERROR`
+- `softline.ERROR_INVALID`
+- `softline.ERROR_NOMEM`
+- `softline.ERROR_IO`
 - `softline.PROMPT_SOURCE_NONE`
 - `softline.PROMPT_SOURCE_DIRECT`
 - `softline.PROMPT_SOURCE_QUEUED`
 - `softline.PROMPT_SOURCE_PROMOTED`
+- `softline.QUEUE_MODE_QUEUED`
+- `softline.QUEUE_MODE_STEER`
 - `softline.ERROR_FULL`
 - `softline.WATCH_READ`
 - `softline.WATCH_WRITE`
@@ -191,9 +251,34 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.PROMPT_THEME_RICED`
 - `softline.PROMPT_THEME_SYNTHWAVE`
 - `softline.PROMPT_THEME_DEFAULT`
+- `softline.THEME_COLOR_MUTED`
+- `softline.THEME_COLOR_SECONDARY`
+- `softline.THEME_COLOR_PROMPT`
+- `softline.THEME_COLOR_QUEUE`
+- `softline.THEME_COLOR_INPUT`
+- `softline.THEME_COLOR_ELEMENT_0`
+- `softline.THEME_COLOR_ELEMENT_1`
+- `softline.THEME_COLOR_ELEMENT_2`
+- `softline.THEME_COLOR_ELEMENT_3`
+- `softline.THEME_COLOR_ELEMENT_4`
+- `softline.THEME_COLOR_ELEMENT_5`
+- `softline.THEME_COLOR_ELEMENT_6`
+- `softline.THEME_COLOR_ELEMENT_7`
 - `softline.STATUS_MAX_ELEMENTS`
+- `softline.KEY_NONE`
+- `softline.KEY_CTRL_A`
+- `softline.KEY_CTRL_B`
 - `softline.KEY_CTRL_C`
+- `softline.KEY_CTRL_D`
+- `softline.KEY_CTRL_E`
+- `softline.KEY_CTRL_F`
+- `softline.KEY_CTRL_J`
+- `softline.KEY_CTRL_K`
+- `softline.KEY_CTRL_R`
+- `softline.KEY_CTRL_U`
+- `softline.KEY_CTRL_W`
 - `softline.KEY_ESCAPE`
+- `softline.KEY_BACKSPACE`
 - `softline.KEY_TAB`
 - `softline.KEY_ENTER`
 - `softline.KEY_CTRL_ENTER`
@@ -202,7 +287,29 @@ Fallible methods other than `readline()` return `true` on success or
 - `softline.KEY_CTRL_P`
 - `softline.KEY_UP`
 - `softline.KEY_DOWN`
+- `softline.KEY_LEFT`
+- `softline.KEY_RIGHT`
+- `softline.KEY_HOME`
+- `softline.KEY_END`
+- `softline.KEY_DELETE`
+- `softline.KEY_ALT_B`
+- `softline.KEY_ALT_F`
+- `softline.KEY_UNKNOWN`
+- `softline.KEY_PASTE_BEGIN`
+- `softline.KEY_PASTE_END`
+- `softline.KEY_F1`
+- `softline.KEY_F2`
+- `softline.KEY_F3`
+- `softline.KEY_F4`
+- `softline.KEY_F5`
+- `softline.KEY_F6`
+- `softline.KEY_F7`
+- `softline.KEY_F8`
+- `softline.KEY_F9`
+- `softline.KEY_F10`
 - `softline.KEY_ALT_E`
+- `softline.KEY_ALT_BASE`
+- `softline.KEY_ALT_M`
 - `softline.KEY_ACTION_PASS`
 - `softline.KEY_ACTION_HANDLED`
 - `softline.KEY_ACTION_SUBMIT`
@@ -211,7 +318,8 @@ Fallible methods other than `readline()` return `true` on success or
 
 ## Examples
 
-The repository ships Lua examples equivalent to the C examples:
+The repository ships Lua examples for simple prompts and queued chat turns.
+The Lua chat example demonstrates queue delivery without libmdf:
 
 ```sh
 make lua-test

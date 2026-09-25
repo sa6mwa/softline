@@ -107,9 +107,11 @@ softline has two prompt modes:
   `0,0,0,0` bounds configuration, or `sl_config_t` with `bounded = 1` and zero
   bounds, means a dynamic full-terminal bottom prompt.
 
-Bounded mode is intended for alternate-screen applications such as chat-style
-interfaces. In that mode, `print_above()` streams output through the area above
-the prompt without overwriting the active input buffer.
+Bounded mode works in either the normal or alternate screen. Both finite
+`print_above()` and persistent output sessions render above the editable
+prompt, including in offset/narrow rectangles. Geometry setters may run during
+an active edit or stream and immediately reconcile the visible output and
+prompt. Neither mode implies a retained full transcript.
 
 ### Prompt Queue
 
@@ -120,11 +122,12 @@ the queue and clears the editor; Tab on an empty editor does nothing. Alt-E
 removes the most recent queue entry and restores it to the active editor for
 editing.
 
-`next_prompt()` is the dispatch boundary. It removes an existing queue entry in
-FIFO order before opening the editor, reporting `SL_PROMPT_SOURCE_QUEUED`; when
-the queue is empty it acts like `readline()` and reports
-`SL_PROMPT_SOURCE_DIRECT` for submitted text. Existing `readline()` callers
-remain direct-only.
+`next_prompt()` is the dispatch boundary. With automatic delivery it removes
+the oldest ordinary queued entry before opening the editor and reports
+`SL_PROMPT_SOURCE_QUEUED`. With manual delivery the host selects entries by
+mode and takes them at safe seams or turn boundaries. An editor submission
+reports `SL_PROMPT_SOURCE_DIRECT`; promotion of a queued entry reports
+`SL_PROMPT_SOURCE_PROMOTED`. Existing `readline()` callers remain direct-only.
 
 While an editor is active, the renderer owns a queue panel above it. The panel
 shows a total count plus a capped oldest-first preview list, and supports all
@@ -141,7 +144,9 @@ and optional status line always share the active layout. The built-in `default`
 theme uses only standard 16-colour ANSI sequences: a bold bright-white marker,
 normal terminal-colour input, subdued dark-gray queue text and separators,
 standard-colour status elements, and red/green busy markers. `plain` is
-uncoloured; the remaining named themes use their embedded palettes.
+uncoloured for the editor and queue, while quoted prompts and status messages
+use neutral ANSI styling. The remaining named themes use their embedded
+palettes.
 
 Status lines are opt-in rows between queue previews and the editor. A theme has
 eight element colours. `statusline_start_element` selects the first palette
@@ -152,7 +157,24 @@ a green `+` by default; callers can supply another printable ASCII marker or
 `'\0'` for a blank reserved slot. Busy shows a red `x`, or a red 500ms
 `/-\\|` spinner when both busy and spinner are enabled.
 
+An optional status message sits immediately above the status line. The default
+`! ` prefix uses the theme's muted colour and the italic message uses its
+secondary colour. The host may update or clear it during an active output
+session. Long text wraps at words and continuation rows are indented to the
+display width of the configurable prefix. The C and Lua APIs expose separate
+theme colour choices for the prefix and message text.
+
 ## Current Extension Points
+
+Persistent output is renderer-agnostic. The C and Lua APIs expose begin,
+write, and end, and the C chat example composes libmdf externally. See
+[the composition contract](softline-mdf-stream-design.md). Softline does not
+link libmdf or own its document lifecycle.
+
+The C and Lua APIs also expose a quoted-prompt writer for an open output
+session. It wraps literal submitted text, repeats a configurable prefix on
+each visible row, and adds only the line breaks needed for one empty row on
+either side. The quote prefix and italic text have independent colours.
 
 ### Key Bindings
 
@@ -197,15 +219,32 @@ eight callbacks before it gives terminal input another chance to run.
 prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `SL_OK` with length `0` to finish.
 
-For an unbounded prompt, output uses normal clear-and-redraw scrollback by
-default. Set `live_scroll_region = 1` in `sl_config_t` or call
-`sl_set_live_scroll_region()` to opt into a cursor-position probe once the
-prompt reaches the terminal bottom. When supported, softline temporarily
-scrolls the full-width region above the retained prompt, avoiding a prompt
+`output_stream_begin()` opens a persistent session; every later
+`output_stream_write()` forwards its byte span immediately, without waiting for
+EOF or the next prompt. `output_stream_end()` closes it without adding content.
+The visible TTY viewport survives across sessions. If one ends mid-row, the
+next output producer starts on a fresh row when it writes.
+An owner-thread watch callback can feed an external renderer and forward each
+sink emission directly while editing and queueing continue. The bounded
+viewport stores only visible cells and partial ANSI/UTF-8 state. SGR and UTF-8
+sequences can cross writes; ending with an incomplete sequence fails and keeps
+the session open. Narrow and offset boxes never use a full-row VT scroll
+region, so their output does not touch outside columns.
+
+For finite `print_above()` output on an unbounded prompt, rendering uses
+normal clear-and-redraw scrollback by default. Set `live_scroll_region = 1` in
+`sl_config_t` or call `sl_set_live_scroll_region()` to opt into a
+cursor-position probe once the prompt reaches the terminal bottom. When
+supported, softline temporarily scrolls the full-width region above the
+retained prompt, avoiding a prompt
 repaint while keeping queue, status, wrapping, and resize reflow aligned to the
 bottom. The terminal scroll region is reset on every completion, cancellation,
 error, and handle teardown. If the terminal does not answer the probe, output
 uses the compatible clear-and-redraw path.
+
+After a TTY live session, finite `print_above()` output shares the visible
+viewport with later sessions. This preserves intervening rows and applies the
+viewport's printable UTF-8 and ANSI SGR byte rules.
 
 ## Current History Behavior
 
@@ -384,19 +423,20 @@ single-owner rendering rule.
 
 ### Output And Transcript Management
 
-`print_above()` handles chunked output above the active prompt, but softline does
-not own a transcript model.
+`print_above()` and a persistent output session handle chunked output above the
+active prompt. Softline retains a bounded visible viewport, not a full
+transcript model.
 
 Missing:
 
 - scrollback buffer abstraction for alternate-screen applications
-- transcript redraw after resize
-- line wrapping policy for transcript output
-- styled output
-- damage tracking across prompt plus transcript
+- offscreen transcript replay or scrollback
+- caller-driven reflow of already emitted content after resize
+- arbitrary terminal controls beyond documented SGR
 - application-level viewport controls
 
-For now, bounded mode is a prompt manager, not a full terminal UI toolkit.
+Bounded mode remains a prompt and visible-output manager, not a full terminal
+UI toolkit.
 
 ### Styling
 

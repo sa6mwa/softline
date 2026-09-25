@@ -1,6 +1,6 @@
 # Resolve the complete, pinned Bootlin collection before project().  Explicit
 # Linux targets fail closed; omitted targets resolve to the native supported
-# Bootlin target when possible.
+# Bootlin target. Project-owned Linux targets never fall back to host tools.
 set(_softline_resolver "${CMAKE_CURRENT_LIST_DIR}/../../scripts/cpkt-toolchains.sh")
 
 if(NOT DEFINED SL_TARGET_ID OR SL_TARGET_ID STREQUAL "")
@@ -12,10 +12,9 @@ if(NOT DEFINED SL_TARGET_ID OR SL_TARGET_ID STREQUAL "")
     OUTPUT_STRIP_TRAILING_WHITESPACE)
   if(NOT _softline_native_target_result EQUAL 0)
     string(STRIP "${_softline_native_target_error}" _softline_native_target_error)
-    message(STATUS
-      "No supported native Bootlin Linux target selected; using host toolchain: "
+    message(FATAL_ERROR
+      "No supported native Bootlin Linux target is available: "
       "${_softline_native_target_error}")
-    return()
   endif()
   set(SL_TARGET_ID "${_softline_native_target}" CACHE STRING
       "Lifecycle-selected native Linux target identifier" FORCE)
@@ -97,4 +96,32 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY CACHE STRING "" FORCE)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY CACHE STRING "" FORCE)
 if(NOT SL_TARGET_ID STREQUAL "x86_64-linux-gnu")
   set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+endif()
+
+execute_process(
+  COMMAND "${_softline_cc}" -print-prog-name=ld
+  RESULT_VARIABLE _softline_compiler_ld_result
+  OUTPUT_VARIABLE _softline_compiler_ld
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(SL_TARGET_ID MATCHES "musl$")
+  set(_softline_libc_name libc.so)
+else()
+  set(_softline_libc_name libc.so.6)
+endif()
+execute_process(
+  COMMAND "${_softline_cc}" "-print-file-name=${_softline_libc_name}"
+  RESULT_VARIABLE _softline_compiler_libc_result
+  OUTPUT_VARIABLE _softline_compiler_libc
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+file(REAL_PATH "${_softline_root}" _softline_root_real)
+file(REAL_PATH "${_softline_sysroot}" _softline_sysroot_real)
+file(REAL_PATH "${_softline_compiler_ld}" _softline_compiler_ld_real)
+file(REAL_PATH "${_softline_compiler_libc}" _softline_compiler_libc_real)
+if(_softline_compiler_ld_result OR _softline_compiler_libc_result OR
+   NOT _softline_compiler_ld_real MATCHES "^${_softline_root_real}/" OR
+   NOT _softline_compiler_libc_real MATCHES "^${_softline_sysroot_real}/")
+  message(FATAL_ERROR
+    "Pinned Bootlin collection integrity failure for ${SL_TARGET_ID}: compiler "
+    "must select linker inside ${_softline_root_real} and libc inside "
+    "${_softline_sysroot_real}")
 endif()

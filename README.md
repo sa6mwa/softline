@@ -63,9 +63,8 @@ Currently implemented:
 - Chat-like prompts can opt into a bounded FIFO prompt queue with public C and
   Lua inspection/mutation APIs. The default profile keeps Tab queueing and
   Alt-E edit-newest behavior, while the queued-turns profile binds
-  Enter-to-queue and FIFO release to Softline's busy lifecycle. `next_prompt()`
-  can auto-deliver FIFO work or the default profile can leave it local for
-  explicit host delivery. The renderer ships
+  Enter-to-queue to Softline's busy lifecycle. Either profile can auto-deliver
+  ordinary queued work or leave it for explicit host delivery. The renderer ships
   default, plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun,
   Riced, and Synthwave prompt themes. Optional status lines use the selected
   palette. The chat examples add sent nonempty prompts to their history, so
@@ -97,23 +96,39 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` stays in ordinary terminal scrollback and simulates a generic
-turn processor. While available, Enter dispatches a turn; while its operation
-is running, Enter queues a follow-up locally. The worker process wakes the
-editor through a pipe, and the owner-thread watch callback prints progress
-above the active draft. Alt-Enter
-always dispatches a nonempty draft, and Alt-Enter on an empty editor promotes
-the newest queued entry for immediate host delivery. Alt-E edits the newest
-queued draft. On completion, queued FIFO work automatically dispatches. The
-examples print `[turn]`, `[promoted]`, or `[queued]` source labels and use the
-status spinner only as a presentation of their application-owned busy state.
-Escape or Ctrl-C returns cancellation to the application; the chat examples
-use it to stop the active simulated operation, retain its queue, and keep the
+`example_chat` is the C streaming Markdown demo. It links libmdf only as an
+example dependency: libsoftline and its installed package remain independent
+of libmdf. The composer gives libmdf a two-column left margin and its default
+ANSI palette, updating both renderers' geometry on resize and dropping the
+margin on very narrow terminals. Softline's quoted-prompt helper writes each
+submitted prompt directly into the output session as a literal, italic quote.
+It repeats the configurable `> ` prefix after wrapping and supplies the line
+breaks needed for one visible empty row on each side. Markdown punctuation in
+the prompt stays literal; only response text goes through libmdf. A
+worker emits one source character every 20 ms; the owner-thread watch callback
+feeds libmdf incrementally and forwards each sink fragment directly into a
+Softline output session. The responses mix headings, subheadings, italic, bold,
+code, and paragraphs while input remains editable.
+
+While available, Enter dispatches a turn; while its operation is running,
+Enter queues a follow-up in Softline. While busy, Alt-Enter queues a steer
+entry or marks the newest queued entry as steer when the editor is empty. The
+example takes steers after a Markdown block boundary, then continues the
+response stream. A steer that arrives after the last boundary starts the next
+simulated response. While idle, Alt-Enter submits a draft or promotes the
+newest queued entry. Alt-E edits the newest queued draft. On completion, the
+example starts the oldest remaining queue entry as the next turn. The
+example uses the status spinner only as a presentation of its application-owned
+busy state. Escape or Ctrl-C returns cancellation to the application; the C chat
+example uses it to stop the active simulated operation, retain its queue, and keep the
 chat open. Automatic FIFO release stays stopped until the user submits a new
 turn or manually promotes a queued one.
-The queue UI, status line, and simulated operation stream activate only when both standard
-input and standard output are terminals, so piped use remains plain
-line-oriented input/output.
+The queue UI, status line, and simulated operation stream activate only when
+both standard input and output are terminals; piped input or redirected output
+produces plain libmdf-rendered responses with Softline-quoted prompts. The
+separate Lua chat example remains a plain queued-turn demonstration; its facade
+exposes the same generic output-session API for Lua applications composing an
+external renderer.
 
 ```sh
 make run-simple
@@ -136,9 +151,10 @@ and Lua examples accept
 `SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
 expose that as `THEME=...`. The simple and chat examples default to `default`;
-`make run-chat` supplies Gruvbox. Set `SOFTLINE_LIVE_SCROLL_REGION=1` for
-either chat example, or use a `-sr` convenience target, to demonstrate the
-opt-in scroll-region behavior.
+`make run-chat` supplies Gruvbox. The C live output session uses the main
+terminal's scrollback for a full-width prompt; the `-sr` convenience targets
+do not change that output layout. `SOFTLINE_LIVE_SCROLL_REGION=1` remains
+available to the Lua chat example for finite `print_above()` calls.
 
 ## Bounded prompts
 
@@ -146,6 +162,12 @@ Set `screen_width` and `screen_height` in `sl_config_t`, or call
 `sl_set_bounds()`, to anchor the prompt inside a terminal box. In bounded mode
 the prompt grows upward as input wraps while `sl_print_above()` pulls streamed
 chunks from a callback and writes them through the region above the prompt.
+Full-width bounds can use terminal scrolling. Narrow or offset bounds use a
+bounded cell viewport, not a VT scroll region that would alter outside columns.
+A persistent `sl_output_stream_*()` session accepts later chunks without
+waiting for EOF. Full-width sessions that reach the physical terminal bottom
+scroll the main terminal, preserving native scrollback; shorter, narrow, or
+offset sessions use the bounded viewport.
 Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
 bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
 in softline. Bounded rendering keeps a retained view of the visible editor
@@ -164,11 +186,49 @@ previews, status lines, wrapping, and resize reflow change that region with the
 prompt. Softline resets the region whenever the edit finishes; terminals that
 do not answer the cursor-position report continue with clear-and-redraw.
 
-For a persistent bottom prompt, use this bounded mode as a full-screen terminal
-UI on the alternate screen. That keeps the main scrollback intact and lets
-softline manage the prompt box and transcript scroll region coherently.
-Softline never enters or leaves the alternate screen itself: the embedding
-application chooses normal scrollback or an alternate-screen UI.
+For a persistent bottom prompt, use bounded mode in either the normal or
+alternate screen. Softline never enters or leaves the alternate screen itself.
+The live viewport retains only visible terminal cells and partial parser state.
+Full-width main-screen sessions scroll those cells into native terminal
+scrollback. Softline does not keep its own transcript history.
+
+## Persistent output session
+
+Open a session once, forward each external renderer sink fragment, and close it
+when the conversation ends. The receiver and free-function C APIs are
+equivalent; Lua exposes `sl:output_stream_begin()`,
+`sl:output_stream_write(bytes)`, and `sl:output_stream_end()`.
+
+```c
+sl->output_stream_begin(sl);
+/* Called on the editor owner thread for each external sink emission. */
+sl->output_stream_write(sl, bytes, length);
+sl->output_stream_end(sl);
+```
+
+Completed sessions retain their visible TTY rows. The next output starts on a
+fresh row if the previous session ended mid-row. Finite `print_above()` output
+between sessions shares that viewport.
+
+Each write is visible before it returns, including while `next_prompt()` is
+active. Chunk boundaries add no content or document semantics; ANSI SGR and
+UTF-8 sequences may cross calls. End rejects an incomplete sequence. Softline
+clears completed editor rows when a turn is submitted during an open session;
+applications can render the submitted text into the transcript. Use
+`sl_output_stream_write_quoted_prompt(sl, submitted)` between complete renderer
+segments for a literal, italic prompt. Softline wraps it at the current output
+width, repeats `> ` on each visible row, and supplies missing line breaks for
+one blank row on each side. The prefix and its colour can be configured
+independently with `sl_set_quoted_prompt_prefix()` and
+`sl_set_quoted_prompt_style()`; NULL restores the theme defaults. The Lua
+facade exposes matching methods. The composer
+updates Softline geometry (`set_bounds` or `set_screen_width`) and
+renderer width on the owner thread when the terminal changes; neither library
+owns the other's margins. Softline immediately reconciles the transcript and
+editable prompt within its new bounds. A watched FD is the usual way to
+deliver producer events without blocking editor input. See the
+[composition contract](docs/softline-mdf-stream-design.md) for limits and
+failure semantics.
 
 ## Prompt queueing
 
@@ -200,12 +260,14 @@ entry and restores it to the editor. Explicit key bindings continue to override
 these defaults. Prompt appearance is renderer-owned so it remains safe with
 layout: `default` uses only standard ANSI colours: a bold bright-white marker,
 normal terminal-colour input, subdued dark-gray queue text and separators,
-standard-colour status elements, and red/green busy markers. `plain` is
-uncoloured; `accent`, Dracula, Gruvbox, monochrome, monogreen, Outrun, Riced,
-and Synthwave use their embedded palettes. The selected theme applies to every
-interactive prompt, including normal readline prompts, status lines, and queue
-panels. Prompt markers reset before typed text; monochrome and monogreen
-additionally colour typed text as defined by their palettes.
+standard-colour status elements, and red/green busy markers. `plain` keeps the
+editor and queue uncoloured while quoted prompts and status messages use
+neutral ANSI styling. `accent`, Dracula, Gruvbox, monochrome, monogreen,
+Outrun, Riced, and Synthwave use their embedded palettes. The selected theme
+applies to every interactive prompt, including normal readline prompts,
+status lines, and queue panels. Prompt markers reset before typed text;
+monochrome and monogreen additionally colour typed text as defined by their
+palettes.
 
 ### Queue control API
 
@@ -216,31 +278,41 @@ are oldest-first and returned strings are released with `sl_free_string()`.
 ```c
 sl->set_prompt_queue(sl, 1, 64, 3);
 sl->set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS);
+sl->set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL);
 
 /* An operation starts: Enter now queues nonempty drafts. */
 sl->set_status_busy(sl, 1);
 
-/* An owner-thread completion callback returns to idle. If the editor is
- * empty, the active next_prompt() immediately receives one oldest queued
- * turn; starting that turn sets busy again, so later entries remain queued. */
+/* At a response seam, inspect modes and take a STEER entry if desired.
+ * At completion, return to idle and choose the next queue entry. */
 sl->set_status_busy(sl, 0);
 ```
 
 `SL_PROMPT_QUEUE_PROFILE_DEFAULT` preserves Tab, Alt-E, and automatic FIFO
 delivery by default. `SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS` is the native
 turn lifecycle preset: while `set_status_busy(sl, 1)` is active, Enter queues
-a nonempty draft; when it returns idle, Softline delivers exactly one oldest
-queued turn. Starting that turn sets busy again, so the remaining FIFO entries
-stay visibly queued until its completion. In idle mode, Enter submits normally
-and an empty Enter is ignored. Alt-Enter always submits a nonempty draft; on
-an empty draft it promotes the newest queued entry regardless of busy state.
-Both are returned to the application immediately, even while busy: a nonempty
-draft has `SL_PROMPT_SOURCE_DIRECT` and a promotion has
-`SL_PROMPT_SOURCE_PROMOTED`. Use `sl_set_prompt_queue_delivery()` only with
-the default profile for an explicit host-controlled delivery policy. Explicit
+a nonempty draft; with automatic delivery, returning idle delivers the oldest
+ordinary queued turn. Starting that turn sets busy again, so later entries
+stay visibly queued. In idle mode, Enter submits normally
+and an empty Enter is ignored. While busy, Alt-Enter queues a nonempty draft
+with `SL_PROMPT_QUEUE_MODE_STEER`; with an empty draft it marks the newest
+queued entry as steer. The queue preview labels these entries `S`. The host
+uses `sl_prompt_queue_get_mode()` to choose a steer entry and
+`sl_prompt_queue_take()` to consume it at a safe response seam. Ordinary
+queued entries retain `SL_PROMPT_QUEUE_MODE_QUEUED`. Set
+`SL_PROMPT_QUEUE_DELIVERY_MANUAL` to let the host choose both kinds of entry
+and when to take them; the C and Lua chat examples do this. With automatic
+delivery, ordinary queued entries are released when the operation becomes
+idle. In idle mode, Alt-Enter submits a nonempty draft or promotes the newest
+entry immediately. Explicit
 `sl_bind_key()` bindings always take precedence over these built-ins.
 Cancelling a queued-turns editor keeps queued drafts visible but stops automatic
 FIFO release; a subsequent direct submission or manual promotion resumes it.
+The chat examples recognize `/quit` when they receive it. An ordinary queued
+`/quit` runs after earlier FIFO entries; a steered `/quit` runs when the example
+takes steers at its next response boundary. An idle Alt-Enter promotion delivers
+it directly. Entries behind `/quit` are not processed.
+The simple examples also use `/quit` to leave.
 
 ## External events while editing
 
@@ -273,6 +345,9 @@ static const char *const status[] = {
 
 sl->set_statusline(sl, 1, 0);
 sl->set_status_elements(sl, status, 4);
+sl->set_status_message(sl, "Thinking..."); /* update during live output */
+sl->set_status_message(sl, "Reasoning...");
+sl->set_status_message(sl, NULL);          /* clear */
 sl->set_status_idle_marker(sl, '-');  /* optional green idle marker */
 sl->set_status_busy(sl, 1);    /* x by default, or /-\\| with spinner enabled */
 sl->set_status_spinner(sl, 1);
@@ -286,6 +361,18 @@ off by default, and advances every 500ms only when both spinner and busy are
 enabled. Elements wrap between elements when possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
+
+Enabling the status line reserves space immediately above it for a
+status message. `sl_set_status_message()` accepts printable single-line UTF-8,
+wraps long text at words with continuation rows indented to the prefix width,
+and redraws immediately while the editor is
+active. The default prefix is `! ` in the theme's muted colour; the message
+text is italic in the theme's secondary colour. Use
+`sl_set_status_message_prefix(sl, "? ")` to change the prefix, `""` to hide it,
+or `NULL` to restore `! `. Use `sl_set_status_message_colors(sl, prefix_color,
+text_color)` to select palette roles independently, such as
+`SL_THEME_COLOR_MUTED` and `SL_THEME_COLOR_ELEMENT_2`. Clearing the message
+leaves the row blank, so the status line and editor stay in place.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.
@@ -316,6 +403,8 @@ static int next_chunk(sl_t *sl, void *userdata,
 ```sh
 make build
 make test
+make deps DEPENDENCY=libmdf
+make deps DEPENDENCY=lua PRESET=debug-lua
 make asan
 make valgrind
 make package-consumer-smoke
@@ -323,7 +412,7 @@ make lua-test
 make prerelease
 ```
 
-The core library is compiled as C89 with POSIX terminal APIs. Shared builds use
+Every project-owned C target is compiled as C89 with POSIX terminal APIs. Shared builds use
 the separate CMake `SOFTLINE_ABI_VERSION`, currently `1`, for SONAME/SOVERSION.
 That ABI version is bumped only for shared-library ABI breaks, not for every
 project release-version bump. The v0.3.0 receiver-shell architecture is
@@ -331,16 +420,13 @@ withdrawn as an architectural miss and is not a supported shared-library
 upgrade baseline; the current event-driven architecture replaces it while
 retaining ABI version `1`.
 
-On supported Linux development hosts, ordinary debug, sanitizer, Valgrind,
-package-consumer, and release package builds use the pinned native GNU Bootlin
-toolchain. The current pinned Bootlin compiler executables are x86_64-hosted, so
-native lifecycle builds are selected automatically only on x86_64 Linux hosts.
-The release matrix still ships the supported Linux target artifacts
+Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
+builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin
+compiler executables are x86_64-hosted, so ordinary Linux lifecycle work is
+supported on native x86_64 Linux hosts. Unsupported Linux hosts fail closed
+rather than selecting host compilers or binutils. The release matrix ships the supported Linux target artifacts
 (`x86_64`, `aarch64`, and `armhf`, each GNU and musl) from those pinned
-toolchains. Fuzzing remains native `x86_64-linux-gnu` only. Unsupported native
-architectures and non-Linux hosts may fall back to the host compiler for local
-development presets, but explicit Linux package/release targets fail closed
-instead of silently using host tools.
+toolchains. Fuzzing remains native `x86_64-linux-gnu` only.
 Host `clangd`, `clang-format`, Valgrind, Lua 5.5, LuaRocks, and packaging
 utilities are development tools; the C compiler, linker, archiver, and sysroot
 for project-owned Linux release builds come from the lifecycle toolchain
@@ -361,21 +447,27 @@ inspection block verification. `make test-artifact-runtime` exercises positive
 and negative packaged fixtures; it is part of `make test-all`.
 
 Lua verification and examples use a local Lua 5.5.1 interpreter built with the
-same collection on supported x86-64 Linux hosts and the native toolchain on
-fallback development hosts, including macOS. Its checksum-pinned upstream source
-archive is reused from the shared dependency cache; extraction and compilation
-stay under `build/local-lua` (or `build/local-lua-debug` for debug workflows).
+same selected collection. Its checksum-pinned upstream source archive is reused
+from the shared dependency cache; disposable extraction state stays under
+`.cache/deps-build/`, while the interpreter build remains under
+`build/local-lua` (or `build/local-lua-debug` for debug workflows).
 LuaRocks remains a host packaging tool. This runtime selection is not hermetic
 execution and does not establish compatibility with older deployment libcs.
 
 `make prerelease` is the deterministic local gate: formatting, debug and
 sanitizer tests, native Valgrind, Lua, toolchain, editor, header, and
 install-tree consumer checks. `make release-matrix` builds the standard Linux GNU/musl target matrix,
-generates source and Lua release artifacts, writes checksums, and verifies
+generates binary and Lua release artifacts, writes checksums, and verifies
 package layout, runtime loader metadata, and release privacy. The rehearsal
 matrix may skip Darwin when osxcross is unavailable. `make release` is stricter:
-it requires the Darwin toolchain and a verified Darwin artifact; packaged Darwin
-artifacts require target-correct Mach-O inspection.
+it requires the Darwin toolchain and a verified Darwin artifact, then creates
+and reconstructs the source archive; packaged Darwin artifacts require
+target-correct Mach-O inspection.
+
+`cmake/softline.exports` is the source-controlled dynamic export contract for
+`libsoftline`. Build and extracted-package checks fail if a public symbol is
+missing or an accidental symbol becomes linkable. The lifecycle migration record
+is maintained in [docs/lifecycle-migration.md](docs/lifecycle-migration.md).
 
 `v99.99.99` is permanently reserved for the release-version contract check and
 is never a valid softline release tag. The Lua facade supports Lua 5.5 only;

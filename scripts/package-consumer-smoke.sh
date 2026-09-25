@@ -10,24 +10,20 @@ BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
 BOOTLIN_TARGET=""
 BOOTLIN_TOOLCHAIN_ARG=""
 BOOTLIN_TARGET_ARG=""
-CONSUMER_CC="${CC:-cc}"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-if BOOTLIN_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target 2>/dev/null)"; then
-  "${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${BOOTLIN_TARGET}" >/dev/null
-  eval "$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${BOOTLIN_TARGET}")"
-  BOOTLIN_TOOLCHAIN_ARG="-DCMAKE_TOOLCHAIN_FILE=${BOOTLIN_TOOLCHAIN}"
-  BOOTLIN_TARGET_ARG="-DSL_TARGET_ID=${BOOTLIN_TARGET}"
-  CONSUMER_CC="${CC}"
-else
-  echo "No supported native Bootlin Linux target selected; using host toolchain for package consumer smoke" >&2
-fi
+BOOTLIN_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target)"
+"${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${BOOTLIN_TARGET}" >/dev/null
+eval "$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${BOOTLIN_TARGET}")"
+BOOTLIN_TOOLCHAIN_ARG="-DCMAKE_TOOLCHAIN_FILE=${BOOTLIN_TOOLCHAIN}"
+BOOTLIN_TARGET_ARG="-DSL_TARGET_ID=${BOOTLIN_TARGET}"
+CONSUMER_CC="${CC}"
 
 APP_DIR="${TMP_DIR}/consumer"
 
 mkdir -p "${APP_DIR}"
 cat > "${APP_DIR}/CMakeLists.txt" <<'EOF'
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.24)
 project(softline_consumer_smoke LANGUAGES C)
 
 find_package(softline REQUIRED CONFIG)
@@ -147,9 +143,6 @@ verify_shared_abi() {
   abi_lib="${libdir}/libsoftline.so.${SOFTLINE_ABI_VERSION}"
   soname=""
 
-  if [ -z "${BOOTLIN_TARGET}" ] && [ -e "${libdir}/libsoftline.dylib" ]; then
-    return
-  fi
   if [ ! -e "${shared_lib}" ]; then
     echo "ERROR: shared install missing libsoftline.so"
     exit 1
@@ -158,16 +151,9 @@ verify_shared_abi() {
     echo "ERROR: shared install missing ABI symlink ${abi_lib}"
     exit 1
   fi
-  if [ -n "${BOOTLIN_TARGET}" ] && { [ -z "${READELF:-}" ] || [ ! -x "${READELF}" ]; }; then
+  if { [ -z "${READELF:-}" ] || [ ! -x "${READELF}" ]; }; then
     echo "ERROR: lifecycle readelf is required for package consumer ABI verification" >&2
     exit 1
-  fi
-  if [ -z "${READELF:-}" ] || [ ! -x "${READELF}" ]; then
-    READELF="$(command -v readelf || true)"
-  fi
-  if [ -z "${READELF}" ]; then
-    echo "SKIP: shared SONAME check requires readelf" >&2
-    return
   fi
   soname="$("${READELF}" -d "${shared_lib}" |
     sed -n 's/.*Library soname: \[\(.*\)\].*/\1/p')"
@@ -237,7 +223,7 @@ smoke_mode() {
   export PKG_CONFIG_PATH
   pkg-config --exists softline
   test "$(pkg-config --modversion softline)" = "${VERSION}"
-  "${CONSUMER_CC}" -std=c89 -Wall -Wextra -Wpedantic -Werror \
+  "${CONSUMER_CC}" -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
     @"${app_build_dir}/consumer-runtime.flags" \
     $(pkg-config --cflags softline) "${APP_DIR}/main.c" \
     $(pkg-config --libs softline) -Wl,-rpath,"${install_libdir}" \

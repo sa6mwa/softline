@@ -8,6 +8,7 @@ DIST_DIR  := $(ROOT_DIR)/dist
 CACHE_DIR := $(ROOT_DIR)/.cache
 
 NINJA := $(shell command -v ninja 2>/dev/null || command -v ninja-build 2>/dev/null)
+PRESET ?= debug
 
 ifneq ($(strip $(THEME)),)
 EXAMPLE_THEME_ENV := SOFTLINE_PROMPT_THEME="$(THEME)"
@@ -38,6 +39,15 @@ deps-release: ## Configure release build dependencies
 .PHONY: deps-cross
 deps-cross: ## Provision and inspect all pinned cross toolchains
 	@./scripts/cpkt-toolchains.sh ensure all
+
+.PHONY: deps
+deps: ## Configure one dependency closure (DEPENDENCY=libmdf|lua PRESET=debug)
+	@case "$(DEPENDENCY):$(PRESET)" in \
+		libmdf:debug) cmake --preset debug ;; \
+		lua:debug|lua:debug-lua) cmake --preset "$(PRESET)" && \
+			sh ./scripts/build-local-lua.sh "$(BUILD_DIR)/$(PRESET)" ;; \
+		*) echo "ERROR: use DEPENDENCY=libmdf PRESET=debug or DEPENDENCY=lua PRESET=debug|debug-lua" >&2; exit 2 ;; \
+	esac
 
 .PHONY: build
 build: ## Build debug target
@@ -108,7 +118,7 @@ test: build-debug ## Run debug tests
 test-debug: test ## Run debug tests
 
 .PHONY: test-all
-test-all: test test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test ## Run all deterministic local tests
+test-all: test test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test test-tool-discovery test-toolchain-contract test-darwin-linker-route test-lifecycle-surface test-lua-artifact-privacy test-public-header-docs ## Run all deterministic local tests
 
 .PHONY: test-lua-platform
 test-lua-platform: ## Verify local Lua builds with Darwin platform settings
@@ -142,8 +152,12 @@ valgrind: ## Run native Valgrind Memcheck tests
 		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 ./tests/test_softline
 	@cd $(BUILD_DIR)/valgrind && \
 		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 \
-			--trace-children=yes ./tests/test_examples \
+			--trace-children=yes --log-file=memcheck-%p.log \
+			./tests/test_examples \
 			./examples/example_simple ./examples/example_chat
+	@cd $(BUILD_DIR)/valgrind && \
+		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 \
+			./tests/test_libmdf_stream
 
 .PHONY: valgrind-portable
 valgrind-portable: ## Run native Valgrind on supported Linux hosts, skip where unsupported
@@ -254,6 +268,7 @@ test-toolchain-contract: ## Verify toolchain provisioning and environment contra
 .PHONY: test-lifecycle-surface
 test-lifecycle-surface: ## Verify standard lifecycle command and preset surfaces
 	@./scripts/test_lifecycle_surface.sh
+	@python3 tests/test_deps_target.py "$(ROOT_DIR)"
 
 .PHONY: test-clangd
 test-clangd: deps-debug ## Verify clangd project configuration and semantic parsing
@@ -298,18 +313,22 @@ prerelease-hardening: ## Expensive hardening gate
 	@$(MAKE) release-pipeline
 
 .PHONY: release
-release: ## Clean release build
+release: ## Clean final release build, including source reconstruction
 	@$(MAKE) lifecycle-version-contract
 	@$(MAKE) clean
 	@SOFTLINE_REQUIRE_DARWIN=1 $(MAKE) release-pipeline
+	@$(MAKE) package-source
+	@$(MAKE) package-source-smoke
+	@$(MAKE) package-checksums
+	@$(MAKE) package-verify
 
 .PHONY: release-pipeline
-release-pipeline: ## Shared clean release proof graph
+release-pipeline: ## Ordinary proof graph plus binary release matrix
 	@$(MAKE) prerelease-checks
 	@$(MAKE) release-matrix
 
 .PHONY: prerelease-checks
-prerelease-checks: format test-all test-tool-discovery test-toolchain-contract test-darwin-linker-route test-release-version test-package-source-worktree test-lifecycle-surface test-lua-artifact-privacy test-clangd test-public-header-docs package-consumer-smoke package-source package-source-smoke
+prerelease-checks: format test-all test-release-version test-package-source-worktree test-clangd package-consumer-smoke
 
 .PHONY: lifecycle-version-contract
 lifecycle-version-contract: ## Verify exact lightweight-tag release version behavior

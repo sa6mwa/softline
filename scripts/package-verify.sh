@@ -49,6 +49,7 @@ load_tools() {
   LD=""
   LINKER=""
   READELF=""
+  NM=""
   OTOOL=""
   INSTALL_NAME_TOOL=""
   STRIP=""
@@ -64,6 +65,7 @@ load_tools() {
     OTOOL="${CPKT_TOOLCHAIN_OTOOL:-}"
     INSTALL_NAME_TOOL="${CPKT_TOOLCHAIN_INSTALL_NAME_TOOL:-}"
     STRIP="${CPKT_TOOLCHAIN_STRIP:-}"
+    NM="${CPKT_TOOLCHAIN_NM:-${NM:-}}"
     return
   fi
   tools="$("${ROOT_DIR}/scripts/discover_target_tools.sh" "${build_dir}" "${target}")"
@@ -150,6 +152,54 @@ verify_darwin_metadata() {
   done
 }
 
+verify_dynamic_exports() {
+  artifact="$1"
+  target="$2"
+  pkg_lib_dir="$3"
+  expected="${TMP_DIR}/expected-exports"
+  actual="${TMP_DIR}/actual-exports"
+  shared_library=""
+
+  if [ -z "${NM:-}" ] || [ ! -x "${NM}" ]; then
+    echo "ERROR: ${artifact}: target-correct nm is required for dynamic export verification" >&2
+    exit 1
+  fi
+  case "${target}" in
+    *-linux-*)
+      shared_library="$(find "${pkg_lib_dir}" -type f -name 'libsoftline.so.*' | head -1)"
+      ;;
+    *-apple-darwin)
+      shared_library="$(find "${pkg_lib_dir}" -type f -name 'libsoftline.*.dylib' | head -1)"
+      ;;
+    *)
+      shared_library=""
+      ;;
+  esac
+  if [ -z "${shared_library}" ]; then
+    echo "ERROR: ${artifact}: shared libsoftline payload missing" >&2
+    exit 1
+  fi
+  sed -n '/^[A-Za-z_][A-Za-z0-9_]*$/p' "${ROOT_DIR}/cmake/softline.exports" | sort > "${expected}"
+  case "${target}" in
+    *-linux-*)
+      "${NM}" -D --defined-only --format=posix "${shared_library}" |
+        awk '$2 ~ /^[TWtw]$/ { sub(/@.*/, "", $1); print $1 }' | sort -u > "${actual}"
+      ;;
+    *-apple-darwin)
+      "${NM}" -gU "${shared_library}" |
+        awk '$2 ~ /^[TWtw]$/ { sub(/^_/, "", $3); print $3 }' | sort -u > "${actual}"
+      ;;
+    *)
+      echo "ERROR: ${artifact}: unknown target for dynamic export verification: ${target}" >&2
+      exit 1
+      ;;
+  esac
+  if ! diff -u "${expected}" "${actual}"; then
+    echo "ERROR: ${artifact}: libsoftline dynamic exports differ from cmake/softline.exports" >&2
+    exit 1
+  fi
+}
+
 verify_extracted_consumer() {
   target="$1"
   pkg_root="$2"
@@ -166,7 +216,7 @@ verify_extracted_consumer() {
   rm -rf "${consumer_dir}"
   mkdir -p "${consumer_dir}"
   cat > "${consumer_dir}/CMakeLists.txt" <<'EOF'
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.24)
 project(softline_extracted_consumer LANGUAGES C)
 find_package(softline REQUIRED CONFIG)
 add_executable(softline_extracted_consumer main.c)
@@ -204,11 +254,11 @@ EOF
       exit 1
     fi
     PATH="$(dirname "${LINKER}"):${PATH}" "${CC}" --ld-path="${LINKER}" \
-      -std=c89 -Wall -Wextra -Wpedantic -Werror \
+      -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
       $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
       $(pkg-config --libs softline) -o "${consumer_dir}/pkg-config-consumer"
   else
-    "${CC}" -std=c89 -Wall -Wextra -Wpedantic -Werror \
+    "${CC}" -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
       @"${consumer_dir}/cmake-build/softline_extracted_consumer-runtime.flags" \
       $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
       $(pkg-config --libs softline) -Wl,-rpath,"${pkg_lib_dir}" -o "${consumer_dir}/pkg-config-consumer"
@@ -217,7 +267,7 @@ EOF
   if [ "${target}" = "x86_64-linux-gnu" ] || [ "${target}" = "x86_64-linux-musl" ]; then
     "${consumer_dir}/cmake-build/softline_extracted_consumer"
     "${consumer_dir}/pkg-config-consumer"
-    "${CC}" -static -std=c89 -Wall -Wextra -Wpedantic -Werror \
+    "${CC}" -static -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
       $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
       $(pkg-config --static --libs softline) -o "${consumer_dir}/static-consumer"
     "${consumer_dir}/static-consumer"
@@ -260,8 +310,7 @@ for archive in "${DIST_DIR}"/softline-*.tar.gz; do
     continue
   fi
   if [ "${basename}" = "softline-${VERSION}" ]; then
-    "${ROOT_DIR}/scripts/package-source-smoke.sh"
-    echo "  ${basename}: OK"
+    echo "  ${basename}: source archive is verified only by package-source-smoke"
     continue
   fi
 
@@ -302,6 +351,7 @@ for archive in "${DIST_DIR}"/softline-*.tar.gz; do
       exit 1
       ;;
   esac
+  verify_dynamic_exports "${basename}" "${target}" "${pkg_lib_dir}"
 
   pkg_config_file="${pkg_lib_dir}/pkgconfig/softline.pc"
   if [ ! -f "${pkg_config_file}" ]; then

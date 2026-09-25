@@ -29,6 +29,151 @@ def read_until(fd, data, needle, start=0, timeout=10.0):
     raise AssertionError(f"missing {needle!r} in terminal output {bytes(data)!r}")
 
 
+def test_queued_quit(root):
+    master, slave = pty.openpty()
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    proc = subprocess.Popen(
+        ["lua", os.path.join(root, "examples", "chat.lua")],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        output = bytearray()
+        read_until(master, output, b"> ")
+        os.write(master, b"start\r")
+        read_until(master, output, b"[turn] start\r\n")
+        os.write(master, b"followup\r/quit\r")
+        read_until(master, output, b"Q 2. ")
+        read_until(master, output, b"[queued] followup")
+        if proc.wait(timeout=10.0) != 0:
+            raise AssertionError(f"queued /quit failed: {bytes(output)!r}")
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5.0)
+
+
+def test_steered_quit(root):
+    master, slave = pty.openpty()
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    proc = subprocess.Popen(
+        ["lua", os.path.join(root, "examples", "chat.lua")],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        output = bytearray()
+        read_until(master, output, b"> ")
+        os.write(master, b"start\r")
+        read_until(master, output, b"[turn] start\r\n")
+        os.write(master, b"/quit\x1b\r")
+        read_until(master, output, b"S 1. ")
+        if proc.wait(timeout=10.0) != 0:
+            raise AssertionError(f"steered /quit failed: {bytes(output)!r}")
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5.0)
+
+
+def test_promoted_quit(root):
+    master, slave = pty.openpty()
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    proc = subprocess.Popen(
+        ["lua", os.path.join(root, "examples", "chat.lua")],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        output = bytearray()
+        read_until(master, output, b"> ")
+        os.write(master, b"start\r")
+        read_until(master, output, b"[turn] start\r\n")
+        os.write(master, b"/quit\r")
+        read_until(master, output, b"Q 1. ")
+        cancel_offset = len(output)
+        os.write(master, b"\x03")
+        read_until(master, output, b"[operation] cancelled")
+        read_until(master, output, b"\x1b[?2004h", cancel_offset)
+        os.write(master, b"\x1b\r")
+        if proc.wait(timeout=10.0) != 0:
+            raise AssertionError(f"promoted /quit failed: {bytes(output)!r}")
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5.0)
+
+
+def test_eof_with_queued_work(root):
+    master, slave = pty.openpty()
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    proc = subprocess.Popen(
+        ["lua", os.path.join(root, "examples", "chat.lua")],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        output = bytearray()
+        read_until(master, output, b"> ")
+        os.write(master, b"start\r")
+        read_until(master, output, b"[turn] start\r\n")
+        os.write(master, b"followup\r")
+        read_until(master, output, b"Q 1.")
+        eof_offset = len(output)
+        os.write(master, b"\x04")
+        if proc.wait(timeout=10.0) != 0:
+            raise AssertionError("Lua chat failed to exit on EOF")
+        while True:
+            ready, _, _ = select.select([master], [], [], 0.1)
+            if not ready:
+                break
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output.extend(chunk)
+        if b"[queued] followup" in output[eof_offset:]:
+            raise AssertionError("shutdown dispatched queued work")
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5.0)
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {sys.argv[0]} REPO_ROOT")
@@ -43,6 +188,7 @@ def main():
         stdout=slave,
         stderr=slave,
         cwd=root,
+        env={**os.environ, "SOFTLINE_CHAT_OPERATION_STEP_MS": "150"},
         start_new_session=True,
     )
     os.close(slave)
@@ -66,11 +212,21 @@ def main():
         promote_offset = len(output)
         read_until(master, output, b"[promoted] queued\r\n", promote_offset)
         read_until(master, output, b"[operation] processing input.", promote_offset)
+        os.write(master, b"steer\x1b\r")
+        steer_offset = len(output)
+        read_until(master, output, b"S 1. ", steer_offset)
+        read_until(master, output, b"[active operation] consumed: steer", steer_offset)
         escape_offset = len(output)
         os.write(master, b"\x1b")
         read_until(master, output, b"[operation] cancelled\r\n", escape_offset)
         read_until(master, output, b"\x1b[?2004h", escape_offset)
-        os.write(master, b"exit\r")
+        history_offset = len(output)
+        os.write(master, b"\x1b[A")
+        read_until(master, output, b"\x1b[0msteer", history_offset)
+        if b"\x1b[0mstart" in output[history_offset:]:
+            raise AssertionError("Up recalled an older turn instead of the delivered steer")
+        os.write(master, b"\x15")
+        os.write(master, b"/quit\r")
         if proc.wait(timeout=10.0) != 0:
             raise AssertionError("Lua watch chat exited unsuccessfully")
     finally:
@@ -78,6 +234,10 @@ def main():
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=5.0)
+    test_queued_quit(root)
+    test_steered_quit(root)
+    test_promoted_quit(root)
+    test_eof_with_queued_work(root)
 
 
 if __name__ == "__main__":
