@@ -24,7 +24,7 @@ def main():
     )
     os.close(slave)
     try:
-        os.write(master, b"hello\rexit\r")
+        os.write(master, b"hello\r/quit\r")
         output, error = proc.communicate(timeout=5.0)
         if proc.returncode != 0:
             raise AssertionError(

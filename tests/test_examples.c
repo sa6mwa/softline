@@ -421,11 +421,11 @@ static int finish(pid_t pid, int fd) {
   return -1;
 }
 
-static int cancel_and_exit(struct terminal *t, int fd, pid_t pid) {
+static int cancel_and_quit(struct terminal *t, int fd, pid_t pid) {
   size_t mark = t->raw_len;
   if (write(fd, "\003", 1) != 1 ||
       wait_raw_since(t, mark, "\033[?2004h", 3000) != 0 ||
-      write(fd, "exit\r", 5) != 5) {
+      write(fd, "/quit\r", 6) != 6) {
     term_dump(t);
     return -1;
   }
@@ -449,7 +449,7 @@ static void test_simple(const char *path) {
               "submission missing");
   ASSERT_TRUE(wait_raw_after(&t, "submitted: a long", "\033[?2004h", 3000) == 0,
               "next prompt missing");
-  ASSERT_TRUE(write(fd, "exit\r", 5) == 5, "exit failed");
+  ASSERT_TRUE(write(fd, "/quit\r", 6) == 6, "quit failed");
   ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
   PASS();
 }
@@ -527,15 +527,15 @@ static void test_chat_live_queue(const char *path) {
                     (!top_repaint || top_repaint > sync_end),
                 "native scroll repainted the output viewport");
   }
-  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
-static void test_chat_queued_exit(const char *path) {
+static void test_chat_queued_quit(const char *path) {
   int fd;
   pid_t pid;
   struct terminal t;
-  TEST("queued exit ends chat after the active response");
+  TEST("queued /quit runs after earlier FIFO turns");
   pid = spawn(path, &fd, 80, 14);
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 80, 14);
@@ -544,10 +544,62 @@ static void test_chat_queued_exit(const char *path) {
   ASSERT_TRUE(write(fd, "first\r", 6) == 6, "first send failed");
   ASSERT_TRUE(wait_screen(&t, "! Thinking...", 3000) == 0,
               "response did not start");
-  ASSERT_TRUE(write(fd, "exit\r", 5) == 5, "queued exit failed");
-  ASSERT_TRUE(wait_screen(&t, "Q 1. exit", 3000) == 0,
-              "exit was not queued while busy");
-  ASSERT_TRUE(finish(pid, fd) == 0, "queued exit did not terminate chat");
+  ASSERT_TRUE(write(fd, "followup\r/quit\r", 15) == 15, "queued turns failed");
+  ASSERT_TRUE(wait_screen(&t, "Q 2. /quit", 3000) == 0,
+              "/quit was not queued behind the follow-up");
+  ASSERT_TRUE(wait_screen(&t, "> followup", 6000) == 0,
+              "earlier queued turn was skipped");
+  ASSERT_TRUE(wait_screen(&t, "A longer answer", 6000) == 0,
+              "earlier queued turn did not receive a response");
+  ASSERT_TRUE(finish(pid, fd) == 0, "queued /quit did not terminate chat");
+  PASS();
+}
+
+static void test_chat_promoted_quit(const char *path) {
+  int fd;
+  pid_t pid;
+  size_t cancel_mark;
+  struct terminal t;
+  TEST("idle promotion delivers queued /quit immediately");
+  pid = spawn(path, &fd, 80, 14);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 80, 14);
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
+  ASSERT_TRUE(write(fd, "first\r", 6) == 6, "first send failed");
+  ASSERT_TRUE(wait_screen(&t, "! Thinking...", 3000) == 0,
+              "response did not start");
+  ASSERT_TRUE(write(fd, "/quit\r", 6) == 6, "queued quit failed");
+  ASSERT_TRUE(wait_screen(&t, "Q 1. /quit", 3000) == 0,
+              "quit was not queued while busy");
+  cancel_mark = t.raw_len;
+  ASSERT_TRUE(write(fd, "\003", 1) == 1, "cancel failed");
+  ASSERT_TRUE(wait_screen(&t, "Operation cancelled", 3000) == 0,
+              "operation did not cancel");
+  ASSERT_TRUE(wait_raw_since(&t, cancel_mark, "\033[?2004h", 3000) == 0,
+              "editor did not reopen after cancellation");
+  ASSERT_TRUE(write(fd, "\033\r", 2) == 2, "promotion failed");
+  ASSERT_TRUE(finish(pid, fd) == 0, "promoted /quit did not terminate chat");
+  PASS();
+}
+
+static void test_chat_steered_quit(const char *path) {
+  int fd;
+  pid_t pid;
+  struct terminal t;
+  TEST("steered /quit runs at the next application response seam");
+  pid = spawn(path, &fd, 80, 14);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 80, 14);
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
+  ASSERT_TRUE(write(fd, "first\r", 6) == 6, "first send failed");
+  ASSERT_TRUE(wait_screen(&t, "! Thinking...", 3000) == 0,
+              "response did not start");
+  ASSERT_TRUE(write(fd, "/quit\033\r", 7) == 7, "steer failed");
+  ASSERT_TRUE(wait_screen(&t, "S 1. /quit", 3000) == 0,
+              "quit was not marked as steer");
+  ASSERT_TRUE(finish(pid, fd) == 0, "steered /quit did not terminate chat");
   PASS();
 }
 
@@ -588,7 +640,7 @@ test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
                   strspn(t.cells[quote_row - 1], " ") == (size_t)t.cols &&
                   strspn(t.cells[quote_row + 1], " ") == (size_t)t.cols,
               "rendered prompt lacks a blank row on each side");
-  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -633,7 +685,7 @@ static void test_chat_spacing_across_turns(const char *path) {
               "consecutive turns have extra blank rows");
   ASSERT_TRUE(strstr(t.raw, "                    ") == NULL,
               "completed turns wrote literal blank runs to scrollback");
-  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -686,7 +738,7 @@ static void test_chat_cancel(const char *path) {
     ASSERT_TRUE(wait_raw_since(&t, mark, "\033[32m+ ", 6000) == 0,
                 "promoted operation did not finish");
   }
-  ASSERT_TRUE(write(fd, "exit\r", 5) == 5, "exit failed");
+  ASSERT_TRUE(write(fd, "/quit\r", 6) == 6, "quit failed");
   ASSERT_TRUE(finish(pid, fd) == 0, "child failed");
   PASS();
 }
@@ -717,7 +769,7 @@ static void test_chat_resizes_while_streaming(const char *path) {
               "draft lost after midstream resize");
   ASSERT_TRUE(wait_screen(&t, "Next step", 6000) == 0,
               "Markdown stopped after midstream resize");
-  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -772,7 +824,7 @@ static void test_chat_queued_steer(const char *path) {
     term_dump(&t);
   ASSERT_TRUE(valid_seam,
               "steer split a Markdown paragraph or lacked blank rows");
-  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -810,7 +862,7 @@ static void test_chat_steer_after_paragraph(const char *path) {
   ASSERT_TRUE(paragraph_row >= 0 && steer_row == paragraph_row + 2 &&
                   heading_row == steer_row + 2,
               "late steer has extra blank rows or split the paragraph");
-  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -842,7 +894,7 @@ static void test_chat_steer_after_last_seam_starts_turn(const char *path) {
                   term_row_of(&t, "A longer answer") >
                       term_row_of(&t, "> hello"),
               "late steer response did not follow its prompt");
-  ASSERT_TRUE(cancel_and_exit(&t, fd, pid) == 0, "child failed");
+  ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
 
@@ -870,9 +922,9 @@ static void test_chat_non_tty(const char *path) {
   }
   close(input[0]);
   close(output[1]);
-  ASSERT_TRUE(write(input[1], "hello\nok\n**literal** # heading\nexit\n", 36) ==
-                  36,
-              "input failed");
+  ASSERT_TRUE(
+      write(input[1], "hello\nok\n**literal** # heading\n/quit\n", 37) == 37,
+      "input failed");
   close(input[1]);
   used = 0;
   while (used < sizeof(bytes) - 1) {
@@ -921,7 +973,7 @@ static void test_chat_piped_input_terminal_output(const char *path) {
   }
   close(input[0]);
   close(slave_fd);
-  ASSERT_TRUE(write(input[1], "hello\nexit\n", 11) == 11, "input failed");
+  ASSERT_TRUE(write(input[1], "hello\n/quit\n", 12) == 12, "input failed");
   close(input[1]);
   used = 0;
   deadline = deadline_after(3000);
@@ -957,7 +1009,9 @@ int main(int argc, char **argv) {
   printf("softline example integration tests\n");
   test_simple(argv[1]);
   test_chat_live_queue(argv[2]);
-  test_chat_queued_exit(argv[2]);
+  test_chat_queued_quit(argv[2]);
+  test_chat_promoted_quit(argv[2]);
+  test_chat_steered_quit(argv[2]);
   test_chat_preserves_transcript_and_prompt_spacing(argv[2]);
   test_chat_spacing_across_turns(argv[2]);
   test_chat_cancel(argv[2]);

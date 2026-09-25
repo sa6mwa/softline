@@ -308,6 +308,11 @@ entry immediately. Explicit
 `sl_bind_key()` bindings always take precedence over these built-ins.
 Cancelling a queued-turns editor keeps queued drafts visible but stops automatic
 FIFO release; a subsequent direct submission or manual promotion resumes it.
+The chat examples recognize `/quit` when they receive it. An ordinary queued
+`/quit` runs after earlier FIFO entries; a steered `/quit` runs when the example
+takes steers at its next response boundary. An idle Alt-Enter promotion delivers
+it directly. Entries behind `/quit` are not processed.
+The simple examples also use `/quit` to leave.
 
 ## External events while editing
 

@@ -58,6 +58,11 @@ local function consume_steers()
   while index <= sl:queue_count() do
     if sl:queue_mode(index) == softline.QUEUE_MODE_STEER then
       local line = assert(sl:queue_take(index))
+      if line == "/quit" then
+        exit_requested = true
+        assert(sl:cancel())
+        return
+      end
       assert(sl:history_add(line))
       consume_active_operation_input(line)
     else
@@ -78,7 +83,9 @@ local function finish_operation()
   worker_pid = nil
   consume_steers()
   set_chat_busy(false)
-  dispatch_next_queued()
+  if not exit_requested then
+    dispatch_next_queued()
+  end
 end
 
 -- Escape and Ctrl-C arrive here as READLINE_CANCELLED. The worker belongs to
@@ -137,7 +144,7 @@ dispatch_next_queued = function()
   for index = 1, sl:queue_count() do
     if sl:queue_mode(index) == softline.QUEUE_MODE_QUEUED then
       local line = assert(sl:queue_take(index))
-      if line == "exit" then
+      if line == "/quit" then
         exit_requested = true
         assert(sl:cancel())
         return
@@ -181,7 +188,7 @@ local function run()
       return softline.KEY_ACTION_CANCEL
     end))
     set_chat_busy(false)
-    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation.\n" })
+    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation; /quit leaves.\n" })
   end
 
   while true do
@@ -190,7 +197,7 @@ local function run()
       break
     end
     if line then
-      if line == "exit" then
+      if line == "/quit" then
         break
       end
       if line == "" then

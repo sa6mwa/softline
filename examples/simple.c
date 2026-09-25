@@ -62,7 +62,7 @@ int main(void) {
     line = sl->readline(sl, "softline> ");
     if (!line)
       break;
-    if (strcmp(line, "exit") == 0) {
+    if (strcmp(line, "/quit") == 0) {
       sl->free_string(sl, line);
       break;
     }

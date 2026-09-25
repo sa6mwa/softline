@@ -163,6 +163,11 @@ static int deliver_steers(struct chat_state *state, int at_seam) {
     line = NULL;
     if (sl_prompt_queue_take(state->sl, index, &line) != SL_OK)
       return -1;
+    if (strcmp(line, "/quit") == 0) {
+      sl_free_string(state->sl, line);
+      state->exit_requested = 1;
+      return sl_cancel(state->sl) == SL_OK ? 0 : -1;
+    }
     if (sl_history_add(state->sl, line) != SL_OK ||
         render_user_prompt(state, line) != 0) {
       sl_free_string(state->sl, line);
@@ -265,9 +270,12 @@ static int operation_watch(sl_t *sl, const sl_watch_event_t *event,
       if (state->response_renderer->feed(state->response_renderer, bytes + i,
                                          1) != MDF_OK)
         return SL_ERROR_IO;
-      if (bytes[i] == '\n' && state->previous_response_char == '\n' &&
-          deliver_steers(state, 1) != 0)
-        return SL_ERROR_IO;
+      if (bytes[i] == '\n' && state->previous_response_char == '\n') {
+        if (deliver_steers(state, 1) != 0)
+          return SL_ERROR_IO;
+        if (state->exit_requested)
+          return SL_OK;
+      }
       state->previous_response_char = bytes[i];
       state->response_bytes++;
       if (state->response_bytes == 15 &&
@@ -347,7 +355,7 @@ static int dispatch_next_turn(struct chat_state *state) {
     line = NULL;
     if (sl_prompt_queue_take(state->sl, 0, &line) != SL_OK)
       return -1;
-    if (strcmp(line, "exit") == 0) {
+    if (strcmp(line, "/quit") == 0) {
       sl_free_string(state->sl, line);
       state->exit_requested = 1;
       return sl_cancel(state->sl) == SL_OK ? 0 : -1;
@@ -468,7 +476,7 @@ int main(void) {
     if (set_busy(&state, 0) != 0 ||
         render_note(&state,
                     "Enter sends or queues; Alt-Enter steers or promotes; "
-                    "Alt-E edits queue. Esc/Ctrl-C cancels; `exit` leaves.") !=
+                    "Alt-E edits queue. Esc/Ctrl-C cancels; `/quit` leaves.") !=
             0) {
       report_failure(&state, "initial output");
       exit_code = 1;
@@ -504,7 +512,7 @@ int main(void) {
       }
       break;
     }
-    if (strcmp(line, "exit") == 0) {
+    if (strcmp(line, "/quit") == 0) {
       sl_free_string(state.sl, line);
       break;
     }
