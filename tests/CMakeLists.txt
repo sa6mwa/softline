@@ -8,6 +8,17 @@ endif()
 add_test(NAME softline_unit COMMAND test_softline)
 set_tests_properties(softline_unit PROPERTIES LABELS "unit" TIMEOUT 30)
 
+# RLIMIT_AS cannot bound ASan's reserved virtual address space.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   NOT CMAKE_C_FLAGS MATCHES "sanitize=address")
+  add_executable(test_quoted_prompt_memory test_quoted_prompt_memory.c)
+  target_link_libraries(test_quoted_prompt_memory PRIVATE softline)
+  softline_apply_warnings(test_quoted_prompt_memory)
+  softline_local_runtime(test_quoted_prompt_memory)
+  add_test(NAME quoted_prompt_bounded_memory COMMAND test_quoted_prompt_memory)
+  set_tests_properties(quoted_prompt_bounded_memory PROPERTIES LABELS "unit" TIMEOUT 30)
+endif()
+
 if(TARGET softline_shared AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME softline_exports COMMAND "${Python3_EXECUTABLE}"

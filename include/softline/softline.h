@@ -904,7 +904,8 @@ int sl_output_stream_end(sl_t *self);
  * Word-wrap at the current output width and prefix every visible row. Add only
  * the missing line breaks for one empty row before and after the quote.
  * Preceding streamed bytes must form a complete ANSI/UTF-8 sequence. The
- * input must be valid UTF-8 with printable characters, LF, and Tab only. */
+ * input must be valid UTF-8 with printable characters, LF, and Tab only.
+ * Formatting uses bounded internal chunks regardless of input length. */
 int sl_output_stream_write_quoted_prompt(sl_t *self, const char *text);
 
 /** Set a nonempty printable single-line UTF-8 prefix; NULL restores "> ". */

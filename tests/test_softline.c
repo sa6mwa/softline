@@ -1838,6 +1838,48 @@ static void test_quoted_prompt_output_api(void) {
   PASS();
 }
 
+static void test_quoted_prompt_chunk_boundary(void) {
+  sl_config_t cfg;
+  sl_t *sl;
+  int output[2];
+  char prompt[4102];
+  char bytes[4200];
+  size_t used;
+  size_t i;
+  ssize_t amount;
+
+  TEST("quoted prompt preserves UTF-8 across bounded output chunks");
+  ASSERT_TRUE(pipe(output) == 0, "pipe failed");
+  prompt[0] = 'a';
+  for (i = 0; i < 2050; i++) {
+    prompt[1 + 2 * i] = '\xc3';
+    prompt[2 + 2 * i] = '\xa9';
+  }
+  prompt[4101] = '\0';
+  sl_config_init(&cfg);
+  cfg.output_fd = output[1];
+  cfg.screen_width = 5000;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write_quoted_prompt(sl, prompt) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "quoted prompt rejected a UTF-8 chunk boundary");
+  sl_destroy(sl);
+  close(output[1]);
+  used = 0;
+  while (used < sizeof(bytes) &&
+         (amount = read(output[0], bytes + used, sizeof(bytes) - used)) > 0)
+    used += (size_t)amount;
+  if (used == sizeof(bytes))
+    amount = -1;
+  close(output[0]);
+  ASSERT_TRUE(amount == 0 && used == 4107 && memcmp(bytes, "\n\n> ", 4) == 0 &&
+                  memcmp(bytes + 4, prompt, 4101) == 0 &&
+                  memcmp(bytes + 4105, "\n\n", 2) == 0,
+              "quoted prompt changed bytes across an output chunk boundary");
+  PASS();
+}
+
 static void test_quoted_prompt_terminal_style(void) {
 #if SL_TEST_PTY
   sl_config_t cfg;
@@ -11019,6 +11061,7 @@ int main(void) {
   test_watch_lifecycle_reports_terminal_events();
   test_redirected_live_output_validates_stream();
   test_quoted_prompt_output_api();
+  test_quoted_prompt_chunk_boundary();
   test_quoted_prompt_terminal_style();
   test_quoted_prompt_resets_inherited_style();
   test_quote_spacing_after_partial_invalid_write();

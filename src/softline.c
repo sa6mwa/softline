@@ -3938,24 +3938,78 @@ static int sl_quoted_prompt_styles(sl_impl_t *impl, char *prefix_style,
   return n >= 0 && (size_t)n < text_cap ? 0 : -1;
 }
 
-static int sl_quoted_prompt_append_row(sl_row_t *output, const char *prefix,
-                                       const char *prefix_style,
-                                       const char *text_style, sl_row_t *body) {
-  const char *reset;
-  reset = prefix_style[0] ? "\033[0m" : "";
-  if (sl_row_append(output, reset, strlen(reset)) != 0 ||
-      sl_row_append(output, prefix_style, strlen(prefix_style)) != 0 ||
-      sl_row_append(output, prefix, strlen(prefix)) != 0 ||
-      sl_row_append(output, reset, strlen(reset)) != 0 ||
-      sl_row_append(output, text_style, strlen(text_style)) != 0 ||
-      sl_row_append(output, body->text ? body->text : "", body->len) != 0 ||
-      sl_row_append(output, text_style[0] ? "\033[0m\n" : "\n",
-                    text_style[0] ? 5 : 1) != 0) {
-    return SL_ERROR;
+typedef struct sl_quote_output {
+  sl_t *owner;
+  char bytes[4096];
+  size_t len;
+} sl_quote_output_t;
+
+static int sl_quote_output_flush(sl_quote_output_t *output) {
+  int result;
+  if (output->len == 0)
+    return SL_OK;
+  result =
+      sl_output_stream_write_method(output->owner, output->bytes, output->len);
+  if (result == SL_OK)
+    output->len = 0;
+  return result;
+}
+
+static int sl_quote_output_append(sl_quote_output_t *output, const char *bytes,
+                                  size_t len) {
+  while (len > 0) {
+    size_t available = sizeof(output->bytes) - output->len;
+    size_t count = len < available ? len : available;
+    int result;
+    memcpy(output->bytes + output->len, bytes, count);
+    output->len += count;
+    bytes += count;
+    len -= count;
+    if (output->len == sizeof(output->bytes)) {
+      result = sl_quote_output_flush(output);
+      if (result != SL_OK)
+        return result;
+    }
   }
-  free(body->text);
-  memset(body, 0, sizeof(*body));
   return SL_OK;
+}
+
+static int sl_quoted_prompt_begin_row(sl_quote_output_t *output,
+                                      const char *prefix,
+                                      const char *prefix_style,
+                                      const char *text_style) {
+  const char *reset;
+  int result;
+  reset = prefix_style[0] ? "\033[0m" : "";
+  result = sl_quote_output_append(output, reset, strlen(reset));
+  if (result != SL_OK)
+    return result;
+  result = sl_quote_output_append(output, prefix_style, strlen(prefix_style));
+  if (result != SL_OK)
+    return result;
+  result = sl_quote_output_append(output, prefix, strlen(prefix));
+  if (result != SL_OK)
+    return result;
+  result = sl_quote_output_append(output, reset, strlen(reset));
+  if (result != SL_OK)
+    return result;
+  return sl_quote_output_append(output, text_style, strlen(text_style));
+}
+
+static int sl_quoted_prompt_end_row(sl_quote_output_t *output,
+                                    const char *text_style) {
+  return sl_quote_output_append(output, text_style[0] ? "\033[0m\n" : "\n",
+                                text_style[0] ? 5 : 1);
+}
+
+static int sl_quoted_prompt_next_row(sl_quote_output_t *output,
+                                     const char *prefix,
+                                     const char *prefix_style,
+                                     const char *text_style) {
+  int result = sl_quoted_prompt_end_row(output, text_style);
+  if (result != SL_OK)
+    return result;
+  return sl_quoted_prompt_begin_row(output, prefix, prefix_style, text_style);
 }
 
 static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
@@ -3964,8 +4018,7 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
   const char *prefix;
   char prefix_style[64];
   char text_style[64];
-  sl_row_t output;
-  sl_row_t body;
+  sl_quote_output_t output;
   size_t len;
   size_t pos;
   size_t word_end;
@@ -4012,14 +4065,18 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
     sl_set_error(self, "failed to style quoted prompt");
     return SL_ERROR;
   }
-  /* A submitted prompt is already complete; one stream write gives the
-   * terminal one synchronized update for all wrapped quote rows. */
   memset(&output, 0, sizeof(output));
-  memset(&body, 0, sizeof(body));
-  if (impl->output_trailing_newlines < 2 &&
-      sl_row_append(&output, "\n\n",
-                    (size_t)(2 - impl->output_trailing_newlines)) != 0)
-    goto allocation_failed;
+  output.owner = self;
+  if (impl->output_trailing_newlines < 2) {
+    result = sl_quote_output_append(
+        &output, "\n\n", (size_t)(2 - impl->output_trailing_newlines));
+    if (result != SL_OK)
+      return result;
+  }
+  result =
+      sl_quoted_prompt_begin_row(&output, prefix, prefix_style, text_style);
+  if (result != SL_OK)
+    return result;
   len = strlen(text);
   col = indent;
   word_end = 0;
@@ -4028,10 +4085,10 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
     size_t n;
     int cells;
     if (text[pos] == '\n') {
-      result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
-                                           text_style, &body);
+      result =
+          sl_quoted_prompt_next_row(&output, prefix, prefix_style, text_style);
       if (result != SL_OK)
-        goto failed;
+        return result;
       col = indent;
       pos++;
       continue;
@@ -4046,10 +4103,10 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
       word_width = sl_word_width(text, len, pos + spaces, word_len);
       if (word_len > 0 && word_width <= width - indent &&
           (spaces > (size_t)width || col + (int)spaces + word_width > width)) {
-        result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
-                                             text_style, &body);
+        result = sl_quoted_prompt_next_row(&output, prefix, prefix_style,
+                                           text_style);
         if (result != SL_OK)
-          goto failed;
+          return result;
         col = indent;
         pos += spaces;
         continue;
@@ -4063,62 +4120,54 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
     if (sl_word_byte(text[pos]) && col > indent &&
         remaining_word_width <= width - indent &&
         col + remaining_word_width > width) {
-      result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
-                                           text_style, &body);
+      result =
+          sl_quoted_prompt_next_row(&output, prefix, prefix_style, text_style);
       if (result != SL_OK)
-        goto failed;
+        return result;
       col = indent;
     }
     n = sl_utf8_cluster_len_width(text, len, pos, &cells);
     if (n == 0)
       break;
     if (col >= width || (cells > 0 && col + cells > width)) {
-      result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
-                                           text_style, &body);
+      result =
+          sl_quoted_prompt_next_row(&output, prefix, prefix_style, text_style);
       if (result != SL_OK)
-        goto failed;
+        return result;
       col = indent;
     }
     if (text[pos] == '\t') {
       int spaces = 8 - col % 8;
       while (spaces-- > 0) {
         if (col >= width) {
-          result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
-                                               text_style, &body);
+          result = sl_quoted_prompt_next_row(&output, prefix, prefix_style,
+                                             text_style);
           if (result != SL_OK)
-            goto failed;
+            return result;
           col = indent;
         }
-        if (sl_row_append(&body, " ", 1) != 0)
-          goto allocation_failed;
+        result = sl_quote_output_append(&output, " ", 1);
+        if (result != SL_OK)
+          return result;
         col++;
       }
     } else {
-      if (sl_row_append(&body, text + pos, n) != 0)
-        goto allocation_failed;
+      result = sl_quote_output_append(&output, text + pos, n);
+      if (result != SL_OK)
+        return result;
       col += cells;
     }
     if (sl_word_byte(text[pos]))
       remaining_word_width -= cells;
     pos += n;
   }
-  result = sl_quoted_prompt_append_row(&output, prefix, prefix_style,
-                                       text_style, &body);
+  result = sl_quoted_prompt_end_row(&output, text_style);
   if (result != SL_OK)
-    goto failed;
-  if (sl_row_append(&output, "\n", 1) != 0)
-    goto allocation_failed;
-  result = sl_output_stream_write_method(self, output.text, output.len);
-  free(output.text);
-  return result;
-
-allocation_failed:
-  sl_set_error(self, "failed to allocate quoted prompt output");
-  result = SL_ERROR;
-failed:
-  free(body.text);
-  free(output.text);
-  return result;
+    return result;
+  result = sl_quote_output_append(&output, "\n", 1);
+  if (result != SL_OK)
+    return result;
+  return sl_quote_output_flush(&output);
 }
 
 static int sl_output_stream_end_method(sl_t *self) {
