@@ -156,6 +156,8 @@ if(SL_BUILD_SHARED)
   if(NOT EXISTS "${_softline_export_allowlist}")
     message(FATAL_ERROR "Missing shared-library export allowlist: ${_softline_export_allowlist}")
   endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_softline_export_allowlist}")
   file(STRINGS "${_softline_export_allowlist}" _softline_export_symbols)
   if(NOT _softline_export_symbols)
     message(FATAL_ERROR "Shared-library export allowlist is empty")

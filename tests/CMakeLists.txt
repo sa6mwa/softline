@@ -27,6 +27,11 @@ if(TARGET softline_shared AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     --library "$<TARGET_FILE:softline_shared>"
     --allowlist "${PROJECT_SOURCE_DIR}/cmake/softline.exports")
   set_tests_properties(softline_exports PROPERTIES LABELS "unit;abi" TIMEOUT 10)
+  add_test(NAME softline_export_reconfigure COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/check_export_reconfigure.py"
+    "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${CMAKE_NM}")
+  set_tests_properties(softline_export_reconfigure PROPERTIES
+    LABELS "unit;abi" TIMEOUT 90)
 endif()
 
 softline_test_libmdf_supported(_softline_test_libmdf_supported)
