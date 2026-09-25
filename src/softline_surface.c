@@ -49,6 +49,7 @@ struct sl_surface {
   int (*cell_width)(unsigned long);
   int (*cluster_width)(const char *, size_t);
   int validate_only;
+  int boundary_pending;
   int parser; /* 0 text, 1 ESC, 2 CSI */
   char csi[128];
   size_t csi_len;
@@ -237,6 +238,26 @@ static int sl_surface_scroll(sl_surface_t *surface) {
   return surface->scroll_hook
              ? surface->scroll_hook(surface->scroll_userdata, 1)
              : 0;
+}
+
+static int sl_surface_advance_boundary(sl_surface_t *surface) {
+  int col;
+  int occupied;
+  size_t bottom;
+  if (!surface->boundary_pending)
+    return 0;
+  occupied = 0;
+  bottom = (size_t)(surface->height - 1) * (size_t)surface->width;
+  for (col = 0; col < surface->width; col++)
+    if (surface->cells[bottom + (size_t)col].len != 0) {
+      occupied = 1;
+      break;
+    }
+  surface->col = 0;
+  if (occupied && sl_surface_scroll(surface) != 0)
+    return -1;
+  surface->boundary_pending = 0;
+  return 0;
 }
 
 void sl_surface_set_scroll_hook(sl_surface_t *surface, int (*hook)(void *, int),
@@ -703,6 +724,8 @@ int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length,
     return 0;
   if (surface->height <= 0)
     return -2;
+  if (sl_surface_advance_boundary(surface) != 0)
+    return -1;
   surface->draw_valid = 0;
   for (i = 0; i < length; i++) {
     {
@@ -751,4 +774,13 @@ void sl_surface_reset_partial(sl_surface_t *surface) {
   surface->csi_len = 0;
   surface->utf8_len = 0;
   surface->utf8_need = 0;
+}
+
+void sl_surface_mark_boundary(sl_surface_t *surface) {
+  if (!surface || surface->validate_only)
+    return;
+  sl_surface_reset_partial(surface);
+  memset(&surface->style, 0, sizeof(surface->style));
+  surface->draw_valid = 0;
+  surface->boundary_pending = 1;
 }

@@ -3661,11 +3661,13 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
 
 static int sl_output_stream_begin_method(sl_t *self) {
   sl_impl_t *impl;
+  sl_surface_t *previous_surface;
   impl = sl_impl(self);
   if (!impl || impl->output_stream_active) {
     sl_set_error(self, "live output stream is already open");
     return SL_ERROR_INVALID;
   }
+  previous_surface = impl->output_surface;
   if (impl->active_prompt && impl->rendered_rows > 0 &&
       sl_render_clear_active(self) != 0) {
     sl_set_error(self, "failed to clear prompt for live output");
@@ -3677,6 +3679,9 @@ static int sl_output_stream_begin_method(sl_t *self) {
   impl->output_ansi_state = 0;
   impl->output_pending_len = 0;
   if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
+    sl_surface_destroy(previous_surface);
+    impl->output_surface = NULL;
+    previous_surface = NULL;
     impl->output_surface = sl_surface_create_validator();
     if (!impl->output_surface) {
       sl_set_error(self, "failed to create live output validator");
@@ -3690,12 +3695,19 @@ static int sl_output_stream_begin_method(sl_t *self) {
     sl_set_error(self, "failed to create live output surface");
     goto failed;
   }
+  if (previous_surface && isatty(impl->input_fd) && isatty(impl->output_fd)) {
+    sl_output_surface_update_scroll_hook(self);
+    sl_surface_mark_boundary(impl->output_surface);
+  }
   return SL_OK;
 
 failed:
-  sl_surface_destroy(impl->output_surface);
-  impl->output_surface = NULL;
+  if (!previous_surface) {
+    sl_surface_destroy(impl->output_surface);
+    impl->output_surface = NULL;
+  }
   impl->output_stream_active = 0;
+  sl_output_surface_update_scroll_hook(self);
   return SL_ERROR_IO;
 }
 
@@ -4105,9 +4117,13 @@ static int sl_output_stream_end_method(sl_t *self) {
     sl_set_error(self, "failed to clear prompt when ending live output");
     return SL_ERROR_IO;
   }
-  sl_surface_destroy(impl->output_surface);
-  impl->output_surface = NULL;
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd)) {
+    sl_surface_destroy(impl->output_surface);
+    impl->output_surface = NULL;
+  } else
+    sl_surface_mark_boundary(impl->output_surface);
   impl->output_stream_active = 0;
+  sl_output_surface_update_scroll_hook(self);
   if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0) {
     (void)sl_show_cursor(impl);
     return SL_ERROR_IO;

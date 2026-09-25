@@ -9320,6 +9320,70 @@ static size_t read_live_pty_output(int fd, char *bytes, size_t capacity) {
   return used;
 }
 
+static void test_live_output_preserves_viewport_between_sessions(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char terminal[16384];
+  struct one_chunk_once middle;
+  struct one_chunk_once after_partial;
+  size_t used;
+
+  TEST("narrow live output retains visible rows across sessions");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 10;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 4, 1, 20, 8) == SL_OK,
+              "narrow live output setup failed");
+  middle.text = "MIDDLE\n";
+  middle.sent = 0;
+  after_partial.text = "AFTER\n";
+  after_partial.sent = 0;
+  ASSERT_TRUE(sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FIRST\n", 6) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "SECOND\n", 7) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_print_above(sl, one_chunk_once_stream, &middle) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "\033[31mTHIRD", 10) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK &&
+                  sl_print_above(sl, one_chunk_once_stream, &after_partial) ==
+                      SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "FOURTH\n", 7) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "consecutive live output sessions failed");
+  used = read_live_pty_output(master_fd, terminal, sizeof(terminal));
+  ASSERT_TRUE(used > 0, "live output was not rendered");
+  vt_init(&screen, 10, 30);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(
+      vt_contains(&screen, "FIRST") && vt_contains(&screen, "SECOND") &&
+          vt_contains(&screen, "MIDDLE") && vt_contains(&screen, "THIRD") &&
+          vt_contains(&screen, "AFTER") && vt_contains(&screen, "FOURTH"),
+      "a later session erased earlier visible output");
+  ASSERT_TRUE(vt_count(&screen, "THIRDAFTER") == 0 &&
+                  vt_count(&screen, "AFTERFOURTH") == 0,
+              "a new session continued the previous partial row");
+  ASSERT_TRUE(contains_bytes(terminal, "\033[0mAFTER"),
+              "finite output inherited the previous session's style");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
 static void test_live_output_preserves_reverse_search_prompt(void) {
   struct winsize ws;
   struct vt_screen screen;
@@ -9799,7 +9863,7 @@ static void test_live_output_error_resets_terminal_style(void) {
   ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
                   contains_bytes(output, "visible") &&
                   !contains_bytes(output, "secret") &&
-                  !contains_bytes(output, "\033[0;31m"),
+                  contains_bytes(output, "\033[0mvisible"),
               "unsupported SGR changed rendered output or style");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "second stream end failed");
   sl_destroy(sl);
@@ -10163,6 +10227,11 @@ static void test_live_output_prompt_growth_preserves_history(void) {
 }
 static void test_live_output_stream_across_narrow_bounds(void) {
   TEST("live output continues one row while typing and changing narrow bounds");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_live_output_preserves_viewport_between_sessions(void) {
+  TEST("narrow live output retains visible rows across sessions");
   printf("SKIP\n");
   tests_passed++;
 }
@@ -10743,6 +10812,7 @@ int main(void) {
   test_quoted_prompt_terminal_style();
   test_quote_spacing_after_partial_invalid_write();
   test_live_output_stream_across_narrow_bounds();
+  test_live_output_preserves_viewport_between_sessions();
   test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();
   test_live_output_disables_native_scroll_after_widening();

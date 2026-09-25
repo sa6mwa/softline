@@ -34,6 +34,10 @@ int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,
 int sl_surface_complete(const sl_surface_t *surface);
 /* Drop a partial sequence after a finite print fails; keep completed style. */
 void sl_surface_reset_partial(sl_surface_t *surface);
+/* Separate the next output producer from a completed session without moving
+ * visible cells until it writes. Reset parser/style, then advance past a
+ * nonempty final row on that producer's first write. */
+void sl_surface_mark_boundary(sl_surface_t *surface);
 int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
                        int height);
 /* Called before and after a visible viewport row is scrolled away. */

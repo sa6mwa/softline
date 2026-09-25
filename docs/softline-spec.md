@@ -222,6 +222,8 @@ prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `output_stream_begin()` opens a persistent session; every later
 `output_stream_write()` forwards its byte span immediately, without waiting for
 EOF or the next prompt. `output_stream_end()` closes it without adding content.
+The visible TTY viewport survives across sessions. If one ends mid-row, the
+next output producer starts on a fresh row when it writes.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. The bounded
 viewport stores only visible cells and partial ANSI/UTF-8 state. SGR and UTF-8

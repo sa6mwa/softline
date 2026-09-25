@@ -582,7 +582,8 @@ struct sl {
   int (*watch_clear)(sl_t *self);
   /** Begin one owner-thread, renderer-agnostic live output session. Only one
    * session may be open per handle. Output occupies the bounds above the
-   * prompt; without explicit bounds the prompt is pinned to the bottom. */
+   * prompt; without explicit bounds the prompt is pinned to the bottom.
+   * Visible output from completed sessions remains in the TTY viewport. */
   int (*output_stream_begin)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
@@ -592,7 +593,8 @@ struct sl {
    * clusters longer than 128 bytes also fail without splitting the cell. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
   /** End the open session without adding a newline or finishing an external
-   * renderer document. Incomplete ANSI/UTF-8 leaves it open and returns
+   * renderer document. The next TTY output starts on a fresh row if this
+   * session ended mid-row. Incomplete ANSI/UTF-8 leaves it open and returns
    * SL_ERROR_INVALID so the caller may supply the missing bytes. */
   int (*output_stream_end)(sl_t *self);
   /** Set, replace, or clear the italic message above the status line.
@@ -879,7 +881,8 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 /** Start a persistent output session on self's editor-owner thread. The
  * caller owns its producer, wakeup, renderer, and document lifecycle. An
  * unbounded prompt is pinned to the terminal bottom while this session is
- * open. Returns SL_ERROR_INVALID if a session is already open. */
+ * open. Visible output from completed sessions remains in the TTY viewport.
+ * Returns SL_ERROR_INVALID if a session is already open. */
 int sl_output_stream_begin(sl_t *self);
 
 /** Forward length bytes immediately to the live output session. Zero length
@@ -891,7 +894,8 @@ int sl_output_stream_begin(sl_t *self);
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
 /** End the output session without adding a newline. The caller remains
- * responsible for finishing any external renderer document first. Incomplete
+ * responsible for finishing any external renderer document first. The next
+ * TTY output starts on a fresh row if this session ended mid-row. Incomplete
  * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open. */
 int sl_output_stream_end(sl_t *self);
 

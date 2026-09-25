@@ -205,6 +205,9 @@ sl->output_stream_write(sl, bytes, length);
 sl->output_stream_end(sl);
 ```
 
+Completed sessions retain their visible TTY rows. The next output starts on a
+fresh row if the previous session ended mid-row.
+
 Each write is visible before it returns, including while `next_prompt()` is
 active. Chunk boundaries add no content or document semantics; ANSI SGR and
 UTF-8 sequences may cross calls. End rejects an incomplete sequence. Softline
