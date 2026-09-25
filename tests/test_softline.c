@@ -1624,6 +1624,13 @@ static const char *vt_csi(struct vt_screen *screen, const char *p) {
     memset(screen->cells[screen->row] + screen->col, ' ',
            (size_t)(screen->cols - screen->col));
     break;
+  case 'X': {
+    int count = have_a && a > 0 ? a : 1;
+    if (count > screen->cols - screen->col)
+      count = screen->cols - screen->col;
+    memset(screen->cells[screen->row] + screen->col, ' ', (size_t)count);
+    break;
+  }
   default:
     break;
   }
@@ -10092,10 +10099,12 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "search result missing");
   result[n] = '\0';
-  close(master_fd);
   close(wake_pipe[1]);
   close(result_pipe[0]);
+  /* The child still ends its output stream after sending the result. Keep
+   * the PTY master open until that final terminal write has completed. */
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "search child wait failed");
+  close(master_fd);
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
                   strcmp(result, "alpha") == 0,
               "reverse search result changed after live output");
@@ -10730,6 +10739,9 @@ static void test_live_output_clips_clear_after_narrowing(void) {
               "narrowed output failed");
   ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
               "narrowed output missing");
+  ASSERT_TRUE(strstr(output, "\033[3X") != NULL &&
+                  strstr(output, "        ") == NULL,
+              "surface resize did not erase old cells without padding bytes");
   cursor = output;
   while (*cursor) {
     if (*cursor == ' ') {

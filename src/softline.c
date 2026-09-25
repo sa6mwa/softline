@@ -619,12 +619,15 @@ static int sl_scroll_region_up(sl_impl_t *impl, int top, int bottom, int rows) {
   return sl_reset_scroll_region(fd);
 }
 
-static int sl_write_spaces(int fd, int cols) {
-  while (cols-- > 0) {
-    if (sl_wchar(fd, ' ') != 0)
-      return -1;
-  }
-  return 0;
+static int sl_erase_chars(int fd, int cols) {
+  char seq[32];
+  int count;
+  if (cols <= 0)
+    return 0;
+  count = snprintf(seq, sizeof(seq), "\033[%dX", cols);
+  return count > 0 && count < (int)sizeof(seq)
+             ? sl_write_all(fd, seq, (size_t)count)
+             : -1;
 }
 
 static int sl_enable_bracketed_paste(sl_impl_t *impl) {
@@ -746,7 +749,7 @@ static int sl_clear_box_tail(sl_impl_t *impl, int from_col) {
     remaining = physical;
   if (remaining <= 0)
     return 0;
-  return sl_write_spaces(impl->output_fd, remaining);
+  return sl_erase_chars(impl->output_fd, remaining);
 }
 
 /* A full-width box can use the terminal's erase primitive. This avoids

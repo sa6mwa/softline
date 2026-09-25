@@ -114,9 +114,10 @@ While available, Enter dispatches a turn; while its operation is running,
 Enter queues a follow-up in Softline. While busy, Alt-Enter queues a steer
 entry or marks the newest queued entry as steer when the editor is empty. The
 example takes steers after a Markdown block boundary, then continues the
-response stream. While idle, Alt-Enter submits a draft or promotes the newest
-queued entry. Alt-E edits the newest queued draft. On completion, ordinary
-queued FIFO work is selected by the example at the turn boundary. The
+response stream. A steer that arrives after the last boundary starts the next
+simulated response. While idle, Alt-Enter submits a draft or promotes the
+newest queued entry. Alt-E edits the newest queued draft. On completion, the
+example starts the oldest remaining queue entry as the next turn. The
 example uses the status spinner only as a presentation of its application-owned
 busy state. Escape or Ctrl-C returns cancellation to the application; the C chat
 example uses it to stop the active simulated operation, retain its queue, and keep the
@@ -283,7 +284,7 @@ sl->set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL);
 sl->set_status_busy(sl, 1);
 
 /* At a response seam, inspect modes and take a STEER entry if desired.
- * At completion, return to idle and take a QUEUED entry for the next turn. */
+ * At completion, return to idle and choose the next queue entry. */
 sl->set_status_busy(sl, 0);
 ```
 

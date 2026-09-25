@@ -42,7 +42,7 @@ struct chat_state {
 };
 
 static int start_operation(struct chat_state *state);
-static int dispatch_next_queued(struct chat_state *state);
+static int dispatch_next_turn(struct chat_state *state);
 
 static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
   struct chat_state *state;
@@ -210,10 +210,11 @@ static int finish_operation(struct chat_state *state) {
       return -1;
     state->worker_pid = -1;
   }
-  if (finish_response_document(state) != 0 || deliver_steers(state, 0) != 0 ||
-      set_busy(state, 0) != 0)
+  if (finish_response_document(state) != 0 || set_busy(state, 0) != 0)
     return -1;
-  return dispatch_next_queued(state);
+  /* A steer that misses the final response seam is still a user turn. Give
+   * the oldest pending entry its own response instead of quoting it alone. */
+  return dispatch_next_turn(state);
 }
 
 static int cancel_operation(struct chat_state *state) {
@@ -340,17 +341,11 @@ static int start_operation(struct chat_state *state) {
   return 0;
 }
 
-static int dispatch_next_queued(struct chat_state *state) {
-  size_t index;
-  sl_prompt_queue_mode_t mode;
+static int dispatch_next_turn(struct chat_state *state) {
   char *line;
-  for (index = 0; index < sl_prompt_queue_count(state->sl); index++) {
-    if (sl_prompt_queue_get_mode(state->sl, index, &mode) != SL_OK)
-      return -1;
-    if (mode != SL_PROMPT_QUEUE_MODE_QUEUED)
-      continue;
+  if (sl_prompt_queue_count(state->sl) > 0) {
     line = NULL;
-    if (sl_prompt_queue_take(state->sl, index, &line) != SL_OK)
+    if (sl_prompt_queue_take(state->sl, 0, &line) != SL_OK)
       return -1;
     if (strcmp(line, "exit") == 0) {
       sl_free_string(state->sl, line);
@@ -363,7 +358,6 @@ static int dispatch_next_queued(struct chat_state *state) {
       return -1;
     }
     sl_free_string(state->sl, line);
-    break;
   }
   return 0;
 }

@@ -88,6 +88,17 @@ static int sl_surface_at(sl_surface_t *surface, int row, int col) {
   return sl_surface_write_all(surface->fd, seq, (size_t)count);
 }
 
+static int sl_surface_erase_chars(sl_surface_t *surface, int width) {
+  char seq[32];
+  int count;
+  if (width <= 0)
+    return 0;
+  count = snprintf(seq, sizeof(seq), "\033[%dX", width);
+  return count > 0 && count < (int)sizeof(seq)
+             ? sl_surface_write_all(surface->fd, seq, (size_t)count)
+             : -1;
+}
+
 static int sl_surface_sgr(sl_surface_t *surface,
                           const sl_surface_style_t *style) {
   char seq[160];
@@ -171,10 +182,7 @@ static int sl_surface_draw_cell(sl_surface_t *surface, int row, int col,
 
 static int sl_surface_clear_rect(sl_surface_t *surface, int x, int y, int width,
                                  int height) {
-  static const char blanks[] =
-      "                                                                ";
   int row;
-  int remaining;
   sl_surface_t target;
   target = *surface;
   target.x = x;
@@ -183,16 +191,9 @@ static int sl_surface_clear_rect(sl_surface_t *surface, int x, int y, int width,
   if (sl_surface_write_all(surface->fd, "\033[0m", 4) != 0)
     return -1;
   for (row = 0; row < height; row++) {
-    if (sl_surface_at(&target, row, 0) != 0)
+    if (sl_surface_at(&target, row, 0) != 0 ||
+        sl_surface_erase_chars(surface, width) != 0)
       return -1;
-    remaining = width;
-    while (remaining > 0) {
-      size_t amount;
-      amount = remaining > 64 ? 64u : (size_t)remaining;
-      if (sl_surface_write_all(surface->fd, blanks, amount) != 0)
-        return -1;
-      remaining -= (int)amount;
-    }
   }
   return 0;
 }
@@ -201,8 +202,6 @@ static int sl_surface_clear_rect(sl_surface_t *surface, int x, int y, int width,
  * rows. Clear only glyphs this surface drew when resizing it. */
 static int sl_surface_clear_occupied(sl_surface_t *surface, int width,
                                      int height) {
-  static const char blanks[] =
-      "                                                                ";
   int row;
   if (sl_surface_write_all(surface->fd, "\033[0m", 4) != 0)
     return -1;
@@ -210,7 +209,6 @@ static int sl_surface_clear_occupied(sl_surface_t *surface, int width,
     int col = 0;
     while (col < width) {
       int start;
-      int remaining;
       const sl_surface_cell_t *cell;
       cell =
           &surface->cells[(size_t)row * (size_t)surface->width + (size_t)col];
@@ -228,15 +226,9 @@ static int sl_surface_clear_occupied(sl_surface_t *surface, int width,
       } while (cell->len > 0);
       if (col > width)
         col = width;
-      if (sl_surface_at(surface, row, start) != 0)
+      if (sl_surface_at(surface, row, start) != 0 ||
+          sl_surface_erase_chars(surface, col - start) != 0)
         return -1;
-      remaining = col - start;
-      while (remaining > 0) {
-        size_t amount = remaining > 64 ? 64u : (size_t)remaining;
-        if (sl_surface_write_all(surface->fd, blanks, amount) != 0)
-          return -1;
-        remaining -= (int)amount;
-      }
     }
   }
   surface->draw_valid = 0;
