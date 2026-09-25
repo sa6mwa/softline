@@ -9626,6 +9626,85 @@ static void test_unbounded_finite_output_between_sessions(void) {
   PASS();
 }
 
+static void test_unbounded_stream_then_readline_preserves_transcript(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[8192];
+  char result[16];
+  char ready;
+  ssize_t n;
+  int status;
+
+  TEST("readline after unbounded stream preserves its final transcript row");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0 &&
+                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
+              "pty or pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    struct idle_ready_state idle;
+    char *line;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    sl = sl_create_with_config(&cfg);
+    if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+        sl_output_stream_write(sl, "FIRST", 5) != SL_OK ||
+        sl_output_stream_end(sl) != SL_OK)
+      _exit(2);
+    idle.fd = ready_pipe[1];
+    idle.ready = 0;
+    if (sl_set_idle_callback(sl, idle_signal_ready_once, &idle) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(result_pipe[1]);
+  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
+                  ready == 'R',
+              "readline did not become idle after the stream");
+  ASSERT_TRUE(read_live_pty_output(master_fd, terminal, sizeof(terminal)) > 0,
+              "stream and readline output missing");
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST") && vt_contains(&screen, "> "),
+              "readline overwrote the stream's final transcript row");
+  ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 2 && memcmp(result, "ok", 2) == 0,
+              "readline did not return submitted input");
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "readline child failed");
+  PASS();
+}
+
 static void test_live_output_preserves_reverse_search_prompt(void) {
   struct winsize ws;
   struct vt_screen screen;
@@ -10482,6 +10561,11 @@ static void test_unbounded_finite_output_between_sessions(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void test_unbounded_stream_then_readline_preserves_transcript(void) {
+  TEST("readline after unbounded stream preserves its final transcript row");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_stream_chunk_protocol(void) {
   TEST("live output preserves split ANSI and UTF-8 and validates end");
   printf("SKIP\n");
@@ -11068,6 +11152,7 @@ int main(void) {
   test_live_output_stream_across_narrow_bounds();
   test_live_output_preserves_viewport_between_sessions();
   test_unbounded_finite_output_between_sessions();
+  test_unbounded_stream_then_readline_preserves_transcript();
   test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();
   test_live_output_disables_native_scroll_after_widening();

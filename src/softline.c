@@ -4198,6 +4198,14 @@ static int sl_output_stream_end_method(sl_t *self) {
     (void)sl_show_cursor(impl);
     return SL_ERROR_IO;
   }
+  if (!impl->active_prompt && !sl_bounded_mode(impl) &&
+      isatty(impl->input_fd) && isatty(impl->output_fd) &&
+      sl_write_cursor_pos(impl->output_fd, sl_prompt_top(impl, 1),
+                          sl_box_left(impl)) != 0) {
+    sl_set_error(self, "failed to position cursor after live output");
+    (void)sl_show_cursor(impl);
+    return SL_ERROR_IO;
+  }
   if (sl_show_cursor(impl) != 0) {
     sl_set_error(self, "failed to restore cursor after live output");
     return SL_ERROR_IO;
