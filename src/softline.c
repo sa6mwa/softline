@@ -822,8 +822,8 @@ static void sl_output_surface_update_scroll_hook(sl_t *self) {
     return;
   sl_surface_set_scroll_hook(
       impl->output_surface,
-      impl->output_stream_active && sl_box_left(impl) == 0 &&
-              sl_box_top(impl) == 0 &&
+      (impl->output_stream_active || !impl->active_prompt) &&
+              sl_box_left(impl) == 0 && sl_box_top(impl) == 0 &&
               sl_box_width(impl) >= sl_terminal_columns(impl) &&
               sl_box_bottom(impl) == sl_terminal_rows(impl) - 1
           ? sl_native_history_scroll
@@ -3579,6 +3579,26 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   }
   if (!sl_bounded_mode(impl) && impl->live_scroll_region && impl->active_prompt)
     (void)sl_try_pin_scroll_region(self);
+  if (!sl_bounded_mode(impl) && impl->output_surface &&
+      isatty(impl->input_fd) && isatty(impl->output_fd)) {
+    prompt_rows = impl->rendered_rows > 0 ? impl->rendered_rows : 1;
+    prompt_top = sl_prompt_top(impl, prompt_rows);
+    if (prompt_top <= sl_box_top(impl)) {
+      sl_set_error(self, "output viewport has no space above the prompt");
+      return SL_ERROR_INVALID;
+    }
+    if (impl->active_prompt && sl_render_clear_active(self) != 0) {
+      sl_set_error(self, "failed to clear active prompt before printing");
+      return SL_ERROR_IO;
+    }
+    rc = sl_print_above_surface(self, callback, userdata, prompt_top);
+    if (impl->active_prompt &&
+        (sl_write_cursor_pos(impl->output_fd, prompt_top, sl_box_left(impl)) !=
+             0 ||
+         sl_render_apply(self, impl->active_prompt) != 0))
+      return SL_ERROR_IO;
+    return rc;
+  }
   if (sl_bounded_mode(impl)) {
     prompt_rows = impl->rendered_rows > 0 ? impl->rendered_rows : 1;
     prompt_top = sl_prompt_top(impl, prompt_rows);
@@ -3923,7 +3943,8 @@ static int sl_quoted_prompt_append_row(sl_row_t *output, const char *prefix,
                                        const char *text_style, sl_row_t *body) {
   const char *reset;
   reset = prefix_style[0] ? "\033[0m" : "";
-  if (sl_row_append(output, prefix_style, strlen(prefix_style)) != 0 ||
+  if (sl_row_append(output, reset, strlen(reset)) != 0 ||
+      sl_row_append(output, prefix_style, strlen(prefix_style)) != 0 ||
       sl_row_append(output, prefix, strlen(prefix)) != 0 ||
       sl_row_append(output, reset, strlen(reset)) != 0 ||
       sl_row_append(output, text_style, strlen(text_style)) != 0 ||

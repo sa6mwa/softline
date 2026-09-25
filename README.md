@@ -206,7 +206,8 @@ sl->output_stream_end(sl);
 ```
 
 Completed sessions retain their visible TTY rows. The next output starts on a
-fresh row if the previous session ended mid-row.
+fresh row if the previous session ended mid-row. Finite `print_above()` output
+between sessions shares that viewport.
 
 Each write is visible before it returns, including while `next_prompt()` is
 active. Chunk boundaries add no content or document semantics; ANSI SGR and

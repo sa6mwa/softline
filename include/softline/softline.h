@@ -875,7 +875,8 @@ int sl_cancel(sl_t *self);
 
 /** Write callback-produced chunks above the active prompt. Bounded prompts use
  * their output region; normal prompts clear and redraw by default, or use an
- * enabled live scroll region once they reach the terminal bottom. */
+ * enabled live scroll region once they reach the terminal bottom. After a TTY
+ * live session, finite output shares its retained viewport and byte rules. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Start a persistent output session on self's editor-owner thread. The

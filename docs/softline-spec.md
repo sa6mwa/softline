@@ -242,6 +242,10 @@ bottom. The terminal scroll region is reset on every completion, cancellation,
 error, and handle teardown. If the terminal does not answer the probe, output
 uses the compatible clear-and-redraw path.
 
+After a TTY live session, finite `print_above()` output shares the visible
+viewport with later sessions. This preserves intervening rows and applies the
+viewport's printable UTF-8 and ANSI SGR byte rules.
+
 ## Current History Behavior
 
 History is per handle.
