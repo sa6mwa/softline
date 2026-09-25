@@ -9705,6 +9705,96 @@ static void test_unbounded_stream_then_readline_preserves_transcript(void) {
   PASS();
 }
 
+static void
+test_finite_viewport_output_then_readline_preserves_transcript(void) {
+  struct winsize ws;
+  struct vt_screen screen;
+  int master_fd;
+  int slave_fd;
+  int ready_pipe[2];
+  int result_pipe[2];
+  pid_t pid;
+  char terminal[8192];
+  char result[16];
+  char ready;
+  size_t used;
+  ssize_t n;
+  int status;
+
+  TEST("readline after finite viewport output preserves its final row");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 30;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0 &&
+                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
+              "pty or pipe failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t cfg;
+    sl_t *sl;
+    struct idle_ready_state idle;
+    struct one_chunk_once middle;
+    char *line;
+    close(master_fd);
+    close(ready_pipe[0]);
+    close(result_pipe[0]);
+    sl_config_init(&cfg);
+    cfg.input_fd = slave_fd;
+    cfg.output_fd = slave_fd;
+    cfg.screen_width = 10;
+    sl = sl_create_with_config(&cfg);
+    middle.text = "MIDDLE\n";
+    middle.sent = 0;
+    if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+        sl_output_stream_write(sl, "FIRST\n", 6) != SL_OK ||
+        sl_output_stream_end(sl) != SL_OK ||
+        sl_print_above(sl, one_chunk_once_stream, &middle) != SL_OK)
+      _exit(2);
+    idle.fd = ready_pipe[1];
+    idle.ready = 0;
+    if (sl_set_idle_callback(sl, idle_signal_ready_once, &idle) != SL_OK)
+      _exit(3);
+    line = sl_readline(sl, "> ");
+    if (!line)
+      _exit(4);
+    (void)write(result_pipe[1], line, strlen(line));
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    close(slave_fd);
+    close(ready_pipe[1]);
+    close(result_pipe[1]);
+    _exit(0);
+  }
+  close(slave_fd);
+  close(ready_pipe[1]);
+  close(result_pipe[1]);
+  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
+                  ready == 'R',
+              "readline did not become idle after finite output");
+  used = read_live_pty_output(master_fd, terminal, sizeof(terminal));
+  ASSERT_TRUE(used > 0 && write(master_fd, "draft", 5) == 5,
+              "finite output or input missing");
+  used +=
+      read_live_pty_output(master_fd, terminal + used, sizeof(terminal) - used);
+  vt_init(&screen, 8, 30);
+  vt_apply(&screen, terminal);
+  ASSERT_TRUE(vt_contains(&screen, "FIRST") && vt_contains(&screen, "MIDDLE") &&
+                  vt_contains(&screen, "> draft"),
+              "readline overwrote finite viewport output");
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
+  n = read_some_with_timeout(result_pipe[0], result, sizeof(result));
+  ASSERT_TRUE(n == 5 && memcmp(result, "draft", 5) == 0,
+              "readline did not return submitted input");
+  close(master_fd);
+  close(ready_pipe[0]);
+  close(result_pipe[0]);
+  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0,
+              "finite output child failed");
+  PASS();
+}
+
 static void test_live_output_preserves_reverse_search_prompt(void) {
   struct winsize ws;
   struct vt_screen screen;
@@ -10566,6 +10656,12 @@ static void test_unbounded_stream_then_readline_preserves_transcript(void) {
   printf("SKIP\n");
   tests_passed++;
 }
+static void
+test_finite_viewport_output_then_readline_preserves_transcript(void) {
+  TEST("readline after finite viewport output preserves its final row");
+  printf("SKIP\n");
+  tests_passed++;
+}
 static void test_live_output_stream_chunk_protocol(void) {
   TEST("live output preserves split ANSI and UTF-8 and validates end");
   printf("SKIP\n");
@@ -11153,6 +11249,7 @@ int main(void) {
   test_live_output_preserves_viewport_between_sessions();
   test_unbounded_finite_output_between_sessions();
   test_unbounded_stream_then_readline_preserves_transcript();
+  test_finite_viewport_output_then_readline_preserves_transcript();
   test_live_output_preserves_reverse_search_prompt();
   test_live_output_after_readline_submit_clears_editor();
   test_live_output_disables_native_scroll_after_widening();

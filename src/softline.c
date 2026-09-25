@@ -3557,6 +3557,11 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
                           impl->rendered_top_row + impl->rendered_cursor_row,
                           sl_box_left(impl) + impl->rendered_cursor_col) != 0)
     result = SL_ERROR_IO;
+  if (!impl->active_prompt && sl_write_cursor_pos(impl->output_fd, prompt_top,
+                                                  sl_box_left(impl)) != 0) {
+    sl_set_error(self, "failed to position cursor after finite output");
+    result = SL_ERROR_IO;
+  }
   if (sl_show_cursor(impl) != 0)
     result = SL_ERROR_IO;
   return result;
