@@ -6463,6 +6463,7 @@ static void test_resize_reflows_without_keypress(void) {
   char result[256];
   char buf[512];
   struct vt_screen screen;
+  struct vt_screen before_resize;
   size_t terminal_len;
   size_t resize_offset;
   ssize_t n;
@@ -6490,6 +6491,8 @@ static void test_resize_reflows_without_keypress(void) {
     cfg.screen_width = 0;
     sl = sl_create_with_config(&cfg);
     if (!sl)
+      _exit(2);
+    if (write(slave_fd, "\033[20;1H", 7) != 7)
       _exit(2);
     line = sl->readline(sl, "p> ");
     if (!line)
@@ -6523,8 +6526,7 @@ static void test_resize_reflows_without_keypress(void) {
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     tries++;
   }
-  vt_init(&screen, 20, 40);
-  vt_apply(&screen, terminal);
+  before_resize = screen;
   ASSERT_TRUE(vt_contains(&screen, "p> hello world sentence"),
               "wide render missing");
   ws.ws_col = 16;
@@ -6543,12 +6545,50 @@ static void test_resize_reflows_without_keypress(void) {
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     tries++;
   }
-  vt_init(&screen, 20, 16);
+  n = (ssize_t)read_live_pty_output(master_fd, buf, sizeof(buf));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  screen = before_resize;
+  screen.cols = 16;
+  for (tries = 0; tries < screen.rows; tries++)
+    screen.cells[tries][screen.cols] = '\0';
   vt_apply(&screen, terminal + resize_offset);
   ASSERT_TRUE(vt_contains(&screen, "p> hello world"),
               "idle resize did not reflow before input");
   ASSERT_TRUE(vt_contains(&screen, "   sentence"),
               "idle resize continuation was not rendered before input");
+  ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\n"),
+              "idle resize advanced the terminal scrollback");
+  ASSERT_TRUE(screen.history_count == 0 &&
+                  strncmp(screen.cells[18], "p> hello world", 14) == 0 &&
+                  strncmp(screen.cells[19], "   sentence     ", 16) == 0,
+              "idle resize displaced or left stale prompt cells");
+  ws.ws_col = 40;
+  resize_offset = terminal_len;
+  ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "expand ioctl failed");
+  for (tries = 0; tries < 100; tries++) {
+    if (contains_bytes(terminal + resize_offset, "p> hello world sentence"))
+      break;
+    n = read_some_with_timeout(master_fd, buf, sizeof(buf));
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  }
+  ASSERT_TRUE(tries < 100, "idle expansion did not redraw prompt");
+  n = (ssize_t)read_live_pty_output(master_fd, buf, sizeof(buf));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  for (tries = 0; tries < screen.rows; tries++) {
+    memset(screen.cells[tries] + 16, ' ', 24);
+    screen.cells[tries][40] = '\0';
+  }
+  screen.cols = 40;
+  vt_apply(&screen, terminal + resize_offset);
+  ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\n") &&
+                  screen.history_count == 0 &&
+                  strncmp(screen.cells[18], "p> hello world sentence", 23) ==
+                      0 &&
+                  strncmp(screen.cells[19], "                ", 16) == 0,
+              "idle expansion scrolled or retained an extra prompt row");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -6560,12 +6600,6 @@ static void test_resize_reflows_without_keypress(void) {
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "hello world sentence") == 0,
               "resize result mismatch");
-  vt_init(&screen, 20, 16);
-  vt_apply(&screen, terminal + resize_offset);
-  ASSERT_TRUE(vt_contains(&screen, "p> hello world"),
-              "resized final screen first row missing");
-  ASSERT_TRUE(vt_contains(&screen, "   sentence"),
-              "resized final screen continuation row missing");
   PASS();
 }
 
@@ -7706,9 +7740,14 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   n = read_some_with_timeout(master_fd, buf, sizeof(buf));
   ASSERT_TRUE(n > 0, "resize did not reflow pinned prompt");
   append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
+  n = (ssize_t)read_live_pty_output(master_fd, buf, sizeof(buf));
+  if (n > 0)
+    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
   ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\033[1;1H\033[2K") &&
                   !contains_bytes(terminal + resize_offset, "\033[2;1H\033[2K"),
               "pinned resize cleared transcript rows");
+  ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\n"),
+              "pinned resize advanced the terminal scrollback");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "read result failed");
@@ -10844,6 +10883,104 @@ static void test_live_output_reconciles_physical_resize(void) {
   PASS();
 }
 
+struct live_resize_tail_state {
+  int master_fd;
+  int fired;
+  int failed;
+  char before_resize[8192];
+  char after_resize[8192];
+  char after_write[8192];
+};
+
+static void live_resize_tail_idle(sl_t *sl, void *userdata) {
+  struct live_resize_tail_state *state;
+  struct winsize ws;
+  state = (struct live_resize_tail_state *)userdata;
+  if (state->fired)
+    return;
+  state->fired = 1;
+  if (sl_output_stream_write(sl, "FIRST\nSECOND\nabcdefghijklmnopqr", 31) !=
+      SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  (void)read_live_pty_output(state->master_fd, state->before_resize,
+                             sizeof(state->before_resize));
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 16;
+  ws.ws_row = 8;
+  if (ioctl(state->master_fd, TIOCSWINSZ, &ws) != 0 ||
+      sl_set_bounds(sl, 0, 0, 0, 0) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  (void)read_live_pty_output(state->master_fd, state->after_resize,
+                             sizeof(state->after_resize));
+  if (sl_output_stream_write(sl, "s", 1) != SL_OK) {
+    state->failed = 1;
+    goto finish;
+  }
+  (void)read_live_pty_output(state->master_fd, state->after_write,
+                             sizeof(state->after_write));
+finish:
+  (void)sl_cancel(sl);
+}
+
+static void test_live_output_resize_continues_current_row(void) {
+  struct winsize ws;
+  struct live_resize_tail_state state;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  int row;
+  unsigned int history_before;
+  char *line;
+
+  TEST("live output width resize continues current row without scrolling");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 20;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  memset(&state, 0, sizeof(state));
+  state.master_fd = master_fd;
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_set_bounds(sl, 0, 0, 0, 0) == SL_OK &&
+                  sl_set_statusline(sl, 1, 0) == SL_OK &&
+                  sl_output_stream_begin(sl) == SL_OK &&
+                  sl_set_idle_callback(sl, live_resize_tail_idle, &state) ==
+                      SL_OK,
+              "live resize setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line == NULL && state.fired && !state.failed &&
+                  !contains_bytes(state.after_resize, "\n") &&
+                  !contains_bytes(state.after_write, "\n"),
+              "resizing an unfinished output row inserted a terminal line");
+  vt_init(&screen, 8, 20);
+  vt_apply(&screen, state.before_resize);
+  history_before = screen.history_count;
+  screen.cols = 16;
+  for (row = 0; row < screen.rows; row++)
+    screen.cells[row][screen.cols] = '\0';
+  vt_apply(&screen, state.after_resize);
+  vt_apply(&screen, state.after_write);
+  ASSERT_TRUE(screen.history_count == history_before &&
+                  vt_count(&screen, "FIRST") == 1 &&
+                  vt_count(&screen, "SECOND") == 1 &&
+                  vt_contains(&screen, "abcdefghijklmnop") &&
+                  vt_contains(&screen, "qrs"),
+              "resized output lost cells or advanced scrollback");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+}
+
 static void test_live_output_clears_promptless_scroll_row(void) {
   struct winsize ws;
   struct vt_screen screen;
@@ -11622,6 +11759,12 @@ static void test_live_output_reconciles_physical_resize(void) {
   tests_passed++;
 }
 
+static void test_live_output_resize_continues_current_row(void) {
+  TEST("live output width resize continues current row without scrolling");
+  printf("SKIP\n");
+  tests_passed++;
+}
+
 static void test_live_output_clears_promptless_scroll_row(void) {
   TEST("promptless native scroll clears stale bottom-row text");
   printf("SKIP\n");
@@ -11805,6 +11948,7 @@ int main(void) {
   test_live_output_error_resets_terminal_style();
   test_live_output_stream_changes_unbounded_width();
   test_live_output_reconciles_physical_resize();
+  test_live_output_resize_continues_current_row();
   test_live_output_clears_promptless_scroll_row();
   test_live_output_rejects_unattached_combining_mark();
   test_live_output_rejects_fixed_bounds_after_shrink();

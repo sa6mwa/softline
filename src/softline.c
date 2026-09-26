@@ -3212,6 +3212,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   int rc;
   int retained_top;
   int retained_height;
+  int resizing_width;
+  int width;
   impl = sl_impl(self);
   if (!impl)
     return -1;
@@ -3227,16 +3229,25 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
       sl_set_error(self, "failed to write bounded terminal output");
     return rc;
   }
+  width = sl_terminal_width(impl);
+  resizing_width = impl->rendered_rows > 0 && impl->rendered_width != width;
   if (sl_render_visible_equal(impl, &render, 0, render.count, render.cursor_row,
                               render.cursor_col, -1)) {
+    impl->rendered_width = width;
     sl_render_free(&render);
     return 0;
   }
   fd = impl->output_fd;
   rc = 0;
   old_rows = impl->rendered_rows;
-  if (old_rows > 0 && (sl_wchar(fd, '\r') != 0 ||
-                       sl_write_cursor_up(fd, impl->rendered_cursor_row) != 0))
+  /* A terminal may already reflow the old prompt on width change. Make room
+   * above its cursor and step through rows without advancing scrollback. */
+  if (old_rows > 0 &&
+      (sl_wchar(fd, '\r') != 0 ||
+       sl_write_cursor_up(fd, impl->rendered_cursor_row +
+                                  (resizing_width && render.count > old_rows
+                                       ? render.count - old_rows
+                                       : 0)) != 0))
     rc = -1;
   max_rows = old_rows > render.count ? old_rows : render.count;
   for (i = 0; rc == 0 && i < max_rows; i++) {
@@ -3248,12 +3259,15 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
         rc = -1;
       if (rc == 0 &&
           (i >= render.count ||
+           (resizing_width && i < render.count &&
+            render.rows[i].cols < width) ||
            (i < old_rows && impl->rendered_cols[i] > render.rows[i].cols)) &&
           sl_wstr(fd, "\033[0K") != 0)
         rc = -1;
     }
     if (rc == 0 && i + 1 < max_rows) {
-      if (sl_write_line_break(impl) != 0)
+      if ((resizing_width ? sl_write_cursor_down(fd, 1)
+                          : sl_write_line_break(impl)) != 0)
         rc = -1;
     }
   }
@@ -3269,6 +3283,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
     sl_set_error(self, "out of memory while storing terminal render state");
     rc = -1;
   }
+  if (rc == 0)
+    impl->rendered_width = width;
   if (rc == 0 && impl->output_surface && isatty(impl->input_fd) &&
       isatty(impl->output_fd)) {
     retained_top = sl_prompt_top(impl, render.count);
@@ -3279,7 +3295,8 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
     /* The ordinary editor has already advanced the main terminal while
      * growing. A shorter editor stays at its old top row. */
     if (sl_output_surface_reconcile(self, retained_top,
-                                    render.count > old_rows) != 0) {
+                                    render.count > old_rows &&
+                                        !resizing_width) != 0) {
       sl_set_error(self, "failed to resize retained output surface");
       rc = -1;
     }

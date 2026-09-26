@@ -699,6 +699,82 @@ void sl_surface_geometry(const sl_surface_t *surface, int *x, int *y,
     *terminal_rows = surface->terminal_rows;
 }
 
+/* A narrower viewport can turn the unfinished bottom row into several rows.
+ * Keep its visible cells and write position together so the next byte does
+ * not manufacture a scroll merely because the old column was clipped. */
+static void sl_surface_reflow_current_row(const sl_surface_t *surface,
+                                          sl_surface_cell_t *cells, int width,
+                                          int height, int *new_col) {
+  int source_col;
+  int segment_col;
+  int segments;
+  int segment;
+  int first_row;
+  int shift;
+  if (surface->height <= 0 || height <= 0 || surface->col <= width)
+    return;
+  segment_col = 0;
+  segments = 1;
+  for (source_col = 0; source_col < surface->col && source_col < surface->width;
+       source_col++) {
+    const sl_surface_cell_t *cell;
+    int cell_width;
+    cell =
+        &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
+                        (size_t)source_col];
+    if (cell->len == 0)
+      continue;
+    cell_width = cell->width <= width ? cell->width : 1;
+    if (segment_col + cell_width > width) {
+      segments++;
+      segment_col = 0;
+    }
+    segment_col += cell_width;
+  }
+  if (segments <= 1)
+    return;
+  *new_col = segment_col;
+  shift = segments - 1;
+  if (shift < height)
+    memmove(cells, cells + (size_t)shift * (size_t)width,
+            (size_t)(height - shift) * (size_t)width * sizeof(*cells));
+  first_row = height - segments;
+  if (first_row < 0)
+    first_row = 0;
+  memset(cells + (size_t)first_row * (size_t)width, 0,
+         (size_t)(height - first_row) * (size_t)width * sizeof(*cells));
+  segment_col = 0;
+  segment = 0;
+  for (source_col = 0; source_col < surface->col && source_col < surface->width;
+       source_col++) {
+    const sl_surface_cell_t *cell;
+    int cell_width;
+    int target_row;
+    cell =
+        &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
+                        (size_t)source_col];
+    if (cell->len == 0)
+      continue;
+    cell_width = cell->width <= width ? cell->width : 1;
+    if (segment_col + cell_width > width) {
+      segment++;
+      segment_col = 0;
+    }
+    target_row = height - segments + segment;
+    if (target_row >= 0 && target_row < height) {
+      sl_surface_cell_t *target;
+      target = &cells[(size_t)target_row * (size_t)width + (size_t)segment_col];
+      *target = *cell;
+      if (cell->width > width) {
+        target->bytes[0] = ' ';
+        target->len = 1;
+        target->width = 1;
+      }
+    }
+    segment_col += cell_width;
+  }
+}
+
 int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
                       int height, int after_native_scroll) {
   sl_surface_cell_t *new_cells;
@@ -709,6 +785,7 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   int row;
   int clear_width;
   int clear_height;
+  int new_col;
   if (!surface || x < 0 || y < 0 || width < 1 || height < 0)
     return -1;
   if (sl_surface_matches(surface, x, y, width, height))
@@ -739,6 +816,9 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
       }
     }
   }
+  new_col = surface->col > width ? width : surface->col;
+  if (count > 0)
+    sl_surface_reflow_current_row(surface, new_cells, width, height, &new_col);
   if (ioctl(surface->fd, TIOCGWINSZ, &terminal) != 0) {
     free(new_cells);
     return -1;
@@ -765,8 +845,7 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   surface->width = width;
   surface->height = height;
   surface->terminal_rows = (int)terminal.ws_row;
-  if (surface->col > width)
-    surface->col = width;
+  surface->col = new_col;
   surface->draw_valid = 0;
   return after_native_scroll ? 0 : sl_surface_repaint(surface, 0);
 }
