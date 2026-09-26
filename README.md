@@ -5,7 +5,7 @@ It is meant for shells, chat prompts, REPLs, and other readline-like
 interfaces where Enter submits and `Ctrl-J` inserts a newline.
 
 The project is a handle-oriented editor core. It is usable for simple
-multiline prompts and bounded bottom-prompt interfaces, but it is not a
+multiline prompts and terminal-native chat, but it is not a
 complete GNU Readline replacement and does not provide Readline API or ABI
 compatibility. The current-state and gap spec lives in `docs/softline-spec.md`.
 
@@ -150,7 +150,7 @@ expose that as `THEME=...`. The simple and chat examples default to `default`;
 `make run-chat` supplies Gruvbox. Both chat examples use one persistent output
 session with the native terminal layout by default.
 
-## Terminal-native chat and bounded prompts
+## Terminal-native chat
 
 A full-terminal output session starts at the current terminal cursor. The
 prompt appears directly below initial output, follows later output downward,
@@ -166,10 +166,7 @@ resize redraws the prompt within its reservation and leaves transcript reflow
 to the terminal. Ending chat clears the prompt, restores the full scroll
 region, shows the cursor, and returns below the output.
 
-Use `sl_set_bounds()` for an explicit narrow, offset, or shorter terminal box.
-Those boxes keep a bounded cell viewport and clip output to their columns;
-they cannot use a full-width VT scroll region without changing outside cells.
-Zero bounds select dynamic terminal dimensions and the native output layout.
+Chat uses the full terminal width; rectangular viewports are unsupported.
 Softline never enters or leaves the alternate screen itself.
 
 For ordinary finite `print_above()` calls without a persistent output
@@ -192,7 +189,7 @@ sl->output_stream_end(sl);
 
 Completed sessions retain their visible TTY rows. The next output starts on a
 fresh row if the previous session ended mid-row. Finite `print_above()` output
-between sessions shares that viewport.
+between sessions continues in ordinary terminal scrollback.
 
 Each write is visible before it returns, including while `next_prompt()` is
 active. Chunk boundaries add no content or document semantics; ANSI SGR and
@@ -206,10 +203,9 @@ one blank row on each side. The prefix and its colour can be configured
 independently with `sl_set_quoted_prompt_prefix()` and
 `sl_set_quoted_prompt_style()`; NULL restores the theme defaults. The Lua
 facade exposes matching methods. The composer
-updates Softline geometry (`set_bounds` or `set_screen_width`) and
-renderer width on the owner thread when the terminal changes; neither library
-owns the other's margins. Softline immediately reconciles the transcript and
-editable prompt within its new bounds. A watched FD is the usual way to
+updates its external renderer width on the owner thread when the terminal
+changes. Softline detects terminal dimensions and redraws only the prompt;
+it never replays the transcript. A watched FD is the usual way to
 deliver producer events without blocking editor input. See the
 [composition contract](docs/softline-mdf-stream-design.md) for limits and
 failure semantics.

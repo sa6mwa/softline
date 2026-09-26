@@ -260,30 +260,11 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
     config->output_fd = (int)luaL_checkinteger(L, -1);
   lua_pop(L, 1);
 
-  lua_getfield(L, index, "screen_x");
-  if (!lua_isnil(L, -1))
-    config->screen_x = (int)luaL_checkinteger(L, -1);
-  lua_pop(L, 1);
-
-  lua_getfield(L, index, "screen_y");
-  if (!lua_isnil(L, -1))
-    config->screen_y = (int)luaL_checkinteger(L, -1);
-  lua_pop(L, 1);
-
   lua_getfield(L, index, "screen_width");
   if (!lua_isnil(L, -1))
     config->screen_width = (int)luaL_checkinteger(L, -1);
   lua_pop(L, 1);
 
-  lua_getfield(L, index, "screen_height");
-  if (!lua_isnil(L, -1))
-    config->screen_height = (int)luaL_checkinteger(L, -1);
-  lua_pop(L, 1);
-
-  lua_getfield(L, index, "bounded");
-  if (!lua_isnil(L, -1))
-    config->bounded = lua_toboolean(L, -1);
-  lua_pop(L, 1);
   lua_getfield(L, index, "live_scroll_region");
   if (!lua_isnil(L, -1))
     config->live_scroll_region = lua_toboolean(L, -1);
@@ -485,16 +466,6 @@ static int softline_lua_history_load(lua_State *L) {
   handle = softline_lua_check(L, 1);
   return softline_lua_status(
       L, sl_history_load(handle->sl, luaL_checkstring(L, 2)));
-}
-
-static int softline_lua_set_bounds(lua_State *L) {
-  softline_lua_handle_t *handle;
-  handle = softline_lua_check(L, 1);
-  return softline_lua_status(L, sl_set_bounds(handle->sl,
-                                              (int)luaL_checkinteger(L, 2),
-                                              (int)luaL_checkinteger(L, 3),
-                                              (int)luaL_checkinteger(L, 4),
-                                              (int)luaL_checkinteger(L, 5)));
 }
 
 static int softline_lua_set_screen_width(lua_State *L) {
@@ -1235,7 +1206,6 @@ static const luaL_Reg softline_lua_methods[] = {
     {"history_set_max_len", softline_lua_history_set_max_len},
     {"history_save", softline_lua_history_save},
     {"history_load", softline_lua_history_load},
-    {"set_bounds", softline_lua_set_bounds},
     {"set_screen_width", softline_lua_set_screen_width},
     {"set_live_scroll_region", softline_lua_set_live_scroll_region},
     {"set_prompt_queue", softline_lua_set_prompt_queue},

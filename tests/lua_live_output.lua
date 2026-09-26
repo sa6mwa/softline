@@ -1,7 +1,6 @@
 local softline = require("softline")
 
 local sl = assert(softline.new())
-assert(sl:set_bounds(2, 1, 30, 6))
 assert(sl:output_stream_begin())
 
 -- The producer owns its process and fd. Its one-byte events are consumed on
@@ -21,7 +20,6 @@ watch = assert(sl:watch_add(producer,
         assert(sl:set_quoted_prompt_style(nil))
         assert(sl:set_quoted_prompt_prefix(nil))
       elseif byte == "B" then
-        assert(sl:set_bounds(4, 1, 24, 6))
         assert(sl:set_screen_width(24))
         assert(sl:output_stream_write(" second"))
       elseif byte == nil then

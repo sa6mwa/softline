@@ -8,7 +8,7 @@ where `Enter` submits the current buffer and `Ctrl-J` inserts a literal newline.
 
 softline is not currently a complete GNU Readline replacement. It is a
 handle-owned editor core with enough terminal rendering, history, key binding,
-and bounded prompt support to build multiline readline-like interfaces without
+and native chat support to build multiline readline-like interfaces without
 global editor state.
 
 ## Current Public Shape
@@ -19,7 +19,7 @@ The public API is the installed header `include/softline/softline.h`.
   pointers plus an opaque implementation pointer.
 - `sl_create()` creates a handle with default configuration.
 - `sl_create_with_config()` accepts `sl_config_t` for input/output fds, prompt
-  bounds, live scroll regions, queueing, themes, status lines, history length,
+  wrapping width, live scroll regions, queueing, themes, status lines, history length,
   and line length.
 - `sl_config_init()` sets the documented defaults:
   - input fd: `STDIN_FILENO`
@@ -100,22 +100,15 @@ Current rendering guarantees:
 - Render failures during active editing return as errors, not as submitted
   input.
 
-softline has two prompt modes:
+Ordinary readline participates in terminal scrollback. Persistent chat uses
+native full-width output and a prompt that follows output until it reaches
+the bottom. Rectangular viewports and bounds configuration are unsupported.
+Softline never implies a retained full transcript.
 
-- Normal mode: the prompt participates in the terminal's ordinary scrollback.
-- Bounded mode: `set_bounds()` pins the prompt to a rectangular region. A
-  `0,0,0,0` bounds configuration, or `sl_config_t` with `bounded = 1` and zero
-  bounds, means a dynamic full-terminal bottom prompt.
-
-Bounded mode works in either the normal or alternate screen. Both finite
-`print_above()` and persistent output sessions render above the editable
-prompt, including in offset/narrow rectangles. Geometry setters may run during
-an active edit or stream and immediately reconcile the visible output and
-prompt. Neither mode implies a retained full transcript.
 
 ### Prompt Queue
 
-Interactive normal and bounded prompts can opt into a prompt queue through
+Interactive ordinary readline and native chat prompts can opt into a prompt queue through
 configuration or `set_prompt_queue()`. Non-TTY input remains a plain line
 reader, so queueing does not alter it. Tab moves a nonempty active editor into
 the queue and clears the editor; Tab on an empty editor does nothing. Alt-E
@@ -133,7 +126,7 @@ While an editor is active, the renderer owns a queue panel above it. The panel
 shows a total count plus a capped oldest-first preview list, and supports all
 built-in prompt themes, including the ANSI-only `default` theme. The selected
 prompt theme also styles the active editor and optional status line in both
-normal and bounded modes. The panel is not built with `print_above()` because
+ordinary readline and native chat sessions. The panel is not built with `print_above()` because
 queue entries must be removable and must reflow with the active editor.
 Application key bindings retain precedence over the Tab and Alt-E defaults.
 
@@ -227,14 +220,12 @@ bytes pass through unchanged in a VT scroll region above the prompt. Native
 transcript text is never cached, padded, rewrapped, cleared, or replayed.
 Prompt wrapping and resize page within reserved rows once parked, without
 moving transcript text. Ending chat clears the prompt, restores the full
-scroll region and visible cursor, and returns below output. Explicit shorter,
-narrow, or offset boxes retain only their visible cells.
+scroll region and visible cursor, and returns below output.
 An owner-thread watch callback can feed an external renderer and forward each
-sink emission directly while editing and queueing continue. The bounded
-viewport stores only visible cells and partial ANSI/UTF-8 state. SGR and UTF-8
-sequences can cross writes; ending with an incomplete sequence fails and keeps
-the session open. Narrow and offset boxes never use a full-row VT scroll
-region, so their output does not touch outside columns.
+sink emission directly while editing and queueing continue. Softline stores
+only cursor geometry and bounded partial ANSI/UTF-8 state.
+SGR and UTF-8 sequences can cross writes; ending with an incomplete sequence
+fails and keeps the session open.
 
 For finite `print_above()` output on an unbounded prompt, rendering uses
 normal clear-and-redraw scrollback by default. Set `live_scroll_region = 1` in
@@ -247,9 +238,9 @@ bottom. The terminal scroll region is reset on every completion, cancellation,
 error, and handle teardown. If the terminal does not answer the probe, output
 uses the compatible clear-and-redraw path.
 
-After a TTY live session, finite `print_above()` output shares the visible
-viewport with later sessions. This preserves intervening rows and applies the
-viewport's printable UTF-8 and ANSI SGR byte rules.
+After a TTY live session, finite `print_above()` output continues in native
+terminal scrollback. Producer output accepts printable UTF-8 and ANSI SGR
+bytes without cell reserialization.
 
 ## Current History Behavior
 
@@ -332,7 +323,7 @@ Missing:
 - multiline-aware completion display
 - async completion lifecycle
 - completion cancellation
-- completion tests across wrapped prompts and bounded mode
+- completion tests across wrapped prompts and native chat
 
 Likely API shape:
 
@@ -359,7 +350,7 @@ user accepts them explicitly.
 Supported:
 
 - reverse incremental search
-- search prompt rendering inside multiline/bounded mode
+- search prompt rendering inside multiline and native chat sessions
 - accept/cancel search state
 
 Missing:
@@ -429,8 +420,8 @@ single-owner rendering rule.
 ### Output And Transcript Management
 
 `print_above()` and a persistent output session handle chunked output above the
-active prompt. Softline retains a bounded visible viewport, not a full
-transcript model.
+active prompt. Softline retains cursor geometry and bounded parser state.
+The terminal owns transcript cells and scrollback.
 
 Missing:
 
@@ -529,7 +520,7 @@ facade, not a reason to weaken the core handle model.
 
 1. Completion provider API
 
-   Add synchronous completion with replacement spans and bounded-mode tests.
+   Add synchronous completion with replacement spans and native chat tests.
 
 2. Unicode width policy
 

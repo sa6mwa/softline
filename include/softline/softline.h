@@ -385,16 +385,9 @@ typedef struct sl_config {
   int input_fd;
   /** Output file descriptor; default is STDOUT_FILENO. */
   int output_fd;
-  /** Left edge of bounded prompt area, in terminal cells. */
-  int screen_x;
-  /** Top edge of bounded prompt area, in terminal cells. */
-  int screen_y;
-  /** Width of bounded prompt area; zero means dynamic terminal width. */
+  /** Editable line wrapping width; zero follows the terminal. Native chat
+   * always uses the physical terminal width. */
   int screen_width;
-  /** Height of bounded prompt area; zero means dynamic bottom-prompt mode. */
-  int screen_height;
-  /** Non-zero enables bounded prompt rendering. */
-  int bounded;
   /** Non-zero lets an unbounded active prompt pin itself at the terminal
    * bottom and stream output through a temporary scroll region. Disabled by
    * default, preserving normal clear-and-redraw scrollback behavior. */
@@ -433,8 +426,7 @@ typedef struct sl_config {
  *
  * Method fields are initialized by sl_create() and sl_create_with_config() and
  * mirror the sl_* wrapper functions. The impl field is private implementation
- * state and is exposed only to keep the receiver shell ABI stable; callers must
- * not read, write, copy, or free it.
+ * state; callers must not read, write, copy, or free it.
  */
 struct sl {
   /**
@@ -460,11 +452,8 @@ struct sl {
   /** Load history entries from a history file into this handle's current
    * history. */
   int (*history_load)(sl_t *self, const char *filename);
-  /** Configure prompt/output geometry; width or height zero follows terminal
-   * size. Safe during an active output session or edit; redraws immediately. */
-  int (*set_bounds)(sl_t *self, int x, int y, int width, int height);
-  /** Set wrapping width, including during an active bounded edit or stream;
-   * zero resumes terminal-width probing. Redraws immediately. */
+  /** Set ordinary readline wrapping width; zero follows the terminal.
+   * Native chat always uses physical terminal width. Redraws immediately. */
   int (*set_screen_width)(sl_t *self, int width);
   /** Enable or disable bottom-pinned scroll-region output for unbounded
    * prompts. The setting applies to subsequent print_above() calls. */
@@ -581,17 +570,17 @@ struct sl {
   /** Remove every registered watch from this handle. */
   int (*watch_clear)(sl_t *self);
   /** Begin one owner-thread, renderer-agnostic live output session. Only one
-   * session may be open per handle. Output occupies the bounds above the
+   * session may be open per handle. Output occupies terminal rows above the
    * prompt. A full-terminal prompt follows output from the current cursor
    * and parks at the bottom. Native output bytes are passed through unchanged;
-   * explicit narrow or offset boxes retain only their visible cells. */
+   * terminal wrapping and scrollback are preserved. */
   int (*output_stream_begin)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
    * document boundary. bytes may be NULL only when
    * length is zero. Input must be printable UTF-8, LF/CR/Tab, or ANSI SGR;
-   * unsupported terminal controls fail with SL_ERROR_INVALID. TTY viewport
-   * clusters longer than 128 bytes also fail without splitting the cell. */
+   * unsupported terminal controls fail with SL_ERROR_INVALID. Malformed UTF-8
+   * also fails. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
   /** End the open session without adding a newline or finishing an external
    * renderer document. The next TTY output starts on a fresh row if this
@@ -629,7 +618,8 @@ struct sl {
 };
 
 /**
- * Fill config with default file descriptors, bounds, history, and line limits.
+ * Fill config with default file descriptors, wrapping width, history, and line
+ * limits.
  *
  * Passing NULL is ignored. Defaults are stdin/stdout file descriptors,
  * unbounded rendering, 100 history entries, and a 4096-byte editable line.
@@ -703,12 +693,8 @@ int sl_history_save(sl_t *self, const char *filename);
  * entries if capped. */
 int sl_history_load(sl_t *self, const char *filename);
 
-/** Set prompt/output bounds at x,y,width,height. Zero width or height tracks
- * terminal geometry. Safe mid-edit or mid-stream; redraws immediately. */
-int sl_set_bounds(sl_t *self, int x, int y, int width, int height);
-
-/** Set prompt/output wrapping width, including mid-edit or mid-stream. Zero
- * returns to terminal-width probing; redraws immediately. */
+/** Set ordinary readline wrapping width; zero follows the terminal.
+ * Native chat always uses physical terminal width. Redraws immediately. */
 int sl_set_screen_width(sl_t *self, int width);
 
 /** Enable or disable bottom-pinned scroll-region output for unbounded prompts.
@@ -874,15 +860,15 @@ int sl_submit(sl_t *self);
 /** Cancel the active readline() operation from inside a callback. */
 int sl_cancel(sl_t *self);
 
-/** Write callback-produced chunks above the active prompt. Bounded prompts use
- * their output region; normal prompts clear and redraw by default, or use an
- * enabled live scroll region once they reach the terminal bottom. After a TTY
- * live session, finite output shares its retained viewport and byte rules. */
+/** Write callback-produced chunks above the active prompt. Ordinary readline
+ * clears and redraws by default, or uses an
+ * enabled live scroll region once they reach the terminal bottom.
+ * Finite output cannot overlap an open live session. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Start a persistent output session on self's editor-owner thread. The
- * caller owns its producer, wakeup, renderer, and document lifecycle. An
- * full-terminal prompt follows output from the current cursor and parks at
+ * caller owns its producer, wakeup, renderer, and document lifecycle. A
+ * native prompt follows output from the current cursor and parks at
  * the bottom. Prompt wrapping pages within its reserved rows once parked,
  * without moving transcript text. Native transcript reflow belongs to the
  * terminal; Softline never clears or replays it.
@@ -892,9 +878,8 @@ int sl_output_stream_begin(sl_t *self);
 /** Forward length bytes immediately to the live output session. Zero length
  * is a no-op; no newline or response boundary is implied. Valid bytes are
  * printable UTF-8, LF/CR/Tab, and ANSI SGR; malformed or unsupported control
- * sequences or TTY viewport clusters longer than 128 bytes report
- * SL_ERROR_INVALID. A failed write may have emitted a
- * prefix, while a successful write has emitted all complete input units. */
+ * sequences report SL_ERROR_INVALID. A failed write may have emitted a prefix,
+ * while a successful write has emitted all complete input units. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
 /** End the output session. The caller remains

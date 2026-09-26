@@ -26,11 +26,7 @@ config table mirrors `sl_config_t`:
 
 - `input_fd`
 - `output_fd`
-- `screen_x`
-- `screen_y`
 - `screen_width`
-- `screen_height`
-- `bounded`
 - `live_scroll_region`
 - `prompt_queue`
 - `prompt_queue_max_entries`
@@ -68,10 +64,8 @@ live scroll regions, status lines, and spinners are off; the theme is
   clears and disables history.
 - `sl:history_save(filename)` writes history with owner-only permissions.
 - `sl:history_load(filename)` loads history entries into the handle.
-- `sl:set_bounds(x, y, width, height)` sets prompt and output geometry; zero
-  width or height follows terminal bounds.
-- `sl:set_screen_width(width)` sets prompt and output wrapping width; `0`
-  returns to terminal-width probing.
+- `sl:set_screen_width(width)` sets ordinary readline wrapping width; `0`
+  returns to terminal-width probing. Native chat uses physical terminal width.
 - `sl:set_live_scroll_region(enabled)` opts an unbounded prompt into
   bottom-pinned scroll-region output after it reaches the terminal bottom.
   It is disabled by default.
@@ -171,15 +165,16 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:bind_key(key, callback)` binds a decoded key to a callback. The callback
   receives the key code and returns a `softline.KEY_ACTION_*` value, or `nil`
   to mark the key handled. Passing `nil` as the callback removes the binding.
-- `sl:print_above(source)` prints above the active prompt. Bounded prompts use
-  their output region, including narrow/offset bounds; normal prompts clear
+- `sl:print_above(source)` prints above the active prompt. Ordinary prompts clear
   and redraw by default, or use an
   enabled live scroll region after reaching the terminal bottom. `source` may
   be a string, an array-like table of string chunks, or a function that
   receives a 1-based chunk index and returns the next string or `nil`.
 - `sl:output_stream_begin()` opens one persistent output session above the
-  prompt. With no explicit bounds, the prompt is pinned to the terminal bottom
-  while the session is open. The application owns its renderer, wakeup, and
+  prompt. It starts at the existing terminal cursor, follows output downward,
+  and parks at the bottom. Producer bytes pass through unchanged; transcript
+  reflow belongs to the terminal. Rectangular viewports are unsupported.
+  The application owns its renderer, wakeup, and
   response/document lifecycle; Softline has no Markdown dependency.
 - `sl:output_stream_write(bytes)` sends a Lua byte string immediately into the
   open session. Calls from a watch callback can alternate with prompt typing.
@@ -202,10 +197,8 @@ live scroll regions, status lines, and spinners are off; the theme is
   editor. Output-session and quoted-prompt methods run on the Lua/editor owner
   thread; foreign producers should notify a watched descriptor instead of
   calling Lua.
-- `sl:set_bounds(x, y, width, height)` and `sl:set_screen_width(width)` may be
-  called while a session is streaming or a prompt is being edited. Softline
-  immediately redraws its visible output and prompt inside the new geometry;
-  the application updates its external renderer width separately.
+- Physical resize redraws the prompt without replaying transcript output.
+  The application updates its external renderer width separately.
 - `sl:last_readline_status()` returns the last readline status code.
 - `sl:last_error()` returns the last handle-owned diagnostic string, or `nil`.
 - `sl:close()` destroys the handle.

@@ -77,10 +77,7 @@ assert(sl:output_stream_end())
 assert(not sl:output_stream_write("after end"))
 sl:close()
 
-local bounded = assert(softline.new({ bounded = true, screen_height = 1 }))
-local ok = bounded:print_above("should not fit\n")
-assert_eq(ok, nil, "bounded config should affect print_above")
-bounded:close()
+assert_eq(sl.set_bounds, nil, "boxed viewport method removed")
 
 local status = assert(softline.new({
   prompt_queue = true,

@@ -82,11 +82,7 @@ typedef struct sl_watch {
 typedef struct sl_impl {
   int input_fd;
   int output_fd;
-  int screen_x;
-  int screen_y;
   int screen_width;
-  int screen_height;
-  int bounded;
   int live_scroll_region;
   int auto_scroll_pinned;
   int output_stream_active;
@@ -98,8 +94,6 @@ typedef struct sl_impl {
   sl_surface_t *output_surface;
   int cursor_position_probe;
   int probed_cursor_col;
-  int dynamic_width;
-  int dynamic_height;
   char *buf;
   size_t len;
   size_t cap;

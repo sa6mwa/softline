@@ -41,9 +41,7 @@ session does not finish a Markdown document. The application calls its
 renderer’s document lifecycle itself. Each successful write accepts its entire
 span; errors are reported on the handle and never silently discard accepted
 data. A zero-length write is a no-op. Writes after end and overlapping begins
-fail. Existing finite `sl_print_above()` remains available; narrow or offset
-bounds use the same bounded viewport while full-width finite output may retain
-VT scrolling. It cannot be interleaved with an open live session.
+fail. Existing finite `sl_print_above()` remains available in native terminal scrollback. It cannot be interleaved with an open live session.
 
 The quoted-prompt helper writes submitted text literally into an open session
 between external renderer segments. It wraps at the current output width,
@@ -68,34 +66,20 @@ before parking; after parking, wrapping and queue/status changes page within
 the reservation without moving transcript rows. Ending chat clears the prompt,
 restores the full scroll region, shows the cursor, and returns below output.
 
-Every valid explicit bound, including a shorter, offset, or narrower rectangle,
-is supported. These boxes retain only visible cells and partial parser state,
-clip output to the viewport, and repaint their own cells when resized. Neither
-path buffers the producer's complete response.
-
-The application may call `sl_set_bounds()` and `sl_set_screen_width()` (or
-their receiver and Lua equivalents) while a session is open or while the
-prompt is being edited. The next render reconciles the prompt and transcript
-inside the new bounds without clearing unrelated terminal cells. Input bytes,
-cursor position in the editable buffer, queue contents, pending output, and
-already emitted transcript order are preserved. Dynamic dimensions continue
-to use `TIOCGWINSZ`; Softline does not take ownership of `SIGWINCH`. An
-application wanting synchronous resize coordination can register its own
-signal/self-pipe or other event source, then update Softline and its renderer
-in the same owner-thread callback. Softline may redraw its prompt on the first
-setter call, but no Markdown is fed between the two geometry updates.
-
-The bounded output layout may not rely on a VT scroll region limited to the
-terminal's full width: standard scroll margins are vertical and would alter
-cells outside a narrow chat box. Softline's visible-viewport state and
-repaint path must keep those outside cells untouched. The memory bound is
-proportional to visible terminal cells and bounded parser state, not response
-length. The stream must continue to accept one-byte fragments indefinitely.
+Rectangular viewports and bounds configuration are unsupported. Native chat
+always uses the physical terminal width. `sl_set_screen_width()` controls
+ordinary readline wrapping; it cannot rewrap producer output in a chat session.
+Softline detects dynamic dimensions through `TIOCGWINSZ` without taking
+ownership of `SIGWINCH`. An application may register its own signal/self-pipe
+or other event source to update its external renderer before feeding more data.
+Input bytes, editor cursor position, queue contents and pending parser state
+survive resize. Memory use is independent of transcript length. The stream
+accepts one-byte fragments indefinitely.
 
 ## Compatibility and public surfaces
 
-New C receiver pointers append after the existing receiver tail; old method
-offsets remain unchanged. Equivalent free functions validate NULL handles.
+The C and Lua surfaces expose a single native chat layout. ABI 0 is retained
+while Softline and its sole consumer evolve together. Equivalent free functions validate NULL handles.
 Public declarations document ownership, thread context, lifecycle, errors,
 and chunk semantics for clangd. Lua methods document the same contract in the
 Lua reference and adjacent public binding comments. Lua cannot invoke its VM
@@ -109,9 +93,8 @@ events. The core and Lua libraries do not import libmdf.
   queue edits remain responsive between writes.
 - Identical output in one-byte and larger chunks yields the same visible
   screen, including styled ANSI and UTF-8 split across write boundaries.
-- Prompt growth, queue/status rows, offset/narrow bounds, mid-prompt
-  `set_bounds()`, `set_screen_width()`, and terminal resize retain transcript
-  order and never modify cells outside the configured rectangle.
+- Prompt growth, queue/status rows, width setters, and terminal resize retain
+  transcript order without replaying or clearing producer output.
 - Sink/write failure and session teardown leave a usable editor and report
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
 - The C chat example composes a libmdf incremental renderer with the generic
