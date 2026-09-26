@@ -137,7 +137,7 @@ static int show_goodbye(struct chat_state *state) {
     return 0;
   if (sl_set_status_spinner(state->sl, 0) != SL_OK ||
       sl_set_status_busy(state->sl, 0) != SL_OK ||
-      sl_set_status_message(state->sl, "Good bye.") != SL_OK)
+      sl_set_status_message(state->sl, "Goodbye.") != SL_OK)
     return -1;
   return 0;
 }

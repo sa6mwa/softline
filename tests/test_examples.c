@@ -227,7 +227,7 @@ static void term_check_frame(struct terminal *t) {
   size_t k;
   int message_row;
   for (message_row = 0; message_row + 1 < t->rows; message_row++)
-    if (strstr(t->cells[message_row], "! Good bye.") &&
+    if (strstr(t->cells[message_row], "! Goodbye.") &&
         strstr(t->cells[message_row + 1], "streaming demo"))
       t->farewell_above_status = 1;
   for (k = 0; k < sizeof(t->guard) / sizeof(t->guard[0]); k++) {
@@ -705,7 +705,7 @@ static void test_chat_queued_quit(const char *path) {
               "earlier queued turn was skipped");
   ASSERT_TRUE(wait_screen(&t, "A longer answer", 6000) == 0,
               "earlier queued turn did not receive a response");
-  ASSERT_TRUE(wait_raw(&t, "Good bye.", 8000) == 0 && t.farewell_above_status,
+  ASSERT_TRUE(wait_raw(&t, "Goodbye.", 8000) == 0 && t.farewell_above_status,
               "exit farewell did not render");
   ASSERT_TRUE(finish(pid, fd) == 0, "queued /quit did not terminate chat");
   PASS();
@@ -735,7 +735,7 @@ static void test_chat_promoted_quit(const char *path) {
   ASSERT_TRUE(wait_raw_since(&t, cancel_mark, "\033[?2004h", 3000) == 0,
               "editor did not reopen after cancellation");
   ASSERT_TRUE(write(fd, "\033\r", 2) == 2, "promotion failed");
-  ASSERT_TRUE(wait_raw(&t, "Good bye.", 3000) == 0 && t.farewell_above_status,
+  ASSERT_TRUE(wait_raw(&t, "Goodbye.", 3000) == 0 && t.farewell_above_status,
               "exit farewell did not render");
   ASSERT_TRUE(finish(pid, fd) == 0, "promoted /quit did not terminate chat");
   PASS();
@@ -757,7 +757,7 @@ static void test_chat_steered_quit(const char *path) {
   ASSERT_TRUE(write(fd, "/quit\033\r", 7) == 7, "steer failed");
   ASSERT_TRUE(wait_screen(&t, "S 1. /quit", 3000) == 0,
               "quit was not marked as steer");
-  ASSERT_TRUE(wait_raw(&t, "Good bye.", 3000) == 0 && t.farewell_above_status,
+  ASSERT_TRUE(wait_raw(&t, "Goodbye.", 3000) == 0 && t.farewell_above_status,
               "exit farewell did not render");
   ASSERT_TRUE(finish(pid, fd) == 0, "steered /quit did not terminate chat");
   PASS();
@@ -1231,7 +1231,7 @@ static void test_chat_eof_goodbye(const char *path, int busy) {
                 "worker did not start");
   }
   ASSERT_TRUE(write(fd, "\004", 1) == 1, "EOF failed");
-  ASSERT_TRUE(wait_raw(&t, "Good bye.", 3000) == 0 && t.farewell_above_status,
+  ASSERT_TRUE(wait_raw(&t, "Goodbye.", 3000) == 0 && t.farewell_above_status,
               "EOF farewell missing");
   ASSERT_TRUE(finish(pid, fd) == 0, "EOF did not terminate chat");
   PASS();
