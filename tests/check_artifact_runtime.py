@@ -59,9 +59,9 @@ with tempfile.TemporaryDirectory(prefix="artifact-guard-test.", dir=root / "buil
     verify(build("-Wl,--dynamic-linker,/opt/private/ld.so"), "non-system ELF interpreter")
     verify(build(f"-Wl,--dynamic-linker,{tools['sysroot']}/lib/ld-linux-x86-64.so.2"),
            "forbidden local/cache path")
-    verify(build("-shared", "-Wl,-soname,libsoftline.so.1"), member="sdk/lib/libsoftline.so.1")
+    verify(build("-shared", "-Wl,-soname,libsoftline.so.0"), member="sdk/lib/libsoftline.so.0")
     verify(build("-shared", "-Wl,-soname,libsoftline.so.9"),
-           "incorrect softline SONAME", "sdk/lib/libsoftline.so.1")
+           "incorrect softline SONAME", "sdk/lib/libsoftline.so.0")
     verify(build("-shared", "-Wl,-soname,/opt/private/libfoo.so"),
            "forbidden ELF dependency/SONAME", "sdk/lib/module")
     verify(build(f"-Wl,-rpath,{tools['sysroot']}/lib"), "forbidden local/cache path")

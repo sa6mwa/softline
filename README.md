@@ -418,13 +418,10 @@ make lua-test
 make prerelease
 ```
 
-Every project-owned C target is compiled as C89 with POSIX terminal APIs. Shared builds use
-the separate CMake `SOFTLINE_ABI_VERSION`, currently `1`, for SONAME/SOVERSION.
-That ABI version is bumped only for shared-library ABI breaks, not for every
-project release-version bump. The v0.3.0 receiver-shell architecture is
-withdrawn as an architectural miss and is not a supported shared-library
-upgrade baseline; the current event-driven architecture replaces it while
-retaining ABI version `1`.
+Every project-owned C target is compiled as C89 with POSIX terminal APIs.
+Shared builds use `SOFTLINE_ABI_VERSION=0` for SONAME/SOVERSION during current
+development. Softline and its sole consumer change together; API changes in
+this development phase do not establish a new ABI compatibility commitment.
 
 Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
 builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin

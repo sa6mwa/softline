@@ -87,7 +87,7 @@ class Guard:
             if not re.fullmatch(r"/(?:lib|lib64)/(?:ld-linux[^/]*\.so\.[0-9]+|ld-musl-[^/]+\.so\.1)", loader):
                 raise ValueError(f"{name}: non-system ELF interpreter {loader}")
         if Path(name).name.startswith("libsoftline.so"):
-            abi = os.environ.get("SOFTLINE_ABI_VERSION", "1")
+            abi = os.environ.get("SOFTLINE_ABI_VERSION", "0")
             if re.findall(r"\(SONAME\).*?\[(.*?)\]", metadata) != [f"libsoftline.so.{abi}"]:
                 raise ValueError(f"{name}: missing or incorrect softline SONAME")
 
