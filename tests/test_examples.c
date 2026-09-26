@@ -692,6 +692,8 @@ static void test_chat_queued_quit(const char *path) {
               "earlier queued turn was skipped");
   ASSERT_TRUE(wait_screen(&t, "A longer answer", 6000) == 0,
               "earlier queued turn did not receive a response");
+  ASSERT_TRUE(wait_raw(&t, "Good bye.", 8000) == 0,
+              "exit farewell did not render");
   ASSERT_TRUE(finish(pid, fd) == 0, "queued /quit did not terminate chat");
   PASS();
 }
@@ -720,6 +722,8 @@ static void test_chat_promoted_quit(const char *path) {
   ASSERT_TRUE(wait_raw_since(&t, cancel_mark, "\033[?2004h", 3000) == 0,
               "editor did not reopen after cancellation");
   ASSERT_TRUE(write(fd, "\033\r", 2) == 2, "promotion failed");
+  ASSERT_TRUE(wait_raw(&t, "Good bye.", 3000) == 0,
+              "exit farewell did not render");
   ASSERT_TRUE(finish(pid, fd) == 0, "promoted /quit did not terminate chat");
   PASS();
 }
@@ -740,6 +744,8 @@ static void test_chat_steered_quit(const char *path) {
   ASSERT_TRUE(write(fd, "/quit\033\r", 7) == 7, "steer failed");
   ASSERT_TRUE(wait_screen(&t, "S 1. /quit", 3000) == 0,
               "quit was not marked as steer");
+  ASSERT_TRUE(wait_raw(&t, "Good bye.", 3000) == 0,
+              "exit farewell did not render");
   ASSERT_TRUE(finish(pid, fd) == 0, "steered /quit did not terminate chat");
   PASS();
 }
@@ -1169,6 +1175,7 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   if (!reaped)
     ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "exit wait failed");
   close(fd);
+  ASSERT_TRUE(strstr(t.raw, "Good bye.") != NULL, "exit farewell missing");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "chat exit failed");
   ASSERT_TRUE(t.cursor_visible && t.scroll_top == 0 && t.scroll_bottom == 23 &&
@@ -1176,6 +1183,28 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
                   !term_contains(&t, "streaming demo") &&
                   !term_contains(&t, "> /quit"),
               "exit did not clear the prompt and return below output");
+  PASS();
+}
+
+static void test_chat_eof_goodbye(const char *path, int busy) {
+  int fd;
+  pid_t pid;
+  struct terminal t;
+  TEST(busy ? "chat renders farewell before EOF cancels a worker"
+            : "chat renders farewell before idle EOF exits");
+  pid = spawn(path, &fd, 80, 14);
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 80, 14);
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0,
+              "editor missing");
+  if (busy) {
+    ASSERT_TRUE(write(fd, "hello\r", 6) == 6, "send failed");
+    ASSERT_TRUE(wait_screen(&t, "Thinking...", 3000) == 0,
+                "worker did not start");
+  }
+  ASSERT_TRUE(write(fd, "\004", 1) == 1, "EOF failed");
+  ASSERT_TRUE(wait_raw(&t, "Good bye.", 3000) == 0, "EOF farewell missing");
+  ASSERT_TRUE(finish(pid, fd) == 0, "EOF did not terminate chat");
   PASS();
 }
 
@@ -1645,6 +1674,8 @@ int main(int argc, char **argv) {
   }
   test_chat_native_lifecycle(argv[2], 4);
   test_chat_native_lifecycle(argv[2], 23);
+  test_chat_eof_goodbye(argv[2], 0);
+  test_chat_eof_goodbye(argv[2], 1);
   test_simple(argv[1]);
   test_chat_live_queue(argv[2]);
   test_chat_long_unbroken_editor_word(argv[2]);
