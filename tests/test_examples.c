@@ -1294,7 +1294,18 @@ static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
   (void)event;
   if (read(producer->input, &byte, 1) != 1)
     return SL_ERROR_IO;
-  if (byte == '#')
+  if (byte >= 1 && byte <= 4) {
+    static const char *const queued[] = {"first", "second", "third", "fourth"};
+    result = sl_prompt_queue_append(sl, queued[byte - 1]);
+    if (result == SL_OK)
+      result = sl_set_status_message(sl, "notice");
+  } else if (byte == '-') {
+    char *line = NULL;
+    result = sl_prompt_queue_take(sl, 0, &line);
+    sl_free_string(sl, line);
+    if (result == SL_OK)
+      result = sl_set_status_message(sl, "notice");
+  } else if (byte == '#')
     result = sl_set_status_message(sl, "notice");
   else if (byte == '@') {
     static const char span[] =
@@ -1495,9 +1506,122 @@ static void test_prompt_frames(sl_prompt_theme_t theme) {
   PASS();
 }
 
+static void
+test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
+  struct terminal t;
+  struct winsize ws;
+  struct frame_producer producer;
+  int fd, slave, commands[2], ack[2], i;
+  int transcript_rows;
+  unsigned int scrolls;
+  char transcript[MAX_ROWS][MAX_COLS + 1];
+  pid_t pid;
+  TEST(
+      theme == SL_PROMPT_THEME_PLAIN
+          ? "queue appears after native output fills the plain scroll region"
+          : "queue appears after native output fills the styled scroll region");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_row = 14;
+  ws.ws_col = 40;
+  ASSERT_TRUE(openpty(&fd, &slave, NULL, NULL, &ws) == 0 &&
+                  pipe(commands) == 0 && pipe(ack) == 0,
+              "PTY setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t config;
+    sl_t *sl;
+    sl_watch_id_t watch;
+    char *line;
+    const char *elements[] = {"fixture"};
+    close(fd);
+    close(commands[1]);
+    close(ack[0]);
+    sl_config_init(&config);
+    config.input_fd = config.output_fd = slave;
+    config.prompt_theme = theme;
+    config.prompt_queue = 1;
+    config.statusline = 1;
+    sl = sl_create_with_config(&config);
+    producer.input = commands[0];
+    producer.ack = ack[1];
+    if (!sl || sl_set_prompt_queue(sl, 1, 4, 3) != SL_OK ||
+        sl_set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) !=
+            SL_OK ||
+        sl_set_status_elements(sl, elements, 1) != SL_OK ||
+        sl_set_status_message(sl, "notice") != SL_OK ||
+        sl_output_stream_begin(sl) != SL_OK ||
+        sl_watch_add(sl, commands[0], SL_WATCH_READ, frame_producer_ready,
+                     &producer, &watch) != SL_OK)
+      _exit(2);
+    line = sl_readline(sl, "> ");
+    if (!line || strcmp(line, "draft\nmore\nlast") != 0)
+      _exit(3);
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    _exit(0);
+  }
+  close(slave);
+  close(commands[0]);
+  close(ack[1]);
+  term_init(&t, fd, 40, 14);
+  ASSERT_TRUE(wait_screen(&t, "> ", 3000) == 0, "initial prompt missing");
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '@') == 0,
+              "output did not fill its region");
+  ASSERT_TRUE(t.saved_row == t.scroll_bottom && term_contains(&t, "third"),
+              "fixture did not park the producer at its bottom margin");
+  transcript_rows = t.scroll_bottom + 1;
+  memcpy(transcript, t.cells, sizeof(transcript));
+  scrolls = t.scrolls;
+  for (i = 1; i <= 4; i++) {
+    ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], (char)i) == 0,
+                "enqueue did not render");
+    ASSERT_TRUE(term_contains(&t, "Q 1. first"), "first queue entry hidden");
+    if (i >= 2)
+      ASSERT_TRUE(term_contains(&t, "Q 2. second"),
+                  "second queue entry hidden");
+    if (i >= 3)
+      ASSERT_TRUE(term_contains(&t, "Q 3. third"), "third queue entry hidden");
+    if (i == 4)
+      ASSERT_TRUE(term_contains(&t, "... 1 more"), "queue overflow hidden");
+  }
+  ASSERT_TRUE(write(fd, "draft\nmore\nlast", 15) == 15, "draft input failed");
+  ASSERT_TRUE(wait_screen(&t, "last", 3000) == 0, "editor did not page");
+  ASSERT_TRUE(
+      term_contains(&t, "Q 1. first") && term_contains(&t, "Q 2. second") &&
+          term_contains(&t, "Q 3. third") && term_contains(&t, "... 1 more"),
+      "multiline draft displaced the queue panel");
+  ASSERT_TRUE(term_contains(&t, "fixture") && term_contains(&t, "notice"),
+              "queue displaced status rows");
+  ASSERT_TRUE(t.scroll_bottom + 1 == transcript_rows && t.scrolls == scrolls,
+              "queue or draft growth moved the transcript");
+  for (i = 0; i < transcript_rows; i++)
+    ASSERT_TRUE(memcmp(t.cells[i], transcript[i], (size_t)t.cols) == 0,
+                "queue update changed transcript cells");
+  t.guard[0] = "Q 1. first";
+  t.guard[1] = "Q 2. second";
+  t.guard[2] = "Q 3. third";
+  t.guard[3] = "... 1 more";
+  t.guard[4] = "last";
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], 'x') == 0 &&
+                  !t.frame_failure,
+              "live output erased queued previews");
+  memset(t.guard, 0, sizeof(t.guard));
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '-') == 0 &&
+                  term_contains(&t, "Q 1. second") &&
+                  !term_contains(&t, "... 1 more"),
+              "dequeue did not update the preview");
+  ASSERT_TRUE(write(fd, "\r", 1) == 1 && finish(pid, fd) == 0, "child failed");
+  close(commands[1]);
+  close(ack[0]);
+  PASS();
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   if (argc == 2 && strcmp(argv[1], "frames") == 0) {
+    test_queue_after_output_fills_prompt_region(SL_PROMPT_THEME_PLAIN);
+    test_queue_after_output_fills_prompt_region(SL_PROMPT_THEME_DEFAULT);
     test_prompt_frames(SL_PROMPT_THEME_PLAIN);
     test_prompt_frames(SL_PROMPT_THEME_DEFAULT);
     return tests_passed == tests_run ? 0 : 1;

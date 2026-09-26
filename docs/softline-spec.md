@@ -209,6 +209,11 @@ eight callbacks before it gives terminal input another chance to run.
 
 ### Streaming Output Above Prompt
 
+Native chat reserves the configured queue-preview capacity, including its
+overflow row, before producer output begins. Queue updates use that space
+without moving transcript cells. Wrapped editor input pages within its
+remaining space; queue and status rows stay visible whenever they fit.
+
 `print_above()` accepts a chunk callback and writes all chunks above the active
 prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `SL_OK` with length `0` to finish.
