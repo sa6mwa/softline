@@ -209,10 +209,13 @@ eight callbacks before it gives terminal input another chance to run.
 
 ### Streaming Output Above Prompt
 
-Native chat reserves the configured queue-preview capacity, including its
-overflow row, before producer output begins. Queue updates use that space
-without moving transcript cells. Wrapped editor input pages within its
-remaining space; queue and status rows stay visible whenever they fit.
+Native chat sizes the prompt from its current rendered frame. Empty queue
+slots and absent status messages reserve no rows. Adding or removing queue,
+status, or editor rows adjusts the output margin immediately. Growth scrolls
+existing output cells only by the rows needed to fit; shrink clears former
+prompt cells and returns their rows to output without moving transcript cells.
+The editor pages only when the frame exceeds the physical terminal capacity;
+queue and status rows stay visible whenever they fit.
 
 `print_above()` accepts a chunk callback and writes all chunks above the active
 prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
@@ -225,9 +228,8 @@ the editable prompt is anchored at the bottom from its first frame. Producer
 bytes pass through unchanged in a VT scroll region above the prompt. Native
 transcript text is never cached, padded, rewrapped, cleared, or replayed.
 Prompt updates compare the previous frame and patch only changed cells; output
-feeds preserve unchanged prompt cells and restore the editor cursor. The prompt
-reservation may grow into unused space above it. Once output fills that space,
-prompt wrapping pages within the reservation without moving transcript text.
+feeds preserve unchanged prompt cells and restore the editor cursor. The
+scroll region ends immediately above the current prompt frame.
 Resize updates only prompt cells and preserves both cursor positions. Ending
 chat clears the prompt, restores the full scroll region and visible cursor,
 and returns below output.

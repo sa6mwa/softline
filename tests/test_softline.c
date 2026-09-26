@@ -9304,7 +9304,7 @@ static void test_live_output_prompt_growth_preserves_history(void) {
   int tries;
   int status;
 
-  TEST("parked prompt growth preserves transcript positions");
+  TEST("prompt growth scrolls only occupied output rows");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 20;
   ws.ws_row = 8;
@@ -9343,9 +9343,8 @@ static void test_live_output_prompt_growth_preserves_history(void) {
   for (tries = 0; tries < 100; tries++) {
     vt_init(&screen, 8, 20);
     vt_apply(&screen, output);
-    if (vt_contains(&screen, "ONE") && vt_contains(&screen, "TWO") &&
-        vt_contains(&screen, "THREE") && vt_contains(&screen, "SEVEN") &&
-        vt_contains(&screen, "> "))
+    if (vt_contains(&screen, "TWO") && vt_contains(&screen, "THREE") &&
+        vt_contains(&screen, "SEVEN") && vt_contains(&screen, "> "))
       break;
     amount = read_some_with_timeout_ms(master_fd, chunk, sizeof(chunk), 50);
     if (amount <= 0)
@@ -9354,16 +9353,17 @@ static void test_live_output_prompt_growth_preserves_history(void) {
                 "prompt growth output exceeded test buffer");
     append_terminal_bytes(output, &used, sizeof(output), chunk, amount);
   }
-  if (!vt_contains(&screen, "ONE") || !vt_contains(&screen, "TWO") ||
-      !vt_contains(&screen, "THREE") || !vt_contains(&screen, "SEVEN"))
+  if (!vt_contains(&screen, "TWO") || !vt_contains(&screen, "THREE") ||
+      !vt_contains(&screen, "SEVEN"))
     vt_dump(&screen);
   ASSERT_TRUE(screen.history_count == 0 &&
-                  strncmp(screen.cells[0], "ONE", 3) == 0 &&
-                  strncmp(screen.cells[1], "TWO", 3) == 0 &&
-                  strncmp(screen.cells[2], "THREE", 5) == 0 &&
-                  strncmp(screen.cells[6], "SEVEN", 5) == 0 &&
+                  strncmp(screen.cells[0], "TWO", 3) == 0 &&
+                  strncmp(screen.cells[1], "THREE", 5) == 0 &&
+                  strncmp(screen.cells[2], "FOUR", 4) == 0 &&
+                  strncmp(screen.cells[5], "SEVEN", 5) == 0 &&
+                  strncmp(screen.cells[6], "+", 1) == 0 &&
                   strncmp(screen.cells[7], "> ", 2) == 0,
-              "parked prompt growth moved transcript rows");
+              "prompt growth did not preserve surviving transcript cells");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
                   WEXITSTATUS(status) == 0,

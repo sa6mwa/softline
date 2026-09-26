@@ -57,17 +57,18 @@ features are exposed through the C receiver/free functions and Lua methods.
 The output session and editor prompt have one serial terminal owner. A
 full-terminal transcript begins at the existing terminal cursor. The editable
 prompt is anchored at the bottom from its first frame. The VT scroll region
-ends above the reserved prompt rows. Native producer bytes
+ends immediately above the current prompt frame. Native producer bytes
 are written unchanged, with only bounded partial ANSI/UTF-8 parser state and
 an output cursor retained. Softline never rewraps, pads, clears, or replays
 native transcript text. Terminal resize leaves transcript reflow to the
 terminal and updates only the prompt. A cached previous prompt frame allows
 patches of only changed cells; native feeds preserve unchanged prompt cells
-and restore the editor cursor. The reservation can grow into free rows above
-the prompt; once output fills that space, wrapping and queue/status changes
-page within the reservation without moving transcript rows. Ending chat clears
-the prompt, restores the full scroll region, shows the cursor, and returns below
-output.
+and restore the editor cursor. The output margin follows the current rendered
+prompt height, with no empty queue slots or absent status-message rows. Growth
+scrolls existing output cells only enough to fit; shrink returns freed rows
+without moving transcript cells. The editor pages only at physical capacity.
+Ending chat clears the prompt, restores the full scroll region, shows the
+cursor, and returns below output.
 
 Rectangular viewports and bounds configuration are unsupported. Native chat
 always uses the physical terminal width. `sl_set_screen_width()` controls

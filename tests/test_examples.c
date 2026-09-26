@@ -37,7 +37,7 @@ struct terminal {
   unsigned int seen;
   char cells[MAX_ROWS][MAX_COLS + 1];
   char raw[RAW_CAP];
-  unsigned int scrolls;
+  unsigned int scrolls, region_scrolls;
   char history[128][MAX_COLS + 1];
 };
 
@@ -84,6 +84,7 @@ static void term_init(struct terminal *t, int fd, int cols, int rows) {
 
 static void term_scroll(struct terminal *t) {
   int row;
+  t->region_scrolls++;
   if (t->scroll_top == 0 && t->scroll_bottom == t->rows - 1) {
     memcpy(t->history[t->scrolls % 128u], t->cells[0], (size_t)t->cols + 1);
     t->scrolls++;
@@ -558,6 +559,7 @@ static void test_chat_live_queue(const char *path) {
   int fd;
   pid_t pid;
   struct terminal t;
+  struct timespec deadline;
   TEST("chat streams Markdown while editing and dispatches FIFO");
   pid = spawn(path, &fd, 80, 14);
   ASSERT_TRUE(pid > 0, "spawn failed");
@@ -609,6 +611,11 @@ static void test_chat_live_queue(const char *path) {
               "queued turn did not start next operation");
   ASSERT_TRUE(wait_screen(&t, "+ streaming demo", 10000) == 0,
               "queued turn did not finish");
+  deadline = deadline_after(2000);
+  while (before_deadline(&deadline) &&
+         (t.row != t.rows - 1 || t.col != 2 || !t.cursor_visible))
+    if (term_read(&t) < 0)
+      break;
   ASSERT_TRUE(t.scroll_top == 0 && t.scroll_bottom < t.rows - 1 &&
                   t.row > t.scroll_bottom && strstr(t.raw, "\033[2J") == NULL,
               "stream did not keep its scroll region above the prompt");
@@ -1055,6 +1062,7 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   int fd;
   int status;
   int protected_rows;
+  unsigned int region_scrolls;
   int tries;
   int turn;
   int cycle;
@@ -1093,6 +1101,7 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   ASSERT_TRUE(t.row == 23, "prompt did not park at the bottom after output");
   protected_rows = t.scroll_bottom + 1;
   memcpy(transcript, t.cells, sizeof(transcript));
+  region_scrolls = t.region_scrolls;
   mark = t.raw_len;
   ASSERT_TRUE(write(fd, draft, strlen(draft)) == (ssize_t)strlen(draft),
               "draft input failed");
@@ -1102,10 +1111,12 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
         strstr(t.cells[23], "stabcdefghijklmnopqrst"))
       break;
   }
-  ASSERT_TRUE(tries < 100 &&
-                  memcmp(transcript, t.cells,
-                         (size_t)protected_rows * sizeof(t.cells[0])) == 0,
-              "wrapping the prompt moved or overwrote transcript rows");
+  ASSERT_TRUE(tries < 100 && t.scroll_bottom + 1 == protected_rows - 1,
+              "wrapping did not reserve exactly one additional editor row");
+  for (row = 0; row <= t.scroll_bottom; row++)
+    ASSERT_TRUE(memcmp(transcript[row + t.region_scrolls - region_scrolls],
+                       t.cells[row], (size_t)t.cols) == 0,
+                "wrapping overwrote surviving transcript cells");
   for (cycle = 0; cycle < 4; cycle++) {
     int cols;
     int status_rows;
@@ -1113,6 +1124,9 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
     memset(&ws, 0, sizeof(ws));
     ws.ws_col = (unsigned short)cols;
     ws.ws_row = 24;
+    protected_rows = t.scroll_bottom + 1;
+    memcpy(transcript, t.cells, sizeof(transcript));
+    region_scrolls = t.region_scrolls;
     mark = t.raw_len;
     t.cols = cols;
     if (t.col >= cols)
@@ -1135,27 +1149,34 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
                     strstr(t.raw + mark, "A short answer") == NULL &&
                     strstr(t.raw + mark, "Next step") == NULL,
                 "idle resize scrolled or replayed transcript text");
-    for (row = 0; row < protected_rows; row++) {
-      if (memcmp(transcript[row], t.cells[row], (size_t)cols) != 0) {
+    for (row = 0;
+         row <= t.scroll_bottom &&
+         row + (int)(t.region_scrolls - region_scrolls) < protected_rows;
+         row++) {
+      if (memcmp(transcript[row + t.region_scrolls - region_scrolls],
+                 t.cells[row], (size_t)cols) != 0) {
         fprintf(stderr, "cycle %d row %d before: |%s| after: |%s|\n", cycle,
                 row, transcript[row], t.cells[row]);
         term_dump(&t);
         FAIL("width resize overwrote a transcript row");
       }
     }
-    ASSERT_TRUE(t.row == 23 && t.scroll_bottom == protected_rows - 1,
-                "width resize moved the parked prompt or its scroll boundary");
+    ASSERT_TRUE(t.row == 23 && t.scroll_bottom < 23,
+                "width resize moved the parked prompt");
     status_rows = 0;
-    for (row = protected_rows; row < t.rows; row++)
+    for (row = t.scroll_bottom + 1; row < t.rows; row++)
       if (strstr(t.cells[row], "streaming demo"))
         status_rows++;
     ASSERT_TRUE(status_rows <= 1,
                 "width resize left a duplicate status row above the prompt");
   }
+  protected_rows = t.scroll_bottom + 1;
+  memcpy(transcript, t.cells, sizeof(transcript));
+  region_scrolls = t.region_scrolls;
   ASSERT_TRUE(write(fd, "\025", 1) == 1, "clear draft failed");
   for (tries = 0; tries < 100 && t.col != 2; tries++)
     ASSERT_TRUE(term_read(&t) >= 0, "draft clear render failed");
-  ASSERT_TRUE(t.row == 23 && t.col == 2 &&
+  ASSERT_TRUE(t.row == 23 && t.col == 2 && t.region_scrolls == region_scrolls &&
                   memcmp(transcript, t.cells,
                          (size_t)protected_rows * sizeof(t.cells[0])) == 0,
               "unwrapping the prompt moved transcript rows");
@@ -1336,6 +1357,8 @@ static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
       result = sl_set_status_message(sl, "notice");
   } else if (byte == '#')
     result = sl_set_status_message(sl, "notice");
+  else if (byte == '!')
+    result = sl_set_status_message(sl, NULL);
   else if (byte == '@') {
     static const char span[] =
         "wrapped source text fills this row completely\n"
@@ -1460,7 +1483,9 @@ static void test_prompt_frames(sl_prompt_theme_t theme) {
     size_t mark;
     if (step > 0 && step % (int)(sizeof(source) - 1) == 0) {
       int cycle = step / (int)(sizeof(source) - 1);
-      int output_row, output_col, row, transcript_rows = t.scroll_bottom + 1;
+      int output_row, output_col, row, shift,
+          transcript_rows = t.scroll_bottom + 1;
+      unsigned int scrolls;
       char transcript[MAX_ROWS][MAX_COLS + 1];
       ws.ws_col = cycle % 2 ? 30 : 40;
       ws.ws_row = cycle % 3 == 0 ? 18 : cycle % 3 == 1 ? 28 : 24;
@@ -1473,6 +1498,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme) {
       memcpy(transcript, t.cells, sizeof(transcript));
       output_row = t.saved_row;
       output_col = t.saved_col;
+      scrolls = t.region_scrolls;
       /* Layout changes may reflow the prompt; feed guards start after that
        * frame is settled. No transcript replay is allowed during resize. */
       memset(t.guard, 0, sizeof(t.guard));
@@ -1480,12 +1506,15 @@ static void test_prompt_frames(sl_prompt_theme_t theme) {
                   "resize did not finish");
       ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
                   "resize displaced the editor cursor");
+      shift = (int)(t.region_scrolls - scrolls);
       if (output_row > t.scroll_bottom)
         output_row = t.scroll_bottom;
       ASSERT_TRUE(t.saved_row == output_row && t.saved_col == output_col,
                   "resize moved the producer cursor away from its output");
-      for (row = 0; row < transcript_rows && row <= t.scroll_bottom; row++) {
-        if (memcmp(t.cells[row], transcript[row], (size_t)t.cols) != 0) {
+      for (row = 0; row + shift < transcript_rows && row <= t.scroll_bottom;
+           row++) {
+        if (memcmp(t.cells[row], transcript[row + shift], (size_t)t.cols) !=
+            0) {
           fprintf(stderr, "cycle %d row %d: before |%s| after |%s|\n", cycle,
                   row, transcript[row], t.cells[row]);
           FAIL("prompt resize changed transcript cells");
@@ -1543,6 +1572,7 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
   int fd, slave, commands[2], ack[2], i;
   int transcript_rows;
   unsigned int scrolls;
+  size_t mark;
   char transcript[MAX_ROWS][MAX_COLS + 1];
   pid_t pid;
   TEST(
@@ -1578,13 +1608,12 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
         sl_set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) !=
             SL_OK ||
         sl_set_status_elements(sl, elements, 1) != SL_OK ||
-        sl_set_status_message(sl, "notice") != SL_OK ||
         sl_output_stream_begin(sl) != SL_OK ||
         sl_watch_add(sl, commands[0], SL_WATCH_READ, frame_producer_ready,
                      &producer, &watch) != SL_OK)
       _exit(2);
     line = sl_readline(sl, "> ");
-    if (!line || strcmp(line, "draft\nmore\nlast") != 0)
+    if (!line || strcmp(line, "done") != 0)
       _exit(3);
     sl_free_string(sl, line);
     sl_destroy(sl);
@@ -1595,16 +1624,34 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
   close(ack[1]);
   term_init(&t, fd, 40, 14);
   ASSERT_TRUE(wait_screen(&t, "> ", 3000) == 0, "initial prompt missing");
+  ASSERT_TRUE(t.scroll_bottom == 11 && strstr(t.cells[12], "fixture"),
+              "empty queue or status message reserved unused rows");
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], 'p') == 0 &&
+                  frame_exchange(&t, commands[1], ack[0], 1) == 0 &&
+                  t.scroll_bottom == 9 && t.region_scrolls == 0 &&
+                  t.cells[0][0] == 'p' && t.saved_row == 0 && t.saved_col == 1,
+              "prompt growth scrolled output despite available space");
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '-') == 0 &&
+                  frame_exchange(&t, commands[1], ack[0], '!') == 0 &&
+                  t.scroll_bottom == 11 && t.region_scrolls == 0 &&
+                  t.cells[0][0] == 'p',
+              "sparse prompt shrink moved output or retained unused rows");
   ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '@') == 0,
               "output did not fill its region");
   ASSERT_TRUE(t.saved_row == t.scroll_bottom && term_contains(&t, "third"),
               "fixture did not park the producer at its bottom margin");
   transcript_rows = t.scroll_bottom + 1;
   memcpy(transcript, t.cells, sizeof(transcript));
-  scrolls = t.scrolls;
+  scrolls = t.region_scrolls;
+  mark = t.raw_len;
   for (i = 1; i <= 4; i++) {
     ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], (char)i) == 0,
                 "enqueue did not render");
+    ASSERT_TRUE(t.scroll_bottom == 10 - i &&
+                    t.region_scrolls == scrolls + (unsigned int)i + 1,
+                "queue growth did not use exactly its rendered rows");
+    ASSERT_TRUE(t.saved_row == t.scroll_bottom && t.saved_col == 5,
+                "queue growth lost the producer cursor");
     ASSERT_TRUE(term_contains(&t, "Q 1. first"), "first queue entry hidden");
     if (i >= 2)
       ASSERT_TRUE(term_contains(&t, "Q 2. second"),
@@ -1615,18 +1662,20 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
       ASSERT_TRUE(term_contains(&t, "... 1 more"), "queue overflow hidden");
   }
   ASSERT_TRUE(write(fd, "draft\nmore\nlast", 15) == 15, "draft input failed");
-  ASSERT_TRUE(wait_screen(&t, "last", 3000) == 0, "editor did not page");
+  ASSERT_TRUE(wait_screen(&t, "last", 3000) == 0, "multiline editor missing");
   ASSERT_TRUE(
       term_contains(&t, "Q 1. first") && term_contains(&t, "Q 2. second") &&
           term_contains(&t, "Q 3. third") && term_contains(&t, "... 1 more"),
       "multiline draft displaced the queue panel");
   ASSERT_TRUE(term_contains(&t, "fixture") && term_contains(&t, "notice"),
               "queue displaced status rows");
-  ASSERT_TRUE(t.scroll_bottom + 1 == transcript_rows && t.scrolls == scrolls,
-              "queue or draft growth moved the transcript");
-  for (i = 0; i < transcript_rows; i++)
-    ASSERT_TRUE(memcmp(t.cells[i], transcript[i], (size_t)t.cols) == 0,
-                "queue update changed transcript cells");
+  ASSERT_TRUE(t.scroll_bottom == 4 && t.region_scrolls == scrolls + 7,
+              "multiline draft did not use exactly its rendered rows");
+  for (i = 0; i <= t.scroll_bottom; i++)
+    ASSERT_TRUE(memcmp(t.cells[i], transcript[i + 7], (size_t)t.cols) == 0,
+                "queue growth overwrote surviving transcript cells");
+  ASSERT_TRUE(strstr(t.raw + mark, "second line") == NULL,
+              "prompt growth replayed producer text");
   t.guard[0] = "Q 1. first";
   t.guard[1] = "Q 2. second";
   t.guard[2] = "Q 3. third";
@@ -1636,10 +1685,47 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
                   !t.frame_failure,
               "live output erased queued previews");
   memset(t.guard, 0, sizeof(t.guard));
-  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '-') == 0 &&
-                  term_contains(&t, "Q 1. second") &&
-                  !term_contains(&t, "... 1 more"),
-              "dequeue did not update the preview");
+  ASSERT_TRUE(write(fd, "\n1\n2\n3\n4\n5\n6\n7\ntail", 19) == 19 &&
+                  wait_screen(&t, "tail", 3000) == 0 &&
+                  frame_exchange(&t, commands[1], ack[0], '#') == 0,
+              "oversized editor did not render");
+  ASSERT_TRUE(t.scroll_bottom == 1 && term_contains(&t, "tail") &&
+                  term_contains(&t, "Q 1. first") &&
+                  term_contains(&t, "Q 3. third") &&
+                  term_contains(&t, "... 1 more") &&
+                  term_contains(&t, "fixture") && term_contains(&t, "notice"),
+              "editor overflow hid queue or consumed required output rows");
+  scrolls = t.region_scrolls;
+  ASSERT_TRUE(write(fd, "\025draft\nmore\nlast", 16) == 16 &&
+                  wait_screen(&t, "last", 3000) == 0 &&
+                  frame_exchange(&t, commands[1], ack[0], '#') == 0 &&
+                  t.scroll_bottom == 4 && t.region_scrolls == scrolls,
+              "editor paging retained unused rows after shrink");
+  transcript_rows = t.scroll_bottom + 1;
+  memcpy(transcript, t.cells, sizeof(transcript));
+  scrolls = t.region_scrolls;
+  for (i = 0; i < 4; i++) {
+    ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '-') == 0 &&
+                    t.scroll_bottom == 5 + i && t.region_scrolls == scrolls,
+                "dequeue did not release exactly one row without scrolling");
+    ASSERT_TRUE(memcmp(transcript, t.cells,
+                       (size_t)transcript_rows * sizeof(t.cells[0])) == 0,
+                "shrinking the queue moved producer cells");
+    ASSERT_TRUE(strspn(t.cells[t.scroll_bottom], " ") == (size_t)t.cols,
+                "freed output row still contains prompt text");
+  }
+  ASSERT_TRUE(!term_contains(&t, "Q 1.") && !term_contains(&t, "... 1 more"),
+              "empty queue left stale preview cells");
+  ASSERT_TRUE(write(fd, "\025done", 5) == 5 &&
+                  wait_screen(&t, "> done", 3000) == 0,
+              "draft clear failed");
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0 &&
+                  t.scroll_bottom == 10 && t.region_scrolls == scrolls,
+              "draft shrink retained unused editor rows");
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '!') == 0 &&
+                  t.scroll_bottom == 11 && t.region_scrolls == scrolls &&
+                  !term_contains(&t, "notice"),
+              "cleared status message retained an unused row");
   ASSERT_TRUE(write(fd, "\r", 1) == 1 && finish(pid, fd) == 0, "child failed");
   close(commands[1]);
   close(ack[0]);

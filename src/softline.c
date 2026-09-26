@@ -2566,12 +2566,10 @@ static int sl_render_append_status_message(sl_t *self, sl_render_t *render,
   const char *prefix;
   int indent;
   impl = sl_impl(self);
-  if (!impl || (!impl->statusline.enabled && !impl->status_message))
+  if (!impl || !impl->status_message || !impl->status_message[0])
     return 0;
   if (sl_render_new_row_at(render, 0, 0) != 0)
     return -1;
-  if (!impl->status_message || !impl->status_message[0])
-    return 0;
   if (sl_status_message_style(impl->prompt_theme,
                               impl->status_message_prefix_color, 0,
                               prefix_style, sizeof(prefix_style)) != 0 ||
@@ -2876,25 +2874,13 @@ static int sl_move_visual(sl_t *self, const char *prompt, int direction) {
   return 1;
 }
 
-/* Keep room for queue previews before native output occupies those cells. */
-static int sl_native_prompt_reservation(sl_impl_t *impl, sl_render_t *render) {
-  int limit = sl_terminal_height(impl) - 2;
+/* Reserve only the rows in the current frame, leaving two output rows. */
+static int sl_native_prompt_height(sl_impl_t *impl, const sl_render_t *render) {
   int rows = render->count;
-  if (sl_prompt_queue_enabled(impl) && rows < limit) {
-    sl_prompt_queue_t *queue = &impl->prompt_queue;
-    int capacity = queue->preview_entries;
-    int shown = queue->len < capacity ? queue->len : capacity;
-    int unused;
-    if (shown < queue->len)
-      shown++;
-    if (capacity >= queue->max_entries)
-      capacity = queue->max_entries;
-    else
-      capacity++;
-    unused = capacity - shown;
-    rows += unused < limit - rows ? unused : limit - rows;
-  }
-  return rows > limit ? limit : rows;
+  int limit = sl_terminal_height(impl) - 2;
+  if (rows > limit)
+    rows = limit;
+  return rows > 0 ? rows : 1;
 }
 
 /* Page the editor within its space while retaining the queue/status panel. */
@@ -2946,6 +2932,10 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   input_styled = input_style[0] != '\0';
   height = sl_terminal_height(impl);
   width = sl_terminal_width(impl);
+  if (sl_surface_is_native(impl->output_surface)) {
+    impl->native_prompt_rows = sl_native_prompt_height(impl, render);
+    sl_render_page_editor(render, sl_output_prompt_rows(impl));
+  }
   if (sl_native_resize_pending(impl)) {
     if (sl_hide_cursor(impl) != 0)
       return -1;
@@ -2984,35 +2974,6 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
     }
     sl_render_store_clear(impl);
   }
-  if (sl_surface_is_native(impl->output_surface)) {
-    int native_top;
-    int capacity;
-    int desired;
-    sl_surface_geometry(impl->output_surface, NULL, &capacity, NULL);
-    {
-      int row, col;
-      sl_surface_native_position(impl->output_surface, &row, &col);
-      native_top = row >= capacity - 1 ? capacity : row + (col > 0);
-    }
-    if (native_top < capacity) {
-      desired = sl_native_prompt_reservation(impl, render);
-      if (desired > height - native_top - 1)
-        desired = height - native_top - 1;
-      if (desired > height - 2)
-        desired = height - 2;
-      if (desired > impl->native_prompt_rows) {
-        impl->native_prompt_rows = desired;
-        if (sl_output_surface_reconcile(
-                self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0)
-          return -1;
-        /* Reconfiguring margins restores the output cursor. Prompt patches
-         * must establish their own cursor position again. */
-        impl->rendered_cursor_valid = 0;
-      }
-    }
-  }
-  if (sl_surface_is_native(impl->output_surface))
-    sl_render_page_editor(render, sl_output_prompt_rows(impl));
   visible = render->count;
   if (sl_surface_is_native(impl->output_surface) &&
       impl->native_prompt_rows > 0 && visible > impl->native_prompt_rows)
@@ -3697,11 +3658,7 @@ static int sl_output_stream_begin_method(sl_t *self) {
       sl_render_free(&initial);
       goto failed;
     }
-    impl->native_prompt_rows = sl_native_prompt_reservation(impl, &initial);
-    if (impl->native_prompt_rows >= sl_terminal_height(impl))
-      impl->native_prompt_rows = sl_terminal_height(impl) - 1;
-    if (impl->native_prompt_rows < 1)
-      impl->native_prompt_rows = 1;
+    impl->native_prompt_rows = sl_native_prompt_height(impl, &initial);
     sl_render_free(&initial);
   }
 

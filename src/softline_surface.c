@@ -355,13 +355,28 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   struct winsize terminal;
   char seq[48];
   int shift;
+  int previous_height;
   int count;
-  if (!sl_surface_is_native(surface) || width < 1 || height < 1 ||
+  if (!sl_surface_is_native(surface) || width < 1 || height < 2 ||
       sl_surface_terminal_size(surface->fd, &terminal) != 0)
     return -1;
   if (surface->native_row >= (int)terminal.ws_row)
     surface->native_row = (int)terminal.ws_row - 1;
   shift = surface->native_row >= height ? surface->native_row - height + 1 : 0;
+  /* When the prompt grows into occupied output, move the existing cells
+   * within the old output region before reducing its bottom margin. Merely
+   * moving the producer cursor would overwrite the preceding output. */
+  previous_height = surface->height;
+  if (previous_height > (int)terminal.ws_row)
+    previous_height = (int)terminal.ws_row;
+  if (shift > 0) {
+    count = snprintf(seq, sizeof(seq), "\033[1;%dr\033[%dS\0338\033[%dA\0337",
+                     previous_height, shift, shift);
+    if (count <= 0 || count >= (int)sizeof(seq) ||
+        sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
+      return -1;
+    surface->native_row -= shift;
+  }
   surface->width = width;
   surface->height = height;
   surface->terminal_rows = terminal.ws_row;
@@ -369,13 +384,6 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   if (sl_surface_native_region(surface) != 0 ||
       sl_surface_write_all(surface->fd, "\0338", 2) != 0)
     return -1;
-  if (shift > 0) {
-    count = snprintf(seq, sizeof(seq), "\033[%dA", shift);
-    if (count <= 0 || count >= (int)sizeof(seq) ||
-        sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
-      return -1;
-    surface->native_row -= shift;
-  }
   return sl_surface_write_all(surface->fd, "\0337\033[0m", 6);
 }
 

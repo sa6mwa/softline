@@ -154,17 +154,19 @@ session with the native terminal layout by default.
 
 A full-terminal output session starts the transcript at the current terminal
 cursor. The editable prompt is anchored at the bottom from its first frame.
-A VT scroll region ends above the reserved prompt rows. Producer bytes,
-including libmdf styles and wrapping, pass through unchanged. Softline keeps
+A VT scroll region ends immediately above the current prompt frame. Producer
+bytes, including libmdf styles and wrapping, pass through unchanged. Softline keeps
 parser state and the output cursor; it does not cache, pad, rewrap, clear, or
 replay the native transcript.
 
 Softline retains the previous prompt frame and patches only changed cells.
 Feeding output leaves unchanged prompt cells intact and restores the editor
-cursor. The reservation can grow into unused rows above the prompt; once
-output fills that space, wrapping and queue/status changes page within the
-reservation around the editor cursor. Shrinking the draft does not move the
-transcript. Terminal resize updates only the prompt and leaves transcript
+cursor. The output region follows the current frame height: only visible
+queue entries, nonempty status messages, status lines, and editor rows occupy
+prompt space. Growth scrolls existing output cells only enough to fit when
+needed; shrink returns freed rows to output without moving transcript cells.
+The editor pages only when the frame exceeds the terminal's available height.
+Terminal resize updates only the prompt and leaves transcript
 reflow to the terminal. Ending chat clears the prompt, restores the full
 scroll region, shows the cursor, and returns below the output.
 
@@ -344,8 +346,8 @@ enabled. Elements wrap between elements when possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
 
-Enabling the status line reserves space immediately above it for a
-status message. `sl_set_status_message()` accepts printable single-line UTF-8,
+A nonempty status message occupies rows immediately above the status line.
+`sl_set_status_message()` accepts printable single-line UTF-8,
 wraps long text at words with continuation rows indented to the prefix width,
 and redraws immediately while the editor is
 active. The default prefix is `! ` in the theme's muted colour; the message
@@ -354,7 +356,7 @@ text is italic in the theme's secondary colour. Use
 or `NULL` to restore `! `. Use `sl_set_status_message_colors(sl, prefix_color,
 text_color)` to select palette roles independently, such as
 `SL_THEME_COLOR_MUTED` and `SL_THEME_COLOR_ELEMENT_2`. Clearing the message
-leaves the row blank, so the status line and editor stay in place.
+removes its rows and returns that space to the output region.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.
