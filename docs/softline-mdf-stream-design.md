@@ -36,8 +36,10 @@ before the corresponding Softline write returns; no finish/EOF or next prompt
 is needed to make an already-decided fragment appear.
 
 Chunk boundaries have no display semantics. In particular, Softline inserts
-no newline, response separator, reset, or space at a write boundary. Ending a
-session does not finish a Markdown document. The application calls its
+no newline, response separator, or space in producer content at a write
+boundary. Terminal cursor and style controls surround native writes to isolate
+the editor; restoring the output cursor also restores the producer style.
+Ending a session does not finish a Markdown document. The application calls its
 renderer’s document lifecycle itself. Each successful write accepts its entire
 span; errors are reported on the handle and never silently discard accepted
 data. A zero-length write is a no-op. Writes after end and overlapping begins
@@ -71,7 +73,11 @@ Ending chat restores the full scroll
 region and clears only input rows, preserving queue and status rows. The cursor
 stays at column zero on the current input row without a newline or scroll.
 `clear_prompt_on_exit = 1` selects clearing the whole prompt area and returning
-below the transcript.
+below the transcript. Ending a stream inside an active editor retains the
+prompt and scroll region for later finite output or another stream. Closing
+the handle always restores terminal state. Non-TTY sessions emit no teardown
+controls. Native chat needs at least three terminal rows: two for output and
+one for the prompt.
 
 Rectangular viewports and bounds configuration are unsupported. Native chat
 always uses the physical terminal width. `sl_set_screen_width()` controls
@@ -101,7 +107,10 @@ events. The core and Lua libraries do not import libmdf.
 - Identical output in one-byte and larger chunks yields the same visible
   screen, including styled ANSI and UTF-8 split across write boundaries.
 - Prompt growth, queue/status rows, width setters, and terminal resize retain
-  transcript order without replaying or clearing producer output.
+  native geometry without replaying or clearing producer output.
+  Real-terminal reflow stress tests also check transcript order. An open
+  resize regression remains in that testing, so emulator frame checks
+  alone do not establish reflow correctness.
 - Sink/write failure and session teardown leave a usable editor and report
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
 - The C chat example composes a libmdf incremental renderer with the generic

@@ -45,6 +45,15 @@ local prompt_methods = {
   "set_status_idle_marker",
 }
 
+for _, field in ipairs({ "bounded", "screen_x", "screen_y", "screen_height",
+                         "unknown_option", "screen_wdith", "screen_width\0extra" }) do
+  local ok, message = pcall(softline.new, { [field] = true })
+  assert(not ok and message:find("unknown configuration field", 1, true),
+         "unknown configuration option accepted: " .. field)
+end
+local ok, message = pcall(softline.new, { [1] = true })
+assert(not ok and message:find("configuration field names must be strings", 1, true))
+
 local sl = assert(softline.new({ line_max_len = 32 }))
 assert_eq(sl:last_readline_status(), softline.READLINE_NONE, "initial status")
 assert(sl:history_add("history entry"))

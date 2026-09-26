@@ -243,12 +243,52 @@ static int softline_lua_watch_callback(sl_t *sl, const sl_watch_event_t *event,
   return SL_OK;
 }
 
+/** Accepted configuration names mirror sl_config_t. Reject unknown fields so
+ * removed layouts and misspelled options cannot silently use defaults. */
+static const char *const softline_lua_config_fields[] = {
+    "input_fd",
+    "output_fd",
+    "screen_width",
+    "live_scroll_region",
+    "clear_prompt_on_exit",
+    "prompt_queue",
+    "prompt_queue_max_entries",
+    "prompt_queue_preview_entries",
+    "prompt_theme",
+    "statusline",
+    "statusline_start_element",
+    "status_spinner",
+    "status_busy",
+    "status_idle_marker",
+    "history_max_len",
+    "line_max_len"};
+
 static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   const char *idle_marker;
   size_t idle_marker_len;
   if (lua_isnoneornil(L, index))
     return;
   luaL_checktype(L, index, LUA_TTABLE);
+  index = lua_absindex(L, index);
+  lua_pushnil(L);
+  while (lua_next(L, index) != 0) {
+    size_t field, name_len;
+    const char *name;
+    if (lua_type(L, -2) != LUA_TSTRING)
+      luaL_error(L, "configuration field names must be strings");
+    name = lua_tolstring(L, -2, &name_len);
+    for (field = 0; field < sizeof(softline_lua_config_fields) /
+                                sizeof(softline_lua_config_fields[0]);
+         field++) {
+      if (name_len == strlen(softline_lua_config_fields[field]) &&
+          memcmp(name, softline_lua_config_fields[field], name_len) == 0)
+        break;
+    }
+    if (field == sizeof(softline_lua_config_fields) /
+                     sizeof(softline_lua_config_fields[0]))
+      luaL_error(L, "unknown configuration field '%s'", name);
+    lua_pop(L, 1);
+  }
 
   lua_getfield(L, index, "input_fd");
   if (!lua_isnil(L, -1))
@@ -1165,8 +1205,11 @@ static int softline_lua_print_above(lua_State *L) {
 }
 
 /** Lua editor:output_stream_begin(): open one renderer-agnostic session.
- * The Lua/editor owner thread controls writes and geometry; an external
- * producer must hand chunks through a watched descriptor. */
+ * The transcript starts at the original cursor; the prompt is anchored at
+ * the bottom and its actual frame height sets the output margin. The
+ * Lua/editor owner thread controls writes; an external producer hands chunks
+ * through a watched descriptor. Non-TTY handles forward validated bytes only.
+ */
 static int softline_lua_output_stream_begin(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -1174,7 +1217,9 @@ static int softline_lua_output_stream_begin(lua_State *L) {
 }
 
 /** Lua editor:output_stream_write(bytes): forward a byte string immediately.
- * No newline or document boundary is inferred, including for an empty string.
+ * No newline or document boundary is inferred; an empty string is a no-op.
+ * Printable UTF-8, LF/CR/Tab and ANSI SGR are accepted. Partial ANSI/UTF-8 is
+ * bounded and retained across writes; complete bytes are emitted before return.
  */
 static int softline_lua_output_stream_write(lua_State *L) {
   softline_lua_handle_t *handle;
@@ -1195,8 +1240,10 @@ static int softline_lua_output_stream_write_quoted_prompt(lua_State *L) {
       L, sl_output_stream_write_quoted_prompt(handle->sl, text));
 }
 
-/** Lua editor:output_stream_end(): release the session without finishing any
- * external renderer document or adding output bytes. */
+/** Lua editor:output_stream_end(): end the producer session without finishing
+ * an external renderer document. An active editor retains its prompt and
+ * scroll region. Otherwise native chat closes using clear_prompt_on_exit.
+ * Incomplete ANSI/UTF-8 fails and leaves the session open. */
 static int softline_lua_output_stream_end(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);

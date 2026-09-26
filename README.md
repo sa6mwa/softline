@@ -171,9 +171,12 @@ reflow to the terminal. Ending chat restores the full scroll region, clears
 only the input rows, and keeps queue and status rows visible. The cursor remains
 at column zero on the current input row, with no final newline or scroll. Set
 `sl_config_t.clear_prompt_on_exit = 1` to clear the whole prompt area and return
-below the transcript instead.
+below the transcript instead. Ending a stream inside an active editor keeps
+the prompt and scroll region for later finite output or another stream;
+destroying the handle always closes native chat.
 
-Chat uses the full terminal width; rectangular viewports are unsupported.
+Chat uses the full terminal width and needs at least three rows: two for the
+VT100 scroll region and one for the prompt. Rectangular viewports are unsupported.
 Softline never enters or leaves the alternate screen itself.
 
 For ordinary finite `print_above()` calls without a persistent output
@@ -201,8 +204,8 @@ between sessions continues in ordinary terminal scrollback.
 Each write is visible before it returns, including while `next_prompt()` is
 active. Chunk boundaries add no content or document semantics; ANSI SGR and
 UTF-8 sequences may cross calls. End rejects an incomplete sequence. Softline
-clears completed editor rows when a turn is submitted during an open session;
-applications can render the submitted text into the transcript. Use
+does not automatically append submitted editor text to the transcript;
+applications render it explicitly. Use
 `sl_output_stream_write_quoted_prompt(sl, submitted)` between complete renderer
 segments for a literal, italic prompt. Softline wraps it at the current output
 width, repeats `> ` on each visible row, and supplies missing line breaks for

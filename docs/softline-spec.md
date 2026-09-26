@@ -24,7 +24,7 @@ The public API is the installed header `include/softline/softline.h`.
 - `sl_config_init()` sets the documented defaults:
   - input fd: `STDIN_FILENO`
   - output fd: `STDOUT_FILENO`
-  - unbounded prompt geometry
+  - ordinary readline at the current cursor
   - history max length: 100
   - line max length: 4096 bytes
   - prompt queueing and live scroll regions: disabled
@@ -230,18 +230,21 @@ transcript text is never cached, padded, rewrapped, cleared, or replayed.
 Prompt updates compare the previous frame and patch only changed cells; output
 feeds preserve unchanged prompt cells and restore the editor cursor. The
 scroll region ends immediately above the current prompt frame.
-Resize updates only prompt cells and preserves both cursor positions. Ending
-chat restores the full scroll region and clears input rows while retaining
-queue and status rows. The cursor stays at column zero on the current input
+Resize updates prompt cells and output geometry; the terminal owns transcript
+reflow. Ending chat restores the full scroll region and clears input rows
+while retaining queue and status rows. The cursor stays at column zero on the current input
 row; exit adds no newline or scroll. `clear_prompt_on_exit` defaults to zero;
 setting it to one clears the whole prompt area and returns below the transcript.
+Ending a producer session inside an active editor retains the native prompt and
+scroll region for subsequent finite output or another stream; closing the handle
+always restores terminal state. Non-TTY sessions emit no teardown controls.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
 only cursor geometry and bounded partial ANSI/UTF-8 state.
 SGR and UTF-8 sequences can cross writes; ending with an incomplete sequence
 fails and keeps the session open.
 
-For finite `print_above()` output on an unbounded prompt, rendering uses
+For finite `print_above()` output on an ordinary readline prompt, rendering uses
 normal clear-and-redraw scrollback by default. Set `live_scroll_region = 1` in
 `sl_config_t` or call `sl_set_live_scroll_region()` to opt into a
 cursor-position probe once the prompt reaches the terminal bottom. When
@@ -302,10 +305,9 @@ Current build surfaces include:
 - CMake presets
 - static and shared library builds
 - shared-library ABI/SOVERSION policy through `SOFTLINE_ABI_VERSION`, currently
-  `1`, decoupled from the project release version. v0.3.0 is withdrawn as an
-  architectural miss rather than a supported shared-library upgrade baseline;
-  the current event-driven architecture replaces it without advancing that ABI
-  generation.
+  `0`, decoupled from the project release version. Softline and its sole
+  consumer evolve together; current API changes do not establish a new ABI
+  compatibility commitment.
 - installed CMake package exports with canonical target `softline::softline`
 - installed pkg-config metadata
 - Lua 5.5 facade packaged as LuaRocks source artifacts
@@ -429,7 +431,6 @@ application descriptors. Workers signal an application-created wake FD; they
 must never call Softline directly. Future work may add a separately driven
 session API or platform-specific backends, but it must preserve this
 single-owner rendering rule.
-`readline()` alone.
 
 ### Output And Transcript Management
 
@@ -443,10 +444,9 @@ Missing:
 - offscreen transcript replay or scrollback
 - caller-driven reflow of already emitted content after resize
 - arbitrary terminal controls beyond documented SGR
-- application-level viewport controls
 
-Bounded mode remains a prompt and visible-output manager, not a full terminal
-UI toolkit.
+These transcript-management features are outside the current native chat
+contract. There is one full-width chat layout, and no boxed viewport API.
 
 ### Styling
 

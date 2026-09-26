@@ -7,7 +7,7 @@ extern "C" {
 
 #include <stddef.h>
 
-/** Opaque receiver handle for one independent softline editor instance. */
+/** Receiver handle for one independent softline editor instance. */
 typedef struct sl sl_t;
 
 /** Opaque per-handle identifier for an external event watch. */
@@ -240,7 +240,7 @@ typedef enum sl_prompt_source {
   SL_PROMPT_SOURCE_NONE = 0,
   /** The user submitted the active editor with Enter or a mapped submit key. */
   SL_PROMPT_SOURCE_DIRECT = 1,
-  /** The user previously queued the text with Tab. */
+  /** An oldest-first queued entry was delivered automatically. */
   SL_PROMPT_SOURCE_QUEUED = 2,
   /** The user promoted the newest queued entry for immediate host delivery. */
   SL_PROMPT_SOURCE_PROMOTED = 3
@@ -248,7 +248,7 @@ typedef enum sl_prompt_source {
 
 /** Controls when sl_next_prompt() automatically delivers queued entries. */
 typedef enum sl_prompt_queue_delivery {
-  /** Preserve legacy FIFO delivery before opening a direct editor. */
+  /** Deliver FIFO entries automatically before opening a direct editor. */
   SL_PROMPT_QUEUE_DELIVERY_AUTO = 0,
   /** Keep queued entries local until the host explicitly takes or promotes one.
    */
@@ -388,9 +388,10 @@ typedef struct sl_config {
   /** Editable line wrapping width; zero follows the terminal. Native chat
    * always uses the physical terminal width. */
   int screen_width;
-  /** Non-zero lets an unbounded active prompt pin itself at the terminal
+  /** Non-zero lets an ordinary readline prompt pin itself at the terminal
    * bottom and stream output through a temporary scroll region. Disabled by
-   * default, preserving normal clear-and-redraw scrollback behavior. */
+   * default, preserving normal clear-and-redraw scrollback behavior. Native
+   * chat uses its own scroll region regardless of this setting. */
   int live_scroll_region;
   /** Maximum retained history entries; default is 100. */
   int history_max_len;
@@ -458,10 +459,12 @@ struct sl {
    * history. */
   int (*history_load)(sl_t *self, const char *filename);
   /** Set ordinary readline wrapping width; zero follows the terminal.
-   * Native chat always uses physical terminal width. Redraws immediately. */
+   * Native chat always uses physical terminal width. Updates active prompt
+   * wrapping when its effective width changes. */
   int (*set_screen_width)(sl_t *self, int width);
-  /** Enable or disable bottom-pinned scroll-region output for unbounded
-   * prompts. The setting applies to subsequent print_above() calls. */
+  /** Enable or disable bottom-pinned scroll-region output for ordinary
+   * readline. The setting applies to subsequent print_above() calls; native
+   * chat always uses its own scroll region. */
   int (*set_live_scroll_region)(sl_t *self, int enabled);
   /** Register or clear the per-handle idle callback. */
   int (*set_idle_callback)(sl_t *self, sl_idle_callback_t callback,
@@ -486,9 +489,10 @@ struct sl {
   int (*submit)(sl_t *self);
   /** Cancel the active readline() call from a callback or idle hook. */
   int (*cancel)(sl_t *self);
-  /** Stream callback output above the active prompt. Bounded prompts use their
-   * output region; normal prompts clear and redraw by default, or use an
-   * enabled live scroll region once they reach the terminal bottom. */
+  /** Stream callback output above the active prompt. Ordinary readline clears
+   * and redraws by default, or uses an enabled live scroll region after
+   * reaching the terminal bottom. Native chat retains its prompt frame.
+   * Finite output cannot overlap an open live session. */
   int (*print_above)(sl_t *self, sl_stream_callback_t callback, void *userdata);
   /** Return the most recent readline() status for this handle. */
   sl_readline_status_t (*last_readline_status)(const sl_t *self);
@@ -579,7 +583,10 @@ struct sl {
    * prompt. A full-terminal transcript starts at the current cursor and the
    * editable prompt is anchored at the bottom from its first frame. Native
    * output bytes are passed through unchanged; terminal wrapping and scrollback
-   * are preserved. */
+   * are preserved. The output margin follows actual prompt height. At least
+   * three terminal rows are required: two output rows and one prompt row.
+   * With either descriptor off-TTY, output is validated and forwarded without
+   * terminal controls. */
   int (*output_stream_begin)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
@@ -589,8 +596,10 @@ struct sl {
    * also fails. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
   /** End the open session without finishing an external renderer document.
-   * Native chat clears input rows by default, keeps queue and status rows, and
-   * returns at column zero on the current input row. clear_prompt_on_exit
+   * An active editor keeps its native prompt and scroll region for later
+   * finite output or another stream. Otherwise native chat closes: input rows
+   * are cleared, queue and status rows remain, and the cursor stays at column
+   * zero on the current input row without a newline. clear_prompt_on_exit
    * selects clearing the whole prompt area and returning below the transcript.
    * Incomplete ANSI/UTF-8 leaves it open and returns SL_ERROR_INVALID so the
    * caller may supply the missing bytes. */
@@ -630,11 +639,12 @@ struct sl {
  * limits.
  *
  * Passing NULL is ignored. Defaults are stdin/stdout file descriptors,
- * unbounded rendering, 100 history entries, and a 4096-byte editable line.
- * Prompt queueing and live scroll regions are disabled; the queue defaults to
- * a capacity of 64 and three previews when enabled. The prompt theme is
- * SL_PROMPT_THEME_DEFAULT, the status line and spinner are disabled, busy is
- * false, and the idle status marker is '+'.
+ * ordinary readline rendering, 100 history entries, and a 4096-byte editable
+ * line. Prompt queueing and live scroll regions are disabled; the queue
+ * defaults to a capacity of 64 and three previews when enabled. The prompt
+ * theme is SL_PROMPT_THEME_DEFAULT, the status line and spinner are disabled,
+ * busy is false, the idle status marker is '+', and clear_prompt_on_exit is
+ * zero.
  */
 void sl_config_init(sl_config_t *config);
 
@@ -702,12 +712,14 @@ int sl_history_save(sl_t *self, const char *filename);
 int sl_history_load(sl_t *self, const char *filename);
 
 /** Set ordinary readline wrapping width; zero follows the terminal.
- * Native chat always uses physical terminal width. Redraws immediately. */
+ * Native chat always uses physical terminal width. Updates active prompt
+ * wrapping when its effective width changes. */
 int sl_set_screen_width(sl_t *self, int width);
 
-/** Enable or disable bottom-pinned scroll-region output for unbounded prompts.
+/** Enable or disable bottom-pinned scroll-region output for ordinary readline.
  * Disabled by default; when enabled softline attempts it only after the active
- * prompt reaches the terminal bottom. */
+ * prompt reaches the terminal bottom. Native chat uses its own scroll region
+ * regardless of this setting. */
 int sl_set_live_scroll_region(sl_t *self, int enabled);
 
 /** Enable/configure Tab queueing for the interactive terminal editor;
@@ -870,8 +882,9 @@ int sl_cancel(sl_t *self);
 
 /** Write callback-produced chunks above the active prompt. Ordinary readline
  * clears and redraws by default, or uses an
- * enabled live scroll region once they reach the terminal bottom.
- * Finite output cannot overlap an open live session. */
+ * enabled live scroll region once the prompt reaches the terminal bottom.
+ * Native chat retains its prompt frame after a live session. Finite output
+ * cannot overlap an open live session. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Start a persistent output session on self's editor-owner thread. The
@@ -894,12 +907,14 @@ int sl_output_stream_begin(sl_t *self);
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
 /** End the output session. The caller remains responsible for finishing any
- * external renderer document first. By default, native input rows are cleared,
- * queue and status rows remain visible, and the TTY cursor returns at column
- * zero on the current input row. clear_prompt_on_exit selects clearing the
- * whole prompt area and returning below output instead.
- * Without a prompt, return below output. Incomplete ANSI/UTF-8 returns
- * SL_ERROR_INVALID and leaves the session open.
+ * external renderer document first. An active editor keeps its native prompt
+ * and scroll region, permitting later finite output or another stream. With
+ * no active editor, native chat closes. By default, native input rows are
+ * cleared, queue and status rows remain visible, and the TTY cursor returns at
+ * column zero on the current input row without a newline or scroll.
+ * clear_prompt_on_exit selects clearing the whole prompt area and returning
+ * below output instead. Without a prompt, return below output. Incomplete
+ * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open.
  */
 int sl_output_stream_end(sl_t *self);
 

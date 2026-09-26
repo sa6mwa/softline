@@ -22,7 +22,10 @@ sl:close()
 ## Handles
 
 `softline.new([config])` returns an independent editor handle. The optional
-config table mirrors `sl_config_t`:
+config table mirrors `sl_config_t`. Unknown fields are rejected, including
+removed boxed-layout options (`bounded`, `screen_x`, `screen_y`, and
+`screen_height`). Invalid config names or values raise a Lua error. Supported
+fields are:
 
 - `input_fd`
 - `output_fd`
@@ -69,9 +72,9 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:history_load(filename)` loads history entries into the handle.
 - `sl:set_screen_width(width)` sets ordinary readline wrapping width; `0`
   returns to terminal-width probing. Native chat uses physical terminal width.
-- `sl:set_live_scroll_region(enabled)` opts an unbounded prompt into
+- `sl:set_live_scroll_region(enabled)` opts an ordinary readline prompt into
   bottom-pinned scroll-region output after it reaches the terminal bottom.
-  It is disabled by default.
+  It is disabled by default; native chat always uses its own scroll region.
 - `sl:set_idle_callback(callback)` registers a no-argument Lua callback that
   runs while an interactive editor is idle; pass `nil` to clear it. The
   callback may use methods such as `print_above`, `insert`, `submit`, or
@@ -176,7 +179,12 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:output_stream_begin()` opens one persistent output session above the
   prompt. Transcript output starts at the existing terminal cursor; the editable
   prompt is anchored at the bottom from its first frame. Producer bytes pass
-  through unchanged; transcript reflow belongs to the terminal. Rectangular viewports are unsupported.
+  through unchanged; transcript reflow belongs to the terminal. The output
+  margin follows the actual prompt height, including visible queue entries,
+  nonempty status messages, status lines, and editor rows. Unused preview slots
+  occupy no space. At physical capacity the editor pages, leaving at least two
+  output rows. Native chat needs at least three terminal rows, uses physical
+  terminal width, and supports no rectangular viewport.
   The application owns its renderer, wakeup, and
   response/document lifecycle; Softline has no Markdown dependency.
 - `sl:output_stream_write(bytes)` sends a Lua byte string immediately into the
@@ -193,18 +201,26 @@ live scroll regions, status lines, and spinners are off; the theme is
   `sl:set_quoted_prompt_style({prefix={r,g,b}, text={r,g,b}})` overrides the
   theme colours; `nil` restores theme defaults. The prefix stays faded and the
   text stays italic.
-- `sl:output_stream_end()` ends the session without inserting a newline or
-  finishing an external renderer document. If the last write left an ANSI or
-  UTF-8 sequence incomplete, it returns `nil, status` and keeps the session
+- `sl:output_stream_end()` ends the producer session without finishing an
+  external renderer document. Inside an active editor callback it retains the
+  prompt and scroll region for later finite output or another stream. Otherwise
+  native chat closes using `clear_prompt_on_exit`: by default it clears only
+  input rows, keeps queue/status rows, and leaves the cursor at column zero on
+  the current input row without a newline or scroll. With no rendered prompt
+  it returns below output. Non-TTY output adds no teardown controls. If the
+  last write left an ANSI or UTF-8 sequence incomplete, it returns
+  `nil, status` and keeps the session
   open so the missing bytes can be supplied. Only one session may be open per
   editor. Output-session and quoted-prompt methods run on the Lua/editor owner
   thread; foreign producers should notify a watched descriptor instead of
   calling Lua.
 - Physical resize redraws the prompt without replaying transcript output.
-  The application updates its external renderer width separately.
+  The application updates its external renderer width separately. Softline
+  does not cache or repaint the transcript.
 - `sl:last_readline_status()` returns the last readline status code.
 - `sl:last_error()` returns the last handle-owned diagnostic string, or `nil`.
-- `sl:close()` destroys the handle.
+- `sl:close()` destroys the handle and restores terminal state. Native chat
+  cleanup uses the same `clear_prompt_on_exit` policy as `output_stream_end()`.
 
 Fallible setter and operation methods return `true` on success or
 `nil, status` on failure; getters and prompt reads return their documented
