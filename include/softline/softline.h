@@ -571,9 +571,10 @@ struct sl {
   int (*watch_clear)(sl_t *self);
   /** Begin one owner-thread, renderer-agnostic live output session. Only one
    * session may be open per handle. Output occupies terminal rows above the
-   * prompt. A full-terminal prompt follows output from the current cursor
-   * and parks at the bottom. Native output bytes are passed through unchanged;
-   * terminal wrapping and scrollback are preserved. */
+   * prompt. A full-terminal transcript starts at the current cursor and the
+   * editable prompt is anchored at the bottom from its first frame. Native
+   * output bytes are passed through unchanged; terminal wrapping and scrollback
+   * are preserved. */
   int (*output_stream_begin)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
@@ -868,11 +869,13 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Start a persistent output session on self's editor-owner thread. The
  * caller owns its producer, wakeup, renderer, and document lifecycle. A
- * native prompt follows output from the current cursor and parks at
- * the bottom. Prompt wrapping pages within its reserved rows once parked,
- * without moving transcript text. Native transcript reflow belongs to the
- * terminal; Softline never clears or replays it.
- * Returns SL_ERROR_INVALID if a session is already open. */
+ * native transcript starts at the current cursor; the editable prompt is
+ * anchored at the bottom from its first frame. Output feeds preserve unchanged
+ * prompt cells; prompt updates patch only changed cells. The reservation can
+ * grow into unused space above it; once filled, prompt wrapping pages within
+ * the reservation without moving transcript text. Native transcript reflow
+ * belongs to the terminal; Softline never clears or replays it. Returns
+ * SL_ERROR_INVALID if a session is already open. */
 int sl_output_stream_begin(sl_t *self);
 
 /** Forward length bytes immediately to the live output session. Zero length

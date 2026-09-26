@@ -152,19 +152,21 @@ session with the native terminal layout by default.
 
 ## Terminal-native chat
 
-A full-terminal output session starts at the current terminal cursor. The
-prompt appears directly below initial output, follows later output downward,
-and parks when it reaches the bottom. A VT scroll region ends above the
-reserved prompt rows. Producer bytes, including libmdf styles and wrapping,
-pass through unchanged. Softline keeps parser state and the output cursor;
-it does not cache, pad, rewrap, clear, or replay the native transcript.
+A full-terminal output session starts the transcript at the current terminal
+cursor. The editable prompt is anchored at the bottom from its first frame.
+A VT scroll region ends above the reserved prompt rows. Producer bytes,
+including libmdf styles and wrapping, pass through unchanged. Softline keeps
+parser state and the output cursor; it does not cache, pad, rewrap, clear, or
+replay the native transcript.
 
-Before the prompt parks, it can grow into unused rows below it. Once parked,
-wrapping and queue/status changes page within the reserved rows around the
-editor cursor. Shrinking the draft does not move the transcript. Terminal
-resize redraws the prompt within its reservation and leaves transcript reflow
-to the terminal. Ending chat clears the prompt, restores the full scroll
-region, shows the cursor, and returns below the output.
+Softline retains the previous prompt frame and patches only changed cells.
+Feeding output leaves unchanged prompt cells intact and restores the editor
+cursor. The reservation can grow into unused rows above the prompt; once
+output fills that space, wrapping and queue/status changes page within the
+reservation around the editor cursor. Shrinking the draft does not move the
+transcript. Terminal resize updates only the prompt and leaves transcript
+reflow to the terminal. Ending chat clears the prompt, restores the full
+scroll region, shows the cursor, and returns below the output.
 
 Chat uses the full terminal width; rectangular viewports are unsupported.
 Softline never enters or leaves the alternate screen itself.

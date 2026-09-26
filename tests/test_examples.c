@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
+#include "softline/softline.h"
+
 #include <errno.h>
 #include <pty.h>
 #include <signal.h>
@@ -28,6 +30,8 @@ struct terminal {
   int fd, rows, cols, row, col, escape;
   int saved_row, saved_col, scroll_top, scroll_bottom;
   int cursor_visible;
+  const char *guard[5];
+  size_t frames, frame_failure, frame_offset;
   char csi[64];
   size_t csi_len, raw_len;
   unsigned int seen;
@@ -91,6 +95,35 @@ static void term_scroll(struct terminal *t) {
   t->row = t->scroll_bottom;
 }
 
+/* Main-screen resize preserves cells, scrolling only enough to retain the
+ * current cursor. DEC's saved output cursor moves with the same cells. */
+static void term_resize(struct terminal *t, int cols, int rows) {
+  int shift = t->row >= rows ? t->row - rows + 1 : 0;
+  int row, old_row = t->row, old_rows = t->rows, old_cols = t->cols;
+  t->scroll_top = 0;
+  t->scroll_bottom = old_rows - 1;
+  for (row = 0; row < shift; row++)
+    term_scroll(t);
+  t->row = old_row - shift;
+  t->saved_row -= shift;
+  if (t->saved_row < 0)
+    t->saved_row = 0;
+  for (row = 0; row < rows; row++) {
+    if (row >= old_rows)
+      memset(t->cells[row], ' ', (size_t)cols);
+    else if (cols > old_cols)
+      memset(t->cells[row] + old_cols, ' ', (size_t)(cols - old_cols));
+    t->cells[row][cols] = 0;
+  }
+  t->cols = cols;
+  t->rows = rows;
+  t->scroll_bottom = rows - 1;
+  if (t->col >= cols)
+    t->col = cols - 1;
+  if (t->saved_col >= cols)
+    t->saved_col = cols - 1;
+}
+
 static void term_csi(struct terminal *t, char final) {
   int a, b;
   char *part;
@@ -118,6 +151,21 @@ static void term_csi(struct terminal *t, char final) {
     t->scroll_bottom = b > 0 && b <= t->rows ? b - 1 : t->rows - 1;
     t->row = t->col = 0;
     break;
+  case 'L': {
+    int count = a > 0 ? a : 1;
+    int row;
+    if (t->row < t->scroll_top || t->row > t->scroll_bottom)
+      break;
+    if (count > t->scroll_bottom - t->row + 1)
+      count = t->scroll_bottom - t->row + 1;
+    for (row = t->scroll_bottom; row >= t->row + count; row--)
+      memcpy(t->cells[row], t->cells[row - count], (size_t)t->cols + 1);
+    for (row = t->row; row < t->row + count; row++) {
+      memset(t->cells[row], ' ', (size_t)t->cols);
+      t->cells[row][t->cols] = 0;
+    }
+    break;
+  }
   case 'S': {
     int count = a > 0 ? a : 1;
     int old_row = t->row;
@@ -171,6 +219,24 @@ static void term_csi(struct terminal *t, char final) {
     t->col = t->cols - 1;
 }
 
+/* Inspect every byte prefix, including each completed terminal control,
+ * rather than only the screen after a feed returns. */
+static void term_check_frame(struct terminal *t) {
+  size_t k;
+  for (k = 0; k < sizeof(t->guard) / sizeof(t->guard[0]); k++) {
+    int row, matches = 0;
+    if (!t->guard[k])
+      continue;
+    for (row = 0; row < t->rows; row++)
+      if (strstr(t->cells[row], t->guard[k]))
+        matches++;
+    if (matches != 1 && !t->frame_failure)
+      t->frame_failure = t->frame_offset;
+  }
+  if (t->guard[0])
+    t->frames++;
+}
+
 static void term_feed(struct terminal *t, const char *bytes, size_t len) {
   size_t i;
   if (len > RAW_CAP - 1 - t->raw_len)
@@ -180,6 +246,7 @@ static void term_feed(struct terminal *t, const char *bytes, size_t len) {
   t->raw[t->raw_len] = 0;
   for (i = 0; i < len; i++) {
     unsigned char ch = (unsigned char)bytes[i];
+    t->frame_offset = t->raw_len - len + i + 1;
     if (t->escape == 1) {
       if (ch == '7') {
         t->saved_row = t->row;
@@ -191,6 +258,7 @@ static void term_feed(struct terminal *t, const char *bytes, size_t len) {
       t->escape = ch == '[' ? 2 : 0;
       if (t->escape == 2)
         t->csi_len = 0;
+      term_check_frame(t);
       continue;
     }
     if (t->escape == 2) {
@@ -200,6 +268,7 @@ static void term_feed(struct terminal *t, const char *bytes, size_t len) {
       } else if (t->csi_len < sizeof(t->csi) - 1) {
         t->csi[t->csi_len++] = (char)ch;
       }
+      term_check_frame(t);
       continue;
     }
     if (ch == 27)
@@ -228,6 +297,7 @@ static void term_feed(struct terminal *t, const char *bytes, size_t len) {
           t->seen |= 1u << k;
       }
     }
+    term_check_frame(t);
   }
 }
 
@@ -832,12 +902,12 @@ static void test_chat_resizes_while_streaming(const char *path) {
   ws.ws_col = 50;
   ws.ws_row = 12;
   ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "resize failed");
-  t.cols = 50;
-  t.rows = 12;
-  term_clear(&t);
+  term_resize(&t, 50, 12);
   ASSERT_TRUE(write(fd, "draft", 5) == 5, "draft failed");
-  ASSERT_TRUE(wait_screen(&t, "> draft", 3000) == 0,
-              "draft lost after midstream resize");
+  if (wait_screen(&t, "> draft", 3000) != 0) {
+    term_dump(&t);
+    FAIL("draft lost after midstream resize");
+  }
   ASSERT_TRUE(wait_screen(&t, "Next step", 6000) == 0,
               "Markdown stopped after midstream resize");
   ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
@@ -986,7 +1056,7 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   int reaped;
   size_t mark;
   pid_t pid;
-  TEST("native chat follows output, keeps wraps stable, and restores exit");
+  TEST("native chat anchors the prompt, keeps wraps stable, and restores exit");
   ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "1", 1) == 0,
               "delay setup failed");
   pid = spawn(path, &fd, 40, 24);
@@ -999,10 +1069,10 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0 &&
                   wait_screen(&t, "> ", 3000) == 0,
               "initial prompt missing");
-  ASSERT_TRUE((initial_row == 4 && t.row > 4 && t.row < 23 &&
-               strncmp(t.cells[0], "EXISTING SHELL OUTPUT", 21) == 0) ||
-                  (initial_row == 23 && t.row == 23),
-              "initial prompt did not follow output from the original cursor");
+  ASSERT_TRUE(t.row == 23 &&
+                  (initial_row != 4 ||
+                   strncmp(t.cells[0], "EXISTING SHELL OUTPUT", 21) == 0),
+              "initial prompt was not anchored at the terminal bottom");
   for (turn = 0; turn < 3; turn++) {
     mark = t.raw_len;
     ASSERT_TRUE(write(fd, "hello world\r", 12) == 12, "send failed");
@@ -1211,15 +1281,238 @@ static void test_chat_piped_input_terminal_output(const char *path) {
   PASS();
 }
 
+struct frame_producer {
+  int input;
+  int ack;
+};
+
+static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
+                                void *userdata) {
+  struct frame_producer *producer = userdata;
+  char byte;
+  int result;
+  (void)event;
+  if (read(producer->input, &byte, 1) != 1)
+    return SL_ERROR_IO;
+  if (byte == '#')
+    result = sl_set_status_message(sl, "notice");
+  else if (byte == '@') {
+    static const char span[] =
+        "wrapped source text fills this row completely\n"
+        "line\nline\nline\nline\nline\nline\nline\nline\n"
+        "line\nline\nline\nline\nline\nline\nline\nline\nsecond line\nthird";
+    result = sl_output_stream_write(sl, span, sizeof(span) - 1);
+  } else
+    result = sl_output_stream_write(sl, &byte, 1);
+  if (result == SL_OK && write(producer->ack, "a", 1) != 1)
+    return SL_ERROR_IO;
+  return result;
+}
+
+static int frame_exchange(struct terminal *t, int commands, int ack,
+                          char byte) {
+  struct timespec deadline = deadline_after(2000);
+  int received = 0;
+  if (write(commands, &byte, 1) != 1)
+    return -1;
+  while (!received && before_deadline(&deadline)) {
+    fd_set ready;
+    struct timeval timeout = {0, 50000};
+    int max_fd = t->fd > ack ? t->fd : ack;
+    FD_ZERO(&ready);
+    FD_SET(t->fd, &ready);
+    FD_SET(ack, &ready);
+    if (select(max_fd + 1, &ready, NULL, NULL, &timeout) <= 0)
+      continue;
+    if (FD_ISSET(t->fd, &ready) && term_read(t) < 0)
+      return -1;
+    if (FD_ISSET(ack, &ready))
+      received = read(ack, &byte, 1) == 1;
+  }
+  if (!received)
+    return -1;
+  /* An ACK follows the last terminal write; drain those bytes before checking
+   * the screen, without relying on a sleep or a matching intermediate cursor.
+   */
+  for (;;) {
+    fd_set ready;
+    struct timeval timeout = {0, 0};
+    FD_ZERO(&ready);
+    FD_SET(t->fd, &ready);
+    if (select(t->fd + 1, &ready, NULL, NULL, &timeout) <= 0)
+      break;
+    if (term_read(t) < 0)
+      return -1;
+  }
+  return 0;
+}
+
+static void test_prompt_frames(sl_prompt_theme_t theme) {
+  static const char source[] =
+      "abcdefghijklmno\n\033[31mparagraph words\033[0m\n";
+  struct terminal t;
+  struct winsize ws;
+  struct frame_producer producer;
+  int fd, slave, commands[2], ack[2], status, step;
+  int parked = 0;
+  pid_t pid;
+  TEST(theme == SL_PROMPT_THEME_PLAIN
+           ? "every producer byte preserves the plain prompt frame"
+           : "every producer byte preserves the styled prompt frame");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_row = 24;
+  ws.ws_col = 40;
+  ASSERT_TRUE(openpty(&fd, &slave, NULL, NULL, &ws) == 0 &&
+                  pipe(commands) == 0 && pipe(ack) == 0,
+              "PTY setup failed");
+  pid = fork();
+  ASSERT_TRUE(pid >= 0, "fork failed");
+  if (pid == 0) {
+    sl_config_t config;
+    sl_t *sl;
+    sl_watch_id_t watch;
+    char *line;
+    const char *elements[] = {"fixture"};
+    close(fd);
+    close(commands[1]);
+    close(ack[0]);
+    sl_config_init(&config);
+    config.input_fd = config.output_fd = slave;
+    config.prompt_theme = theme;
+    config.prompt_queue = 1;
+    config.statusline = 1;
+    sl = sl_create_with_config(&config);
+    producer.input = commands[0];
+    producer.ack = ack[1];
+    if (!sl || sl_set_status_elements(sl, elements, 1) != SL_OK ||
+        sl_set_status_message(sl, "notice") != SL_OK ||
+        sl_prompt_queue_append(sl, "queued") != SL_OK ||
+        sl_output_stream_begin(sl) != SL_OK ||
+        sl_output_stream_write(sl, "header\n", 7) != SL_OK ||
+        sl_watch_add(sl, commands[0], SL_WATCH_READ, frame_producer_ready,
+                     &producer, &watch) != SL_OK)
+      _exit(2);
+    line = sl_readline(sl, "> ");
+    if (!line || strcmp(line, "draft\nmore") != 0 ||
+        sl_output_stream_end(sl) != SL_OK)
+      _exit(3);
+    sl_free_string(sl, line);
+    sl_destroy(sl);
+    _exit(0);
+  }
+  close(slave);
+  close(commands[0]);
+  close(ack[1]);
+  term_init(&t, fd, 40, 24);
+  t.row = 3;
+  ASSERT_TRUE(wait_screen(&t, "> ", 3000) == 0, "initial prompt missing");
+  ASSERT_TRUE(write(fd, "draft\nmore", 10) == 10, "draft input failed");
+  ASSERT_TRUE(wait_screen(&t, "more", 3000) == 0, "multiline draft missing");
+  while (term_read(&t) > 0)
+    ;
+  t.guard[0] = "> draft";
+  t.guard[1] = "more";
+  t.guard[2] = "fixture";
+  t.guard[3] = "notice";
+  t.guard[4] = "queued";
+  for (step = 0; step < 480; step++) {
+    char byte = source[(size_t)step % (sizeof(source) - 1)];
+    size_t mark;
+    if (step > 0 && step % (int)(sizeof(source) - 1) == 0) {
+      int cycle = step / (int)(sizeof(source) - 1);
+      int output_row, output_col, row, transcript_rows = t.scroll_bottom + 1;
+      char transcript[MAX_ROWS][MAX_COLS + 1];
+      ws.ws_col = cycle % 2 ? 30 : 40;
+      ws.ws_row = cycle % 3 == 0 ? 18 : cycle % 3 == 1 ? 28 : 24;
+      ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "frame resize failed");
+      if (cycle % 2 && ws.ws_row < t.rows)
+        t.row = t.saved_row; /* Resize while the producer cursor is visible. */
+      if (t.row >= ws.ws_row)
+        transcript_rows -= t.row - ws.ws_row + 1;
+      term_resize(&t, ws.ws_col, ws.ws_row);
+      memcpy(transcript, t.cells, sizeof(transcript));
+      output_row = t.saved_row;
+      output_col = t.saved_col;
+      /* Layout changes may reflow the prompt; feed guards start after that
+       * frame is settled. No transcript replay is allowed during resize. */
+      memset(t.guard, 0, sizeof(t.guard));
+      ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0,
+                  "resize did not finish");
+      ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
+                  "resize displaced the editor cursor");
+      if (output_row > t.scroll_bottom)
+        output_row = t.scroll_bottom;
+      ASSERT_TRUE(t.saved_row == output_row && t.saved_col == output_col,
+                  "resize moved the producer cursor away from its output");
+      for (row = 0; row < transcript_rows && row <= t.scroll_bottom; row++) {
+        if (memcmp(t.cells[row], transcript[row], (size_t)t.cols) != 0) {
+          fprintf(stderr, "cycle %d row %d: before |%s| after |%s|\n", cycle,
+                  row, transcript[row], t.cells[row]);
+          FAIL("prompt resize changed transcript cells");
+        }
+      }
+      t.guard[0] = "> draft";
+      t.guard[1] = "more";
+      t.guard[2] = "fixture";
+      t.guard[3] = "notice";
+      t.guard[4] = "queued";
+    }
+    mark = t.raw_len;
+    if (step == 0 || step == (int)(sizeof(source) - 1) * 8)
+      byte = '@';
+    ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], byte) == 0,
+                "producer feed did not complete");
+    if (t.frame_failure) {
+      term_dump(&t);
+      fprintf(stderr, "feed %d lost prompt content at byte %lu\n", step,
+              (unsigned long)t.frame_failure);
+      (void)kill(pid, SIGTERM);
+      (void)waitpid(pid, &status, 0);
+      close(fd);
+      close(commands[1]);
+      close(ack[0]);
+      FAIL("a producer feed exposed an incomplete prompt frame");
+    }
+    ASSERT_TRUE(strstr(t.raw + mark, "\033[2K") == NULL &&
+                    strstr(t.raw + mark, "\033[0K") == NULL &&
+                    strstr(t.raw + mark, "fixture") == NULL &&
+                    strstr(t.raw + mark, "notice") == NULL &&
+                    strstr(t.raw + mark, "> draft") == NULL &&
+                    strstr(t.raw + mark, "queued") == NULL,
+                "feed erased or repainted an unchanged prompt frame");
+    if (t.row == t.rows - 1)
+      parked++;
+    ASSERT_TRUE(t.cursor_visible && t.col == 6,
+                "feed did not restore the editor cursor");
+  }
+  ASSERT_TRUE(parked == 480 && t.frames > 1000,
+              "producer feeds moved the bottom-anchored prompt");
+  memset(t.guard, 0, sizeof(t.guard));
+  ASSERT_TRUE(write(fd, "\r", 1) == 1, "submit failed");
+  ASSERT_TRUE(finish(pid, fd) == 0, "frame producer failed");
+  close(commands[1]);
+  close(ack[0]);
+  PASS();
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
+  if (argc == 2 && strcmp(argv[1], "frames") == 0) {
+    test_prompt_frames(SL_PROMPT_THEME_PLAIN);
+    test_prompt_frames(SL_PROMPT_THEME_DEFAULT);
+    return tests_passed == tests_run ? 0 : 1;
+  }
   if (argc != 3 && argc != 4)
     return 2;
   if (setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) != 0)
     return 1;
   printf("softline example integration tests\n");
   if (argc == 4) {
-    if (strcmp(argv[3], "word") == 0)
+    if (strcmp(argv[3], "frames") == 0)
+      test_prompt_frames(SL_PROMPT_THEME_PLAIN);
+    else if (strcmp(argv[3], "resize") == 0)
+      test_chat_resizes_while_streaming(argv[2]);
+    else if (strcmp(argv[3], "word") == 0)
       test_chat_long_unbroken_editor_word(argv[2]);
     else
       test_chat_native_lifecycle(argv[2],

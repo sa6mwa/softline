@@ -9,7 +9,6 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
                                        int col,
                                        int (*cell_width)(unsigned long));
 int sl_surface_is_native(const sl_surface_t *surface);
-int sl_surface_native_prompt_top(const sl_surface_t *surface);
 void sl_surface_native_cursor(sl_surface_t *surface, int row, int col);
 void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col);

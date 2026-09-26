@@ -281,16 +281,6 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
   return surface;
 }
 
-int sl_surface_native_prompt_top(const sl_surface_t *surface) {
-  int row;
-  if (!sl_surface_is_native(surface))
-    return -1;
-  if (surface->native_row >= surface->height - 1)
-    return surface->height;
-  row = surface->native_row + (surface->col > 0 ? 1 : 0);
-  return row <= surface->height ? row : surface->height;
-}
-
 void sl_surface_native_cursor(sl_surface_t *surface, int row, int col) {
   if (!sl_surface_is_native(surface) || row < 0 || col < 0)
     return;

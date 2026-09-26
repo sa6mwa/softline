@@ -72,11 +72,17 @@ if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
     TIMEOUT 10 LABELS "runtime")
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET example_chat)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(test_examples test_examples.c)
-  target_link_libraries(test_examples PRIVATE util)
+  target_link_libraries(test_examples PRIVATE util softline)
   softline_apply_warnings(test_examples)
   softline_local_runtime(test_examples)
+  add_test(NAME softline_prompt_frames COMMAND test_examples frames)
+  set_tests_properties(softline_prompt_frames PROPERTIES
+    LABELS "integration;streaming" TIMEOUT 10)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET example_chat)
   add_test(NAME softline_examples COMMAND test_examples
     $<TARGET_FILE:example_simple>
     $<TARGET_FILE:example_chat>

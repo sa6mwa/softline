@@ -101,8 +101,9 @@ Current rendering guarantees:
   input.
 
 Ordinary readline participates in terminal scrollback. Persistent chat uses
-native full-width output and a prompt that follows output until it reaches
-the bottom. Rectangular viewports and bounds configuration are unsupported.
+native full-width output beginning at the original cursor and a prompt
+anchored at the terminal bottom from its first frame. Rectangular viewports
+and bounds configuration are unsupported.
 Softline never implies a retained full transcript.
 
 
@@ -214,13 +215,17 @@ prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 
 `output_stream_begin()` opens a persistent session; every later
 `output_stream_write()` forwards its byte span immediately, without waiting for
-EOF or the next prompt. Full-terminal sessions start at the existing cursor;
-the prompt follows output downward until it parks at the bottom. Producer
+EOF or the next prompt. Full-terminal transcripts start at the existing cursor;
+the editable prompt is anchored at the bottom from its first frame. Producer
 bytes pass through unchanged in a VT scroll region above the prompt. Native
 transcript text is never cached, padded, rewrapped, cleared, or replayed.
-Prompt wrapping and resize page within reserved rows once parked, without
-moving transcript text. Ending chat clears the prompt, restores the full
-scroll region and visible cursor, and returns below output.
+Prompt updates compare the previous frame and patch only changed cells; output
+feeds preserve unchanged prompt cells and restore the editor cursor. The prompt
+reservation may grow into unused space above it. Once output fills that space,
+prompt wrapping pages within the reservation without moving transcript text.
+Resize updates only prompt cells and preserves both cursor positions. Ending
+chat clears the prompt, restores the full scroll region and visible cursor,
+and returns below output.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
 only cursor geometry and bounded partial ANSI/UTF-8 state.

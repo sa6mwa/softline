@@ -120,6 +120,9 @@ typedef struct sl_impl {
   int rendered_top_row;
   int rendered_cursor_row;
   int rendered_cursor_col;
+  /* Logical cursor is part of the prompt frame; this tracks whether the
+   * terminal cursor currently matches it. Output may invalidate only this. */
+  int rendered_cursor_valid;
   int rendered_width;
   int rendered_height;
   int native_prompt_rows;

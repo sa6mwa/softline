@@ -171,9 +171,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   be a string, an array-like table of string chunks, or a function that
   receives a 1-based chunk index and returns the next string or `nil`.
 - `sl:output_stream_begin()` opens one persistent output session above the
-  prompt. It starts at the existing terminal cursor, follows output downward,
-  and parks at the bottom. Producer bytes pass through unchanged; transcript
-  reflow belongs to the terminal. Rectangular viewports are unsupported.
+  prompt. Transcript output starts at the existing terminal cursor; the editable
+  prompt is anchored at the bottom from its first frame. Producer bytes pass
+  through unchanged; transcript reflow belongs to the terminal. Rectangular viewports are unsupported.
   The application owns its renderer, wakeup, and
   response/document lifecycle; Softline has no Markdown dependency.
 - `sl:output_stream_write(bytes)` sends a Lua byte string immediately into the
@@ -322,8 +322,10 @@ lua examples/chat.lua
 ```
 
 `examples/chat.lua` accepts the same `SOFTLINE_PROMPT_THEME` values as the C
-chat example. It uses the default native persistent output session: the prompt
-follows output until it reaches the terminal bottom.
+chat example. It uses the default native persistent output session: transcript
+output starts at the original cursor, while the prompt stays at the bottom.
+Output feeds preserve unchanged prompt cells; prompt updates patch only cells
+that differ from the previous frame.
 
 To run against the in-tree debug `libsoftline` instead of the installed local
 SDK:

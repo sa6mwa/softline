@@ -1478,6 +1478,22 @@ static const char *vt_csi(struct vt_screen *screen, const char *p) {
     }
     screen->row = screen->col = 0;
     break;
+  case 'L': {
+    int count = have_a && a > 0 ? a : 1;
+    int row;
+    if (screen->row < screen->scroll_top || screen->row > screen->scroll_bottom)
+      break;
+    if (count > screen->scroll_bottom - screen->row + 1)
+      count = screen->scroll_bottom - screen->row + 1;
+    for (row = screen->scroll_bottom; row >= screen->row + count; row--)
+      memcpy(screen->cells[row], screen->cells[row - count],
+             (size_t)screen->cols + 1);
+    for (row = screen->row; row < screen->row + count; row++) {
+      memset(screen->cells[row], ' ', (size_t)screen->cols);
+      screen->cells[row][screen->cols] = 0;
+    }
+    break;
+  }
   case 'S': {
     int count = have_a && a > 0 ? a : 1;
     while (count-- > 0)
@@ -9116,8 +9132,8 @@ static void retained_shrink_idle(sl_t *sl, void *userdata) {
   }
   retained_growth_snapshot(state);
   if (strncmp(state->screen.cells[0], "TRANSCRIPT", 10) != 0 ||
-      strncmp(state->screen.cells[1], "> x", 3) != 0 ||
-      state->screen.row != 1 || state->screen.col != 3 ||
+      strncmp(state->screen.cells[7], "> x", 3) != 0 ||
+      state->screen.row != 7 || state->screen.col != 3 ||
       sl_set_buffer(sl, "three\nfour") != SL_OK ||
       sl_set_status_message(sl, NULL) != SL_OK) {
     state->failed = 1;
@@ -9125,8 +9141,8 @@ static void retained_shrink_idle(sl_t *sl, void *userdata) {
   }
   retained_growth_snapshot(state);
   if (strncmp(state->screen.cells[0], "TRANSCRIPT", 10) != 0 ||
-      strncmp(state->screen.cells[1], "> three", 7) != 0 ||
-      strncmp(state->screen.cells[2], "  four", 6) != 0 ||
+      strncmp(state->screen.cells[6], "> three", 7) != 0 ||
+      strncmp(state->screen.cells[7], "  four", 6) != 0 ||
       sl_output_stream_begin(sl) != SL_OK) {
     state->failed = 1;
     goto finish;
@@ -9234,7 +9250,7 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
   const char *prompt;
   const char *resized;
 
-  TEST("native scroll resets streamed style before plain prompt redraw");
+  TEST("native stream resets style before restoring the prompt cursor");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 20;
   ws.ws_row = 8;
@@ -9260,12 +9276,12 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
   (void)read_live_pty_output(master_fd, output, sizeof(output));
   sync_start = strstr(output, "\033[41mRED\r\nNEXT");
   reset = sync_start ? strstr(sync_start, "\0337\033[0m") : NULL;
-  prompt = reset ? strstr(reset, "> ") : NULL;
+  prompt = reset ? strstr(reset, "\033[8;3H") : NULL;
   ASSERT_TRUE(sync_start && reset && prompt && reset < prompt,
               "native stream was rewritten or leaked style into the prompt");
   resized = reset ? strstr(reset + 6, "\033[1;7r\0338\0337") : NULL;
   reset = resized ? strstr(resized, "\033[0m") : NULL;
-  prompt = resized ? strstr(resized, "> ") : NULL;
+  prompt = resized ? strstr(resized, "\033[8;3H") : NULL;
   ASSERT_TRUE(resized && reset && prompt && reset < prompt,
               "resize restored producer style onto the plain prompt");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
@@ -9632,7 +9648,7 @@ static void test_retained_stream_tracks_readline_scrollback(void) {
   tests_passed++;
 }
 static void test_live_output_native_scroll_resets_prompt_style(void) {
-  TEST("native scroll resets streamed style before plain prompt redraw");
+  TEST("native stream resets style before restoring the prompt cursor");
   printf("SKIP\n");
   tests_passed++;
 }

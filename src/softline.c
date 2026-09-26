@@ -200,6 +200,7 @@ static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
                              unsigned long *codepoint);
 static int sl_render_clear_active(sl_t *self);
 static int sl_render_apply(sl_t *self, const char *prompt);
+static int sl_prompt_frame_move_down(sl_impl_t *impl, int top);
 static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
                                  size_t length);
 static int sl_write_cursor_pos(int fd, int row, int col);
@@ -755,6 +756,23 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
         impl->output_fd, width, prompt_top, row > 0 ? row - 1 : 0,
         row > 0 ? impl->probed_cursor_col : 0, sl_codepoint_width);
     return impl->output_surface ? 0 : -1;
+  }
+  if (sl_native_resize_pending(impl)) {
+    /* A terminal resize may already have moved DEC's saved cursor with its
+     * cells. Observe it before applying the new output margins, rather than
+     * shifting from the old tracked row a second time. */
+    if (sl_wstr(impl->output_fd, "\0338") != 0)
+      return -1;
+    if (impl->cursor_position_probe == 1) {
+      sl_native_cursor_observe(self);
+    } else {
+      int row, col, previous_rows;
+      sl_surface_native_position(impl->output_surface, &row, &col);
+      sl_surface_geometry(impl->output_surface, NULL, NULL, &previous_rows);
+      if (previous_rows > sl_terminal_rows(impl))
+        row -= previous_rows - sl_terminal_rows(impl);
+      sl_surface_native_cursor(impl->output_surface, row > 0 ? row : 0, col);
+    }
   }
   return sl_surface_resize(impl->output_surface, width, prompt_top);
 }
@@ -1820,6 +1838,7 @@ static void sl_render_store_clear(sl_impl_t *impl) {
   impl->rendered_rows = 0;
   impl->rendered_cursor_row = 0;
   impl->rendered_cursor_col = 0;
+  impl->rendered_cursor_valid = 0;
   impl->rendered_width = 0;
   impl->rendered_height = 0;
 }
@@ -1886,6 +1905,7 @@ static int sl_render_store_update(sl_impl_t *impl, sl_render_t *render,
   impl->rendered_top_row = top_row;
   impl->rendered_cursor_row = cursor_row;
   impl->rendered_cursor_col = cursor_col;
+  impl->rendered_cursor_valid = 1;
   return 0;
 }
 
@@ -2875,6 +2895,7 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   int transcript_top;
   char input_style[32];
   int input_styled;
+  int cells_valid = 1;
   impl = sl_impl(self);
   if (!impl)
     return -1;
@@ -2886,7 +2907,16 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   if (sl_native_resize_pending(impl)) {
     if (sl_hide_cursor(impl) != 0)
       return -1;
-    sl_render_store_clear(impl);
+    /* Height shrink scrolls the terminal to keep its bottom cursor visible.
+     * Retain the prompt cells and map their origin into that screen. */
+    if (impl->rendered_height > height) {
+      impl->rendered_top_row -= impl->rendered_height - height;
+      /* Shrink can clip prompt rows if the physical cursor was in the output
+       * during resize. The terminal cannot report retained cells; overwrite
+       * the new prompt rectangle without erasing it first. */
+      cells_valid = 0;
+    }
+    impl->rendered_cursor_valid = 0;
     if (sl_output_surface_reconcile(
             self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0)
       return -1;
@@ -2917,7 +2947,11 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
     int capacity;
     int desired;
     sl_surface_geometry(impl->output_surface, NULL, &capacity, NULL);
-    native_top = sl_surface_native_prompt_top(impl->output_surface);
+    {
+      int row, col;
+      sl_surface_native_position(impl->output_surface, &row, &col);
+      native_top = row >= capacity - 1 ? capacity : row + (col > 0);
+    }
     if (native_top < capacity) {
       desired = render->count;
       if (desired > height - native_top - 1)
@@ -2931,7 +2965,7 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
           return -1;
         /* Reconfiguring margins restores the output cursor. Prompt patches
          * must establish their own cursor position again. */
-        sl_render_store_clear(impl);
+        impl->rendered_cursor_valid = 0;
       }
     }
   }
@@ -2955,67 +2989,75 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
     cursor_row = 0;
   if (cursor_row >= visible)
     cursor_row = visible - 1;
-  top = sl_surface_is_native(impl->output_surface)
-            ? sl_surface_native_prompt_top(impl->output_surface)
-            : sl_prompt_top(impl, visible);
-  if (sl_surface_is_native(impl->output_surface) &&
-      top == sl_prompt_top(impl, sl_output_prompt_rows(impl)))
-    top = sl_prompt_top(impl, visible);
+  top = sl_prompt_top(impl, visible);
   transcript_top = sl_surface_is_native(impl->output_surface)
                        ? sl_prompt_top(impl, sl_output_prompt_rows(impl))
                        : top;
   if ((impl->output_stream_active || impl->output_surface) &&
       (!impl->output_surface ||
        !sl_surface_matches(impl->output_surface, width, transcript_top))) {
-    if (impl->rendered_rows > 0 && sl_render_clear_active(self) != 0)
-      return -1;
+    impl->rendered_cursor_valid = 0;
     if (sl_output_surface_reconcile(self, transcript_top) != 0) {
       sl_set_error(self, "failed to resize live output surface");
       return -1;
     }
   }
-  if (sl_render_visible_equal(impl, render, first, visible, cursor_row,
+  if (cells_valid &&
+      sl_render_visible_equal(impl, render, first, visible, cursor_row,
                               render->cursor_col, top)) {
+    if (!impl->rendered_cursor_valid) {
+      if (sl_write_cursor_pos(impl->output_fd, top + cursor_row,
+                              render->cursor_col) != 0 ||
+          sl_show_cursor(impl) != 0)
+        return -1;
+      impl->rendered_cursor_valid = 1;
+    }
+    impl->rendered_width = width;
+    impl->rendered_height = height;
     return 0;
+  }
+  /* A resize can translate an otherwise identical prompt. Preserve its cells
+   * instead of clearing and repainting the old and new rectangles. */
+  if (sl_surface_is_native(impl->output_surface) &&
+      impl->rendered_rows == visible && impl->rendered_top_row >= 0 &&
+      top > impl->rendered_top_row) {
+    if (sl_prompt_frame_move_down(impl, top) != 0 ||
+        sl_output_surface_reconcile(self, transcript_top) != 0)
+      return -1;
+    impl->rendered_cursor_valid = 0;
   }
   old_rows = impl->rendered_rows;
   old_top = impl->rendered_top_row;
-  current_row = old_rows > 0 && old_top == top ? impl->rendered_cursor_row : -1;
-  current_col = old_rows > 0 && old_top == top ? impl->rendered_cursor_col : -1;
+  current_row = impl->rendered_cursor_valid && old_rows > 0 && old_top == top
+                    ? impl->rendered_cursor_row
+                    : -1;
+  current_col = impl->rendered_cursor_valid && old_rows > 0 && old_top == top
+                    ? impl->rendered_cursor_col
+                    : -1;
   rc = 0;
 
-  if (old_rows > 0 && old_top != top) {
-    if (old_top >= 0) {
-      if (!sl_surface_is_native(impl->output_surface) && top < old_top &&
-          sl_scroll_region_up(impl, 0, old_top - 1, old_top - top) != 0)
-        rc = -1;
-      clear_top = old_top < top ? old_top : top;
-      clear_bottom = sl_terminal_bottom(impl);
-      for (i = clear_top; rc == 0 && i <= clear_bottom; i++) {
-        if (sl_write_cursor_pos(impl->output_fd, i, 0) != 0 ||
-            sl_clear_prompt_row(impl) != 0)
-          rc = -1;
-      }
-    }
-    sl_render_store_clear(impl);
-    old_rows = 0;
-    current_row = -1;
-    current_col = -1;
-  }
+  if (!sl_surface_is_native(impl->output_surface) && old_rows > 0 &&
+      old_top != top && top < old_top &&
+      sl_scroll_region_up(impl, 0, old_top - 1, old_top - top) != 0)
+    return -1;
 
   for (i = 0; rc == 0 && i < visible; i++) {
     int render_row;
+    int old_row;
     int patch_row;
     int prefix_col;
     size_t prefix_len;
     render_row = first + i;
-    if (i >= old_rows || !sl_row_equal(impl, render, i, render_row)) {
+    old_row = top + i - old_top;
+    if (!cells_valid || old_row < 0 || old_row >= old_rows ||
+        !sl_row_equal(impl, render, old_row, render_row)) {
       patch_row = 0;
       prefix_len = 0;
       prefix_col = 0;
-      if (!input_styled && i < old_rows && render_row >= render->editor_first) {
+      if (cells_valid && !input_styled && old_row >= 0 && old_row < old_rows &&
+          render_row >= render->editor_first) {
         prefix_len = sl_row_shared_prefix(
-            impl->rendered_lines[i], impl->rendered_lens[i],
+            impl->rendered_lines[old_row], impl->rendered_lens[old_row],
             render->rows[render_row].text, render->rows[render_row].len);
         if (prefix_len > 0) {
           prefix_col =
@@ -3046,18 +3088,21 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
         current_col = render->rows[render_row].cols;
       }
       if (rc == 0 &&
-          (i >= old_rows ||
-           impl->rendered_cols[i] > render->rows[render_row].cols) &&
+          (!cells_valid || old_row < 0 || old_row >= old_rows ||
+           impl->rendered_cols[old_row] > render->rows[render_row].cols) &&
           sl_clear_prompt_tail(impl) != 0)
         rc = -1;
     }
   }
-  for (i = visible; rc == 0 && i < old_rows; i++) {
-    if (sl_write_cursor_pos(impl->output_fd, top + i, 0) != 0 ||
+  /* Clear only old prompt rows that are outside the new frame. */
+  for (i = 0; rc == 0 && i < old_rows; i++) {
+    int row = old_top + i;
+    if (row < 0 || row >= height || (row >= top && row < top + visible))
+      continue;
+    if (sl_write_cursor_pos(impl->output_fd, row, 0) != 0 ||
         sl_clear_prompt_row(impl) != 0)
       rc = -1;
-    current_row = -1;
-    current_col = -1;
+    current_row = current_col = -1;
   }
   if (rc == 0 &&
       (current_row != cursor_row || current_col != render->cursor_col) &&
@@ -3668,6 +3713,28 @@ static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
   }
 }
 
+/* The cached prompt frame is the model of the cells we own. A downward
+ * translation preserves those cells with one terminal operation; it neither
+ * erases nor serializes the prompt again. Only the old/new prompt span moves.
+ */
+static int sl_prompt_frame_move_down(sl_impl_t *impl, int top) {
+  char seq[32];
+  int count;
+  int delta;
+  if (impl->rendered_rows <= 0 || top <= impl->rendered_top_row)
+    return 0;
+  delta = top - impl->rendered_top_row;
+  count = snprintf(seq, sizeof(seq), "\033[%dL", delta);
+  if (count <= 0 || count >= (int)sizeof(seq) ||
+      sl_set_scroll_region(impl->output_fd, impl->rendered_top_row,
+                           top + impl->rendered_rows - 1) != 0 ||
+      sl_write_cursor_pos(impl->output_fd, impl->rendered_top_row, 0) != 0 ||
+      sl_write_all(impl->output_fd, seq, (size_t)count) != 0)
+    return -1;
+  impl->rendered_top_row = top;
+  return 0;
+}
+
 static int sl_output_flush_redirected(sl_t *self, const char *bytes,
                                       size_t length) {
   sl_impl_t *impl;
@@ -3675,7 +3742,8 @@ static int sl_output_flush_redirected(sl_t *self, const char *bytes,
   if (length == 0)
     return SL_OK;
   if (sl_surface_is_native(impl->output_surface)) {
-    if (sl_hide_cursor(impl) != 0 || sl_render_clear_active(self) != 0 ||
+    impl->rendered_cursor_valid = 0;
+    if (sl_hide_cursor(impl) != 0 ||
         sl_surface_native_write(impl->output_surface, bytes, length) != 0) {
       (void)sl_show_cursor(impl);
       sl_set_error(self, "failed to write native output");
