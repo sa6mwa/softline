@@ -836,6 +836,17 @@ static void sl_output_surface_update_scroll_hook(sl_t *self) {
       self);
 }
 
+static int sl_native_output_layout(sl_impl_t *impl) {
+  return sl_box_left(impl) == 0 && sl_box_top(impl) == 0 &&
+         sl_box_width(impl) == sl_terminal_columns(impl) &&
+         sl_box_bottom(impl) == sl_terminal_rows(impl) - 1;
+}
+
+static int sl_native_resize_pending(sl_impl_t *impl) {
+  return sl_native_output_layout(impl) &&
+         sl_surface_native_resize_pending(impl->output_surface);
+}
+
 static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
                                        int after_native_scroll) {
   sl_impl_t *impl;
@@ -862,7 +873,8 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top,
     if (!impl->output_surface)
       return -1;
   } else if (sl_surface_resize(impl->output_surface, x, y, width, height,
-                               after_native_scroll) != 0) {
+                               after_native_scroll,
+                               sl_native_output_layout(impl)) != 0) {
     return -1;
   }
   sl_output_surface_update_scroll_hook(self);
@@ -955,6 +967,7 @@ static int sl_buf_set(sl_t *self, const char *s) {
   impl->buf[n] = '\0';
   impl->len = n;
   impl->cursor = n;
+  impl->resize_prompt_rows = 0;
   return 0;
 }
 
@@ -975,6 +988,7 @@ static int sl_buf_insert(sl_t *self, size_t at, const char *s, size_t n) {
   memcpy(impl->buf + at, s, n);
   impl->len += n;
   impl->buf[impl->len] = '\0';
+  impl->resize_prompt_rows = 0;
   return 0;
 }
 
@@ -990,6 +1004,7 @@ static void sl_buf_delete(sl_t *self, size_t at, size_t n) {
   memmove(impl->buf + at, impl->buf + at + n, tail);
   impl->len -= n;
   impl->buf[impl->len] = '\0';
+  impl->resize_prompt_rows = 0;
 }
 
 static int sl_buf_insert_cstr(sl_t *self, const char *text) {
@@ -3001,6 +3016,18 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
   input_styled = input_style[0] != '\0';
   height = sl_terminal_height(impl);
   width = sl_box_width(impl);
+  if (sl_native_resize_pending(impl)) {
+    int old_height;
+    int old_terminal_rows;
+    sl_surface_geometry(impl->output_surface, NULL, NULL, NULL, &old_height,
+                        &old_terminal_rows);
+    /* Keep the existing prompt reservation. Growing it on resize would
+     * consume transcript rows which the terminal has already reflowed. */
+    impl->resize_prompt_rows = old_terminal_rows - old_height;
+    if (impl->resize_prompt_rows < 1)
+      impl->resize_prompt_rows = 1;
+    sl_render_store_clear(impl);
+  }
   if (!impl->output_stream_active && !impl->output_surface &&
       impl->rendered_rows > 0 &&
       (impl->rendered_width != width || impl->rendered_height != height)) {
@@ -3022,6 +3049,8 @@ static int sl_render_apply_bounded(sl_t *self, sl_render_t *render) {
     sl_render_store_clear(impl);
   }
   visible = render->count;
+  if (impl->resize_prompt_rows > 0 && visible > impl->resize_prompt_rows)
+    visible = impl->resize_prompt_rows;
   if (visible > height)
     visible = height;
   if (impl->output_stream_active && height > 1 && visible >= height)
@@ -3376,6 +3405,12 @@ static int sl_render_clear_active(sl_t *self) {
   impl = sl_impl(self);
   if (!impl || impl->rendered_rows <= 0)
     return 0;
+  if (sl_native_resize_pending(impl)) {
+    /* A physical resize invalidates cached prompt coordinates as well as
+     * transcript coordinates. Never erase the screen using the old ones. */
+    sl_render_store_clear(impl);
+    return 0;
+  }
   if (sl_bounded_mode(impl)) {
     if (sl_hide_cursor(impl) != 0)
       return -1;

@@ -10890,17 +10890,44 @@ struct live_resize_tail_state {
   char before_resize[8192];
   char after_resize[8192];
   char after_write[8192];
+  char after_idle[8192];
+  char after_expand[8192];
+  char after_expand_write[8192];
 };
 
 static void live_resize_tail_idle(sl_t *sl, void *userdata) {
   struct live_resize_tail_state *state;
   struct winsize ws;
   state = (struct live_resize_tail_state *)userdata;
-  if (state->fired)
+  if (state->fired == 2)
     return;
+  if (state->fired == 1) {
+    state->fired = 2;
+    if (sl_set_status_message(sl, "status update after terminal resize") !=
+        SL_OK)
+      state->failed = 1;
+    (void)read_live_pty_output(state->master_fd, state->after_idle,
+                               sizeof(state->after_idle));
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = 40;
+    ws.ws_row = 8;
+    if (ioctl(state->master_fd, TIOCSWINSZ, &ws) != 0 ||
+        sl_set_bounds(sl, 0, 0, 0, 0) != SL_OK)
+      state->failed = 1;
+    (void)read_live_pty_output(state->master_fd, state->after_expand,
+                               sizeof(state->after_expand));
+    if (sl_output_stream_write(sl, "t", 1) != SL_OK)
+      state->failed = 1;
+    (void)read_live_pty_output(state->master_fd, state->after_expand_write,
+                               sizeof(state->after_expand_write));
+    (void)sl_cancel(sl);
+    return;
+  }
   state->fired = 1;
-  if (sl_output_stream_write(sl, "FIRST\nSECOND\nabcdefghijklmnopqr", 31) !=
-      SL_OK) {
+  if (sl_set_buffer(sl, "hello world sentence") != SL_OK ||
+      sl_set_status_message(sl, NULL) != SL_OK ||
+      sl_output_stream_write(sl, "FIRST\nSECOND\nabcdefghijklmnopqr", 31) !=
+          SL_OK) {
     state->failed = 1;
     goto finish;
   }
@@ -10922,6 +10949,7 @@ static void live_resize_tail_idle(sl_t *sl, void *userdata) {
   }
   (void)read_live_pty_output(state->master_fd, state->after_write,
                              sizeof(state->after_write));
+  return;
 finish:
   (void)sl_cancel(sl);
 }
@@ -10934,13 +10962,13 @@ static void test_live_output_resize_continues_current_row(void) {
   sl_t *sl;
   int master_fd;
   int slave_fd;
-  int row;
   unsigned int history_before;
+  char native_transcript[5][120];
   char *line;
 
   TEST("live output width resize continues current row without scrolling");
   memset(&ws, 0, sizeof(ws));
-  ws.ws_col = 20;
+  ws.ws_col = 40;
   ws.ws_row = 8;
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
               "openpty failed");
@@ -10957,24 +10985,58 @@ static void test_live_output_resize_continues_current_row(void) {
                       SL_OK,
               "live resize setup failed");
   line = sl_readline(sl, "> ");
-  ASSERT_TRUE(line == NULL && state.fired && !state.failed &&
+  ASSERT_TRUE(line == NULL && state.fired == 2 && !state.failed &&
                   !contains_bytes(state.after_resize, "\n") &&
-                  !contains_bytes(state.after_write, "\n"),
+                  !contains_bytes(state.after_write, "\n") &&
+                  !contains_bytes(state.after_idle, "\n"),
               "resizing an unfinished output row inserted a terminal line");
-  vt_init(&screen, 8, 20);
-  vt_apply(&screen, state.before_resize);
+  ASSERT_TRUE(!contains_bytes(state.after_resize, "FIRST") &&
+                  !contains_bytes(state.after_resize, "SECOND") &&
+                  !contains_bytes(state.after_resize, "abcdefghijklmnop"),
+              "resize replayed cached transcript text");
+  /* Model the screen AFTER the terminal's native resize/reflow, before
+   * Softline sees the new geometry. Its transcript no longer matches the
+   * cached cell coordinates, including rows outside the retained surface. */
+  vt_init(&screen, 8, 16);
+  vt_apply(&screen, "\033[1;1HNATIVE REFLOW\033[2;1HFIRST"
+                    "\033[3;1HSECOND\033[4;1Habcdefghijklmnop\033[5;1Hqr"
+                    "\033[7;1H> hello world\033[8;1H  sentence");
   history_before = screen.history_count;
-  screen.cols = 16;
-  for (row = 0; row < screen.rows; row++)
-    screen.cells[row][screen.cols] = '\0';
+  memcpy(native_transcript, screen.cells, sizeof(native_transcript));
   vt_apply(&screen, state.after_resize);
+  ASSERT_TRUE(
+      memcmp(native_transcript, screen.cells, sizeof(native_transcript)) == 0,
+      "resize erased or overwrote native transcript rows");
   vt_apply(&screen, state.after_write);
+  memcpy(native_transcript, screen.cells, sizeof(native_transcript));
+  vt_apply(&screen, state.after_idle);
   ASSERT_TRUE(screen.history_count == history_before &&
+                  memcmp(native_transcript, screen.cells,
+                         sizeof(native_transcript)) == 0 &&
                   vt_count(&screen, "FIRST") == 1 &&
                   vt_count(&screen, "SECOND") == 1 &&
                   vt_contains(&screen, "abcdefghijklmnop") &&
                   vt_contains(&screen, "qrs"),
               "resized output lost cells or advanced scrollback");
+  ASSERT_TRUE(vt_contains(&screen, "> hello world") &&
+                  vt_contains(&screen, "sentence"),
+              "resized editor did not retain its draft");
+  vt_init(&screen, 8, 40);
+  vt_apply(&screen, "\033[1;1HNATIVE REFLOW\033[3;1HFIRST"
+                    "\033[4;1HSECOND\033[5;1Habcdefghijklmnopqrs"
+                    "\033[7;1H> hello world sentence");
+  memcpy(native_transcript, screen.cells, sizeof(native_transcript));
+  vt_apply(&screen, state.after_expand);
+  ASSERT_TRUE(
+      memcmp(native_transcript, screen.cells, sizeof(native_transcript)) == 0 &&
+          !contains_bytes(state.after_expand, "abcdefghijklmnop"),
+      "widening replayed or overwrote the native transcript");
+  vt_apply(&screen, state.after_expand_write);
+  ASSERT_TRUE(screen.history_count == 0 &&
+                  !contains_bytes(state.after_expand, "\n") &&
+                  !contains_bytes(state.after_expand_write, "\n") &&
+                  vt_contains(&screen, "abcdefghijklmnopqrst"),
+              "output resumed at the wrong column after widening");
   sl_destroy(sl);
   close(slave_fd);
   close(master_fd);

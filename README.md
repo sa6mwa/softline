@@ -191,6 +191,12 @@ alternate screen. Softline never enters or leaves the alternate screen itself.
 The live viewport retains only visible terminal cells and partial parser state.
 Full-width main-screen sessions scroll those cells into native terminal
 scrollback. Softline does not keep its own transcript history.
+On terminal resize, those sessions leave transcript reflow to the terminal
+and redraw only the prompt within its existing row reservation. If narrower
+input needs more rows, the editor shows the portion containing the cursor;
+the next buffer edit allows the prompt to grow normally. Resizing does not
+clear or replay the transcript. Shorter, narrow, or offset viewports continue
+to repaint their own bounded cells.
 
 ## Persistent output session
 
