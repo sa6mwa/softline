@@ -133,13 +133,11 @@ static int set_busy(struct chat_state *state, int busy) {
 }
 
 static int show_goodbye(struct chat_state *state) {
-  static const char *const elements[] = {"Good bye."};
   if (!state->interactive)
     return 0;
-  if (sl_set_status_elements(state->sl, elements, 1) != SL_OK ||
-      sl_set_status_spinner(state->sl, 0) != SL_OK ||
+  if (sl_set_status_spinner(state->sl, 0) != SL_OK ||
       sl_set_status_busy(state->sl, 0) != SL_OK ||
-      sl_set_status_message(state->sl, NULL) != SL_OK)
+      sl_set_status_message(state->sl, "Good bye.") != SL_OK)
     return -1;
   return 0;
 }
