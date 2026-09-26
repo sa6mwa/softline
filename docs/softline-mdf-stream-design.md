@@ -10,14 +10,18 @@ Only the chat examples and integration tests depend on libmdf. A released
 libsoftline, its Lua facade, headers, CMake exports, and package metadata have
 no libmdf dependency.
 
-libmdf 0.12.0 has incremental feed, a bound sink, and in-document width and
+libmdf 0.13.0 has incremental feed, a bound sink, and in-document width and
 margin changes through `set_geometry()`. The chat composer updates both
 renderer geometries on the Softline owner thread before feeding later
 Markdown; Softline reads the terminal dimensions for its native prompt.
 The composer uses a two-column left margin except on very narrow terminals,
 where it drops the margin to retain libmdf's three content columns. Neither
 Softline nor the examples recreate or replay an unfinished Markdown document.
-Softline never infers libmdf margins.
+Softline never infers libmdf margins. The example supplies its borrowed stdout
+fd to libmdf's destination-aware ANSI AUTO policy: terminal output is themed,
+and redirected output is escape-free. Renderer handles are rebuilt against
+libmdf 0.13.0's options layout; this private example dependency does not change
+Softline ABI 0.
 
 ## Generic Softline output session
 

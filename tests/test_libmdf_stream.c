@@ -114,6 +114,7 @@ static void *render_markdown(void *userdata) {
   stream = (struct renderer_stream *)userdata;
   renderer = NULL;
   mdf_options_init(&options);
+  options.ansi_mode = MDF_ANSI_ON;
   options.boring = 1;
   options.width = 72;
   stream->status = mdf_create(MDF_FORMAT_ANSI, &options, &renderer);
@@ -241,6 +242,7 @@ static int check_live_geometry(void) {
 
   memset(&output, 0, sizeof(output));
   mdf_options_init(&options);
+  options.ansi_mode = MDF_ANSI_ON;
   options.boring = 1;
   options.width = 40;
   options.margin_left = 2;

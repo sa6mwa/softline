@@ -58,6 +58,7 @@ static int new_renderer(struct chat_state *state, mdf **out) {
   mdf_options options;
   mdf_sink sink;
   mdf_options_init(&options);
+  options.output_fd = STDOUT_FILENO;
   options.width = state->columns;
   options.margin_left = chat_margin_left(state->columns);
   options.boring = !state->interactive;

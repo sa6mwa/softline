@@ -99,8 +99,8 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 `example_chat` is the C streaming Markdown demo. It links libmdf only as an
 example dependency: libsoftline and its installed package remain independent
 of libmdf. The composer gives libmdf a two-column left margin and its default
-ANSI palette, updating both renderers' geometry on resize and dropping the
-margin on very narrow terminals. Softline's quoted-prompt helper writes each
+ANSI palette for terminal output (escape-free when redirected), updating both
+renderers' geometry on resize and dropping the margin on very narrow terminals. Softline's quoted-prompt helper writes each
 submitted prompt directly into the output session as a literal, italic quote.
 It repeats the configurable `> ` prefix after wrapping and supplies the line
 breaks needed for one visible empty row on each side. Markdown punctuation in
