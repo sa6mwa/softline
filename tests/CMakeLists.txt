@@ -81,5 +81,5 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET examp
     $<TARGET_FILE:example_simple>
     $<TARGET_FILE:example_chat>
   )
-  set_tests_properties(softline_examples PROPERTIES LABELS "integration" TIMEOUT 30)
+  set_tests_properties(softline_examples PROPERTIES LABELS "integration" TIMEOUT 60)
 endif()

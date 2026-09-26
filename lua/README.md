@@ -329,8 +329,8 @@ lua examples/chat.lua
 ```
 
 `examples/chat.lua` accepts the same `SOFTLINE_PROMPT_THEME` values as the C
-chat example. Set `SOFTLINE_LIVE_SCROLL_REGION=1` to demonstrate the optional
-unbounded bottom-pinned scroll-region mode.
+chat example. It uses the default native persistent output session: the prompt
+follows output until it reaches the terminal bottom.
 
 To run against the in-tree debug `libsoftline` instead of the installed local
 SDK:

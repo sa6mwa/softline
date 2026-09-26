@@ -8,10 +8,24 @@
 typedef struct sl_surface sl_surface_t;
 
 sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
+                                int initial_col,
                                 int (*cell_width)(unsigned long),
                                 int (*cluster_width)(const char *, size_t));
 /* A parser-only session for redirected output; keeps only ANSI/UTF-8 state. */
 sl_surface_t *sl_surface_create_validator(void);
+/* Native full-width output owns no transcript cells. Payload bytes are
+ * forwarded verbatim inside the rows above the prompt. */
+sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
+                                       int col,
+                                       int (*cell_width)(unsigned long));
+int sl_surface_is_native(const sl_surface_t *surface);
+int sl_surface_native_prompt_top(const sl_surface_t *surface);
+void sl_surface_native_cursor(sl_surface_t *surface, int row, int col);
+void sl_surface_native_position(const sl_surface_t *surface, int *row,
+                                int *col);
+int sl_surface_native_detach(sl_surface_t *surface);
+int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
+                            size_t length);
 void sl_surface_destroy(sl_surface_t *surface);
 /* after_native_scroll means the caller already scrolled the displaced top
  * rows into terminal history; the remaining cells are physically aligned.
@@ -47,8 +61,5 @@ int sl_surface_trailing_blank_rows(const sl_surface_t *surface, int limit);
 int sl_surface_boundary_will_scroll(const sl_surface_t *surface);
 int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
                        int height);
-/* Called before and after a visible viewport row is scrolled away. */
-void sl_surface_set_scroll_hook(sl_surface_t *surface, int (*hook)(void *, int),
-                                void *userdata);
 
 #endif

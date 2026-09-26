@@ -44,9 +44,10 @@ struct sl_surface {
   int height;
   int terminal_rows;
   int terminal_columns;
-  int native_history;
+  int native_stream;
+  int native_row;
+  int native_saved;
   int col;
-  int current_line_rows;
   sl_surface_cell_t *cells;
   sl_surface_style_t style;
   int (*cell_width)(unsigned long);
@@ -63,9 +64,17 @@ struct sl_surface {
   int draw_row;
   int draw_col;
   sl_surface_style_t draw_style;
-  int (*scroll_hook)(void *, int);
-  void *scroll_userdata;
 };
+
+static int sl_surface_terminal_size(int fd, struct winsize *terminal) {
+  if (ioctl(fd, TIOCGWINSZ, terminal) != 0)
+    return -1;
+  if (terminal->ws_col == 0)
+    terminal->ws_col = 80;
+  if (terminal->ws_row == 0)
+    terminal->ws_row = 24;
+  return 0;
+}
 
 static int sl_surface_write_all(int fd, const char *bytes, size_t length) {
   while (length > 0) {
@@ -261,9 +270,6 @@ static int sl_surface_scroll(sl_surface_t *surface) {
   size_t row_cells;
   if (surface->height <= 0 || surface->width <= 0)
     return -1;
-  if (surface->scroll_hook &&
-      surface->scroll_hook(surface->scroll_userdata, 0) != 0)
-    return -1;
   row_cells = (size_t)surface->width;
   if (surface->height > 1)
     memmove(surface->cells, surface->cells + row_cells,
@@ -272,13 +278,7 @@ static int sl_surface_scroll(sl_surface_t *surface) {
   memset(surface->cells + row_cells * (size_t)(surface->height - 1), 0,
          row_cells * sizeof(*surface->cells));
   surface->draw_valid = 0;
-  /* The main terminal has already shifted these same cells. Repainting its
-   * viewport would clear and redraw the transcript on every newline. */
-  if (!surface->scroll_hook && sl_surface_repaint(surface, 1) != 0)
-    return -1;
-  return surface->scroll_hook
-             ? surface->scroll_hook(surface->scroll_userdata, 1)
-             : 0;
+  return sl_surface_repaint(surface, 1);
 }
 
 static int sl_surface_row_occupied(const sl_surface_t *surface, int row) {
@@ -316,7 +316,6 @@ static int sl_surface_advance_boundary(sl_surface_t *surface) {
   if (!surface->boundary_pending)
     return 0;
   surface->col = 0;
-  surface->current_line_rows = 1;
   if (sl_surface_boundary_will_scroll(surface) &&
       sl_surface_scroll(surface) != 0)
     return -1;
@@ -324,22 +323,24 @@ static int sl_surface_advance_boundary(sl_surface_t *surface) {
   return 0;
 }
 
-void sl_surface_set_scroll_hook(sl_surface_t *surface, int (*hook)(void *, int),
-                                void *userdata) {
-  if (!surface)
-    return;
-  surface->scroll_hook = hook;
-  surface->scroll_userdata = userdata;
-  if (hook)
-    surface->native_history = 1;
-}
-
 static int sl_surface_put(sl_surface_t *surface, const char *bytes,
                           unsigned int length, unsigned long codepoint) {
   sl_surface_cell_t *cell;
   int cells;
-  if (surface->validate_only)
+  if (surface->validate_only) {
+    if (surface->native_stream) {
+      cells = surface->cell_width(codepoint);
+      if (cells < 0)
+        cells = 1;
+      if (surface->col + cells > surface->width) {
+        surface->col = 0;
+        if (surface->native_row + 1 < surface->height)
+          surface->native_row++;
+      }
+      surface->col += cells;
+    }
     return 0;
+  }
   cells = surface->cell_width(codepoint);
   if (cells < 0)
     cells = 1;
@@ -389,8 +390,6 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
           surface->col = 0;
           if (sl_surface_scroll(surface) != 0)
             return -1;
-          if (surface->current_line_rows < surface->height)
-            surface->current_line_rows++;
           base_col = 0;
           cell = &surface->cells[(size_t)(surface->height - 1) *
                                  (size_t)surface->width];
@@ -414,8 +413,6 @@ static int sl_surface_put(sl_surface_t *surface, const char *bytes,
     surface->col = 0;
     if (sl_surface_scroll(surface) != 0)
       return -1;
-    if (surface->current_line_rows < surface->height)
-      surface->current_line_rows++;
   }
   cell =
       &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
@@ -590,21 +587,31 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
     return 0;
   }
   if (byte == '\n') {
-    if (surface->validate_only)
+    if (surface->validate_only) {
+      if (surface->native_stream) {
+        surface->col = 0;
+        if (surface->native_row + 1 < surface->height)
+          surface->native_row++;
+      }
       return 0;
+    }
     surface->col = 0;
-    surface->current_line_rows = 1;
     return sl_surface_scroll(surface);
   }
   if (byte == '\r') {
     surface->col = 0;
-    surface->current_line_rows = 1;
     return 0;
   }
   if (byte == '\t') {
     int spaces;
-    if (surface->validate_only)
+    if (surface->validate_only) {
+      if (surface->native_stream) {
+        surface->col += 8 - (surface->col % 8);
+        if (surface->col >= surface->width)
+          surface->col = surface->width - 1;
+      }
       return 0;
+    }
     spaces = 8 - (surface->col % 8);
     while (spaces-- > 0) {
       if (sl_surface_put(surface, " ", 1, ' ') != 0)
@@ -633,6 +640,7 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
 }
 
 sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
+                                int initial_col,
                                 int (*cell_width)(unsigned long),
                                 int (*cluster_width)(const char *, size_t)) {
   sl_surface_t *surface;
@@ -660,8 +668,7 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
   surface->y = y;
   surface->width = width;
   surface->height = height;
-  surface->current_line_rows = 1;
-  if (ioctl(fd, TIOCGWINSZ, &terminal) == 0) {
+  if (sl_surface_terminal_size(fd, &terminal) == 0) {
     surface->terminal_rows = (int)terminal.ws_row;
     surface->terminal_columns = (int)terminal.ws_col;
   }
@@ -669,11 +676,13 @@ sl_surface_t *sl_surface_create(int fd, int x, int y, int width, int height,
   surface->cluster_width = cluster_width;
   /* The cells start blank, so the row receiving the first byte must agree
    * with them even when the terminal already contains older text. */
-  if (height > 0 &&
+  if (initial_col < 0 && height > 0 &&
       sl_surface_clear_rect(surface, x, y + height - 1, width, 1) != 0) {
     sl_surface_destroy(surface);
     return NULL;
   }
+  if (initial_col >= 0)
+    surface->col = initial_col < width ? initial_col : width;
   return surface;
 }
 
@@ -685,17 +694,136 @@ sl_surface_t *sl_surface_create_validator(void) {
   return surface;
 }
 
+int sl_surface_is_native(const sl_surface_t *surface) {
+  return surface && surface->native_stream;
+}
+
+static int sl_surface_native_region(sl_surface_t *surface) {
+  char seq[48];
+  int count;
+  if (surface->height < 1)
+    return -1;
+  count = surface->height > 1
+              ? snprintf(seq, sizeof(seq), "\033[1;%dr", surface->height)
+              : snprintf(seq, sizeof(seq), "\033[r");
+  return count > 0 && count < (int)sizeof(seq)
+             ? sl_surface_write_all(surface->fd, seq, (size_t)count)
+             : -1;
+}
+
+sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
+                                       int col,
+                                       int (*cell_width)(unsigned long)) {
+  sl_surface_t *surface;
+  struct winsize terminal;
+  char seq[64];
+  int count;
+  int shift;
+  surface = sl_surface_create_validator();
+  if (!surface)
+    return NULL;
+  surface->fd = fd;
+  surface->width = width;
+  surface->height = height;
+  surface->native_stream = 1;
+  surface->native_row = row < height ? row : height - 1;
+  surface->col = col;
+  surface->cell_width = cell_width;
+  if (sl_surface_terminal_size(fd, &terminal) != 0 ||
+      sl_surface_write_all(fd, "\0337", 2) != 0) {
+    sl_surface_destroy(surface);
+    return NULL;
+  }
+  shift = row >= height ? row - height + 1 : 0;
+  if (shift > 0) {
+    count = snprintf(seq, sizeof(seq), "\033[r\033[%dS\0338\033[%dA\0337",
+                     shift, shift);
+    if (count <= 0 || count >= (int)sizeof(seq) ||
+        sl_surface_write_all(fd, seq, (size_t)count) != 0) {
+      sl_surface_destroy(surface);
+      return NULL;
+    }
+  }
+  if (sl_surface_native_region(surface) != 0 ||
+      sl_surface_write_all(fd, "\0338\033[0m", 6) != 0) {
+    sl_surface_destroy(surface);
+    return NULL;
+  }
+  surface->terminal_rows = terminal.ws_row;
+  surface->terminal_columns = terminal.ws_col;
+  surface->native_saved = 1;
+  return surface;
+}
+
+int sl_surface_native_prompt_top(const sl_surface_t *surface) {
+  int row;
+  if (!sl_surface_is_native(surface))
+    return -1;
+  if (surface->native_row >= surface->height - 1)
+    return surface->height;
+  row = surface->native_row + (surface->col > 0 ? 1 : 0);
+  return row <= surface->height ? row : surface->height;
+}
+
+void sl_surface_native_cursor(sl_surface_t *surface, int row, int col) {
+  if (!sl_surface_is_native(surface) || row < 0 || col < 0)
+    return;
+  surface->native_row = row < surface->height ? row : surface->height - 1;
+  surface->col = col;
+}
+
+void sl_surface_native_position(const sl_surface_t *surface, int *row,
+                                int *col) {
+  if (row)
+    *row = surface->native_row;
+  if (col)
+    *col = surface->col;
+}
+
+int sl_surface_native_detach(sl_surface_t *surface) {
+  int col;
+  col = surface->col;
+  (void)sl_surface_write_all(surface->fd, "\033[r\033[0m", 7);
+  surface->native_saved = 0;
+  surface->native_stream = 0;
+  return col;
+}
+
+int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
+                            size_t length) {
+  if (!sl_surface_is_native(surface) ||
+      sl_surface_native_region(surface) != 0 ||
+      sl_surface_write_all(surface->fd, "\0338", 2) != 0 ||
+      sl_surface_write_all(surface->fd, bytes, length) != 0 ||
+      sl_surface_write_all(surface->fd, "\0337\033[0m", 6) != 0)
+    return -1;
+  return 0;
+}
+
 void sl_surface_destroy(sl_surface_t *surface) {
   if (!surface)
     return;
+  if (surface->native_stream) {
+    (void)sl_surface_write_all(surface->fd, "\033[r", 3);
+    if (surface->native_saved) {
+      (void)sl_surface_write_all(surface->fd, "\0338\033[0m\r", 7);
+      if (surface->col > 0)
+        (void)sl_surface_write_all(surface->fd, "\n", 1);
+    }
+    (void)sl_surface_write_all(surface->fd, "\033[?25h", 6);
+  }
   free(surface->cells);
   free(surface);
 }
 
 int sl_surface_matches(const sl_surface_t *surface, int x, int y, int width,
                        int height) {
+  struct winsize terminal;
   return surface && surface->x == x && surface->y == y &&
-         surface->width == width && surface->height == height;
+         surface->width == width && surface->height == height &&
+         sl_surface_terminal_size(surface->fd, &terminal) == 0 &&
+         surface->terminal_rows == (int)terminal.ws_row &&
+         surface->terminal_columns == (int)terminal.ws_col;
 }
 
 void sl_surface_geometry(const sl_surface_t *surface, int *x, int *y,
@@ -716,99 +844,86 @@ void sl_surface_geometry(const sl_surface_t *surface, int *x, int *y,
 
 int sl_surface_native_resize_pending(const sl_surface_t *surface) {
   struct winsize terminal;
-  return surface && surface->native_history && surface->x == 0 &&
+  return surface && surface->native_stream && surface->x == 0 &&
          surface->y == 0 && surface->width == surface->terminal_columns &&
-         ioctl(surface->fd, TIOCGWINSZ, &terminal) == 0 &&
+         sl_surface_terminal_size(surface->fd, &terminal) == 0 &&
          ((int)terminal.ws_col != surface->terminal_columns ||
           (int)terminal.ws_row != surface->terminal_rows);
 }
 
-/* Reconcile the unfinished logical line without emitting terminal bytes.
- * Retain only its visible wrapped rows, including when a wider terminal
- * joins those rows again. Completed transcript rows remain terminal-owned. */
-static void sl_surface_reflow_current_line(const sl_surface_t *surface,
-                                           sl_surface_cell_t *cells, int width,
-                                           int height, int *new_col,
-                                           int *new_line_rows) {
-  int source_row;
+/* A narrower viewport can turn the unfinished bottom row into several rows.
+ * Keep its visible cells and write position together so the next byte does
+ * not manufacture a scroll merely because the old column was clipped. */
+static void sl_surface_reflow_current_row(const sl_surface_t *surface,
+                                          sl_surface_cell_t *cells, int width,
+                                          int height, int *new_col) {
   int source_col;
-  int line_rows;
   int segment_col;
   int segments;
   int segment;
-  int previous_rows;
-  int retained_rows;
-  int cols;
-  int pass;
-  if (surface->height <= 0 || height <= 0 || surface->width == width)
+  int first_row;
+  int shift;
+  if (surface->height <= 0 || height <= 0 || surface->col <= width)
     return;
-  line_rows = surface->current_line_rows;
-  if (line_rows < 1)
-    line_rows = 1;
-  if (line_rows > surface->height)
-    line_rows = surface->height;
+  segment_col = 0;
   segments = 1;
-  for (pass = 0; pass < 2; pass++) {
-    segment_col = 0;
-    segment = 0;
-    for (source_row = surface->height - line_rows; source_row < surface->height;
-         source_row++) {
-      int limit;
-      limit = source_row == surface->height - 1 ? surface->col : surface->width;
-      for (source_col = 0; source_col < limit; source_col++) {
-        const sl_surface_cell_t *cell;
-        int cell_width;
-        int target_row;
-        cell = &surface->cells[(size_t)source_row * (size_t)surface->width +
-                               (size_t)source_col];
-        if (cell->len == 0)
-          continue;
-        cell_width = cell->width <= width ? cell->width : 1;
-        if (segment_col + cell_width > width) {
-          segment++;
-          segment_col = 0;
-        }
-        target_row = height - segments + segment;
-        if (pass == 1 && target_row >= 0 && target_row < height) {
-          sl_surface_cell_t *target;
-          target =
-              &cells[(size_t)target_row * (size_t)width + (size_t)segment_col];
-          *target = *cell;
-          if (cell->width > width) {
-            target->bytes[0] = ' ';
-            target->len = 1;
-            target->width = 1;
-          }
-        }
-        segment_col += cell_width;
+  for (source_col = 0; source_col < surface->col && source_col < surface->width;
+       source_col++) {
+    const sl_surface_cell_t *cell;
+    int cell_width;
+    cell =
+        &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
+                        (size_t)source_col];
+    if (cell->len == 0)
+      continue;
+    cell_width = cell->width <= width ? cell->width : 1;
+    if (segment_col + cell_width > width) {
+      segments++;
+      segment_col = 0;
+    }
+    segment_col += cell_width;
+  }
+  if (segments <= 1)
+    return;
+  *new_col = segment_col;
+  shift = segments - 1;
+  if (shift < height)
+    memmove(cells, cells + (size_t)shift * (size_t)width,
+            (size_t)(height - shift) * (size_t)width * sizeof(*cells));
+  first_row = height - segments;
+  if (first_row < 0)
+    first_row = 0;
+  memset(cells + (size_t)first_row * (size_t)width, 0,
+         (size_t)(height - first_row) * (size_t)width * sizeof(*cells));
+  segment_col = 0;
+  segment = 0;
+  for (source_col = 0; source_col < surface->col && source_col < surface->width;
+       source_col++) {
+    const sl_surface_cell_t *cell;
+    int cell_width;
+    int target_row;
+    cell =
+        &surface->cells[(size_t)(surface->height - 1) * (size_t)surface->width +
+                        (size_t)source_col];
+    if (cell->len == 0)
+      continue;
+    cell_width = cell->width <= width ? cell->width : 1;
+    if (segment_col + cell_width > width) {
+      segment++;
+      segment_col = 0;
+    }
+    target_row = height - segments + segment;
+    if (target_row >= 0 && target_row < height) {
+      sl_surface_cell_t *target;
+      target = &cells[(size_t)target_row * (size_t)width + (size_t)segment_col];
+      *target = *cell;
+      if (cell->width > width) {
+        target->bytes[0] = ' ';
+        target->len = 1;
+        target->width = 1;
       }
     }
-    if (pass == 0) {
-      segments = segment + 1;
-      *new_col = segment_col;
-      *new_line_rows = segments < height ? segments : height;
-      memset(cells, 0, (size_t)height * (size_t)width * sizeof(*cells));
-      previous_rows = height > segments ? height - segments : 0;
-      retained_rows = surface->height - line_rows;
-      if (retained_rows > previous_rows)
-        retained_rows = previous_rows;
-      cols = width < surface->width ? width : surface->width;
-      for (source_row = 0; source_row < retained_rows; source_row++) {
-        sl_surface_cell_t *target;
-        target = cells + (size_t)(previous_rows - retained_rows + source_row) *
-                             (size_t)width;
-        memcpy(target,
-               surface->cells + (size_t)(surface->height - line_rows -
-                                         retained_rows + source_row) *
-                                    (size_t)surface->width,
-               (size_t)cols * sizeof(*cells));
-        if (cols > 0 && target[cols - 1].width == 2) {
-          target[cols - 1].bytes[0] = ' ';
-          target[cols - 1].len = 1;
-          target[cols - 1].width = 1;
-        }
-      }
-    }
+    segment_col += cell_width;
   }
 }
 
@@ -823,19 +938,36 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   int clear_width;
   int clear_height;
   int new_col;
-  int new_line_rows;
-  int native_resize;
   if (!surface || x < 0 || y < 0 || width < 1 || height < 0)
     return -1;
-  if (ioctl(surface->fd, TIOCGWINSZ, &terminal) != 0)
+  if (sl_surface_terminal_size(surface->fd, &terminal) != 0)
     return -1;
-  native_layout = native_layout && surface->native_history && surface->x == 0 &&
-                  surface->y == 0 &&
-                  surface->width == surface->terminal_columns && x == 0 &&
-                  y == 0 && width == (int)terminal.ws_col;
-  native_resize =
-      native_layout && (surface->terminal_columns != (int)terminal.ws_col ||
-                        surface->terminal_rows != (int)terminal.ws_row);
+  if (surface->native_stream) {
+    char seq[48];
+    int shift;
+    int count;
+    if (!native_layout || x != 0 || y != 0 || height < 1)
+      return -1;
+    if (surface->native_row >= (int)terminal.ws_row)
+      surface->native_row = (int)terminal.ws_row - 1;
+    shift =
+        surface->native_row >= height ? surface->native_row - height + 1 : 0;
+    surface->width = width;
+    surface->height = height;
+    surface->terminal_rows = terminal.ws_row;
+    surface->terminal_columns = terminal.ws_col;
+    if (sl_surface_native_region(surface) != 0 ||
+        sl_surface_write_all(surface->fd, "\0338", 2) != 0)
+      return -1;
+    if (shift > 0) {
+      count = snprintf(seq, sizeof(seq), "\033[%dA", shift);
+      if (count <= 0 || count >= (int)sizeof(seq) ||
+          sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
+        return -1;
+      surface->native_row -= shift;
+    }
+    return sl_surface_write_all(surface->fd, "\0337\033[0m", 6);
+  }
   if (sl_surface_matches(surface, x, y, width, height) &&
       surface->terminal_columns == (int)terminal.ws_col &&
       surface->terminal_rows == (int)terminal.ws_row)
@@ -867,12 +999,8 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
     }
   }
   new_col = surface->col > width ? width : surface->col;
-  new_line_rows = surface->current_line_rows;
-  if (new_line_rows > height)
-    new_line_rows = height;
   if (count > 0)
-    sl_surface_reflow_current_line(surface, new_cells, width, height, &new_col,
-                                   &new_line_rows);
+    sl_surface_reflow_current_row(surface, new_cells, width, height, &new_col);
   clear_width = surface->width;
   clear_height = surface->height;
   if (surface->x >= (int)terminal.ws_col)
@@ -883,8 +1011,7 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
     clear_height = 0;
   else if (clear_height > (int)terminal.ws_row - surface->y)
     clear_height = (int)terminal.ws_row - surface->y;
-  if (!after_native_scroll && !native_resize && clear_width > 0 &&
-      clear_height > 0 &&
+  if (!after_native_scroll && clear_width > 0 && clear_height > 0 &&
       sl_surface_clear_occupied(surface, clear_width, clear_height) != 0) {
     free(new_cells);
     return -1;
@@ -897,14 +1024,9 @@ int sl_surface_resize(sl_surface_t *surface, int x, int y, int width,
   surface->height = height;
   surface->terminal_rows = (int)terminal.ws_row;
   surface->terminal_columns = (int)terminal.ws_col;
-  surface->native_history = native_layout;
   surface->col = new_col;
-  surface->current_line_rows = new_line_rows;
   surface->draw_valid = 0;
-  /* The terminal owns native transcript reflow. Cached cells are bookkeeping
-   * for future output; replaying them would overwrite the reflowed screen. */
-  return after_native_scroll || native_resize ? 0
-                                              : sl_surface_repaint(surface, 0);
+  return after_native_scroll ? 0 : sl_surface_repaint(surface, 0);
 }
 
 int sl_surface_write(sl_surface_t *surface, const char *bytes, size_t length,

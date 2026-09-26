@@ -582,8 +582,9 @@ struct sl {
   int (*watch_clear)(sl_t *self);
   /** Begin one owner-thread, renderer-agnostic live output session. Only one
    * session may be open per handle. Output occupies the bounds above the
-   * prompt; without explicit bounds the prompt is pinned to the bottom.
-   * Visible output from completed sessions remains in the TTY viewport. */
+   * prompt. A full-terminal prompt follows output from the current cursor
+   * and parks at the bottom. Native output bytes are passed through unchanged;
+   * explicit narrow or offset boxes retain only their visible cells. */
   int (*output_stream_begin)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
@@ -881,8 +882,10 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Start a persistent output session on self's editor-owner thread. The
  * caller owns its producer, wakeup, renderer, and document lifecycle. An
- * unbounded prompt is pinned to the terminal bottom while this session is
- * open. Visible output from completed sessions remains in the TTY viewport.
+ * full-terminal prompt follows output from the current cursor and parks at
+ * the bottom. Prompt wrapping pages within its reserved rows once parked,
+ * without moving transcript text. Native transcript reflow belongs to the
+ * terminal; Softline never clears or replays it.
  * Returns SL_ERROR_INVALID if a session is already open. */
 int sl_output_stream_begin(sl_t *self);
 
@@ -894,9 +897,9 @@ int sl_output_stream_begin(sl_t *self);
  * prefix, while a successful write has emitted all complete input units. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
-/** End the output session without adding a newline. The caller remains
+/** End the output session. The caller remains
  * responsible for finishing any external renderer document first. The next
- * TTY output starts on a fresh row if this session ended mid-row. Incomplete
+ * TTY cursor returns below output if this session ended mid-row. Incomplete
  * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open. */
 int sl_output_stream_end(sl_t *self);
 

@@ -97,6 +97,7 @@ typedef struct sl_impl {
   size_t output_pending_len;
   sl_surface_t *output_surface;
   int cursor_position_probe;
+  int probed_cursor_col;
   int dynamic_width;
   int dynamic_height;
   char *buf;
@@ -127,7 +128,7 @@ typedef struct sl_impl {
   int rendered_cursor_col;
   int rendered_width;
   int rendered_height;
-  int resize_prompt_rows;
+  int native_prompt_rows;
   char **rendered_lines;
   size_t *rendered_lens;
   int *rendered_cols;

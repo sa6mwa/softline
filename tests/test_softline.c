@@ -1453,6 +1453,8 @@ struct vt_screen {
   int col;
   int scroll_top;
   int scroll_bottom;
+  int saved_row;
+  int saved_col;
   char cells[24][120];
   unsigned int history_count;
   char history[64][120];
@@ -1615,7 +1617,14 @@ static const char *vt_csi(struct vt_screen *screen, const char *p) {
       if (screen->scroll_bottom < screen->scroll_top)
         screen->scroll_bottom = screen->scroll_top;
     }
+    screen->row = screen->col = 0;
     break;
+  case 'S': {
+    int count = have_a && a > 0 ? a : 1;
+    while (count-- > 0)
+      vt_scroll_region(screen, screen->scroll_top, screen->scroll_bottom);
+    break;
+  }
   case 'J':
     if (a == 2)
       vt_clear(screen);
@@ -1641,6 +1650,19 @@ static void vt_apply(struct vt_screen *screen, const char *bytes) {
   const char *p;
   p = bytes;
   while (*p) {
+    if (*p == '\033' && (p[1] == '7' || p[1] == '8')) {
+      if (p[1] == '7') {
+        screen->saved_row = screen->row;
+        screen->saved_col = screen->col;
+      } else {
+        screen->row = screen->saved_row < screen->rows ? screen->saved_row
+                                                       : screen->rows - 1;
+        screen->col = screen->saved_col <= screen->cols ? screen->saved_col
+                                                        : screen->cols - 1;
+      }
+      p += 2;
+      continue;
+    }
     if (*p == '\033' && p[1] == '[') {
       p = vt_csi(screen, p + 2);
       continue;
@@ -1916,6 +1938,123 @@ static void test_quoted_prompt_chunk_boundary(void) {
   PASS();
 }
 
+#if SL_TEST_PTY
+static void native_submit_idle(sl_t *sl, void *userdata) {
+  int *submitted;
+  submitted = (int *)userdata;
+  if (*submitted)
+    return;
+  *submitted = 1;
+  (void)sl_set_buffer(sl, "draft");
+  (void)sl_submit(sl);
+}
+#endif
+
+static void test_native_output_preserves_source_bytes(void) {
+#if SL_TEST_PTY
+  static const char source[] =
+      "\033[38;2;1;2;3mabcdefghijklmnopqrstuvwxyz0123456789"
+      "abcdefghijklmnopqrstuvwxyz0123456789\033[0m\t"
+      "\303\245\346\227\245";
+  struct winsize ws;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  int submitted;
+  struct termios original;
+  struct termios current;
+  char *line;
+  char output[8192];
+  TEST("native output preserves producer bytes through terminal wrapping");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 16;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  ASSERT_TRUE(tcgetattr(slave_fd, &original) == 0, "termios read failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
+              "native stream setup failed");
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_write(sl, source, 3) == SL_OK &&
+                  sl_output_stream_write(sl, source + 3, sizeof(source) - 4) ==
+                      SL_OK,
+              "native source write failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  strstr(output, source) != NULL &&
+                  strstr(output, "\n") == NULL,
+              "native wrapping inserted bytes or rewrote producer styles");
+  submitted = 0;
+  ASSERT_TRUE(sl_set_idle_callback(sl, native_submit_idle, &submitted) == SL_OK,
+              "native submit callback setup failed");
+  line = sl_readline(sl, "> ");
+  ASSERT_TRUE(line && strcmp(line, "draft") == 0 &&
+                  tcgetattr(slave_fd, &current) == 0 &&
+                  !(current.c_lflag & ICANON) &&
+                  current.c_oflag == original.c_oflag,
+              "native session lost raw input or changed output processing");
+  sl_free_string(sl, line);
+  (void)read_live_pty_output(master_fd, output, sizeof(output));
+  ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "native stream end failed");
+  ASSERT_TRUE(tcgetattr(slave_fd, &current) == 0 &&
+                  current.c_lflag == original.c_lflag &&
+                  current.c_iflag == original.c_iflag &&
+                  current.c_oflag == original.c_oflag,
+              "native stream end did not restore terminal attributes");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+                  strstr(output, "\033[r\0338\033[0m\r") != NULL &&
+                  strstr(output, "\n") != NULL &&
+                  strstr(output, "\033[?25h") != NULL,
+              "native teardown did not restore the terminal below output");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#endif
+}
+
+static void test_native_output_without_reported_size(void) {
+#if SL_TEST_PTY
+  struct winsize ws;
+  struct vt_screen screen;
+  sl_config_t cfg;
+  sl_t *sl;
+  int master_fd;
+  int slave_fd;
+  char output[8192];
+  TEST("native output uses terminal defaults when PTY reports zero size");
+  memset(&ws, 0, sizeof(ws));
+  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
+              "openpty failed");
+  sl_config_init(&cfg);
+  cfg.input_fd = slave_fd;
+  cfg.output_fd = slave_fd;
+  sl = sl_create_with_config(&cfg);
+  ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK &&
+                  sl_output_stream_write(sl, "ONE", 3) == SL_OK &&
+                  sl_output_stream_write(sl, "\n", 1) == SL_OK &&
+                  sl_output_stream_write(sl, "TWO", 3) == SL_OK &&
+                  sl_output_stream_end(sl) == SL_OK,
+              "native output with fallback geometry failed");
+  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
+              "fallback geometry output missing");
+  vt_init(&screen, 24, 80);
+  vt_apply(&screen, output);
+  ASSERT_TRUE(strncmp(screen.cells[0], "ONE", 3) == 0 &&
+                  strncmp(screen.cells[1], "TWO", 3) == 0 && screen.row == 2 &&
+                  screen.col == 0,
+              "fallback geometry lost its output row between producer spans");
+  sl_destroy(sl);
+  close(slave_fd);
+  close(master_fd);
+  PASS();
+#endif
+}
+
 static void test_quoted_prompt_terminal_style(void) {
 #if SL_TEST_PTY
   sl_config_t cfg;
@@ -1973,13 +2112,13 @@ static void test_quoted_prompt_terminal_style(void) {
   }
   close(master_fd);
   bytes[used] = '\0';
-  ASSERT_TRUE(strstr(bytes, "\033[0;2;38;2;102;92;84m") != NULL &&
-                  strstr(bytes, "\033[0;3;38;2;250;189;47m") != NULL &&
-                  strstr(bytes, "\033[0;2;38;2;1;2;3m") != NULL &&
-                  strstr(bytes, "\033[0;3;38;2;4;5;6m") != NULL &&
-                  strstr(bytes, "\033[0;2;90m") != NULL &&
-                  strstr(bytes, "\033[0;3;96m") != NULL &&
-                  strstr(bytes, "\033[0;3;97m") != NULL,
+  ASSERT_TRUE(strstr(bytes, "\033[2m\033[38;2;102;92;84m") != NULL &&
+                  strstr(bytes, "\033[3m\033[38;2;250;189;47m") != NULL &&
+                  strstr(bytes, "\033[2m\033[38;2;1;2;3m") != NULL &&
+                  strstr(bytes, "\033[3m\033[38;2;4;5;6m") != NULL &&
+                  strstr(bytes, "\033[2;90m") != NULL &&
+                  strstr(bytes, "\033[3;96m") != NULL &&
+                  strstr(bytes, "\033[3;97m") != NULL,
               "theme or custom quote colour and italic treatment missing");
   PASS();
 #endif
@@ -2014,8 +2153,8 @@ static void test_quoted_prompt_resets_inherited_style(void) {
               "styled quote setup failed");
   ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
               "quoted output missing");
-  ASSERT_TRUE(contains_bytes(output, "\033[0;2;90m> ") &&
-                  contains_bytes(output, "\033[0;3;96mquoted") &&
+  ASSERT_TRUE(contains_bytes(output, "\033[0m\033[2;90m> ") &&
+                  contains_bytes(output, "\033[0m\033[3;96mquoted") &&
                   !contains_bytes(output, "\033[0;2;7;90;41m> "),
               "first quoted prefix inherited reverse video or background");
   sl_destroy(sl);
@@ -10200,9 +10339,11 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
   terminal[0] = '\0';
   for (tries = 0; tries < 10 && !contains_bytes(terminal, "chat> "); tries++) {
     n = (ssize_t)read_live_pty_output(master_fd, chunk, sizeof(chunk));
-    ASSERT_TRUE(n > 0, "initial prompt missing");
-    append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk, n);
+    if (n > 0)
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk,
+                            n);
   }
+  ASSERT_TRUE(contains_bytes(terminal, "chat> "), "initial prompt missing");
   ASSERT_TRUE(write(master_fd, "\022", 1) == 1, "reverse search input failed");
   for (tries = 0; tries < 40; tries++) {
     n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
@@ -10472,18 +10613,18 @@ static void retained_shrink_idle(sl_t *sl, void *userdata) {
     goto finish;
   }
   retained_growth_snapshot(state);
-  if (strncmp(state->screen.cells[5], "TRANSCRIPT", 10) != 0 ||
-      strncmp(state->screen.cells[6], "> x", 3) != 0 ||
-      state->screen.row != 6 || state->screen.col != 3 ||
+  if (strncmp(state->screen.cells[0], "TRANSCRIPT", 10) != 0 ||
+      strncmp(state->screen.cells[1], "> x", 3) != 0 ||
+      state->screen.row != 1 || state->screen.col != 3 ||
       sl_set_buffer(sl, "three\nfour") != SL_OK ||
       sl_set_status_message(sl, NULL) != SL_OK) {
     state->failed = 1;
     goto finish;
   }
   retained_growth_snapshot(state);
-  if (strncmp(state->screen.cells[5], "TRANSCRIPT", 10) != 0 ||
-      strncmp(state->screen.cells[6], "> three", 7) != 0 ||
-      strncmp(state->screen.cells[7], "  four", 6) != 0 ||
+  if (strncmp(state->screen.cells[0], "TRANSCRIPT", 10) != 0 ||
+      strncmp(state->screen.cells[1], "> three", 7) != 0 ||
+      strncmp(state->screen.cells[2], "  four", 6) != 0 ||
       sl_output_stream_begin(sl) != SL_OK) {
     state->failed = 1;
     goto finish;
@@ -10550,7 +10691,7 @@ static void native_scroll_probe_idle(sl_t *sl, void *userdata) {
   if (probe->fired)
     return;
   probe->fired = 1;
-  if (probe->resize) {
+  if (probe->resize > 0) {
     memset(&ws, 0, sizeof(ws));
     ws.ws_col = 30;
     ws.ws_row = 8;
@@ -10565,6 +10706,15 @@ static void native_scroll_probe_idle(sl_t *sl, void *userdata) {
     bytes = "\033[41mRED\nNEXT";
   }
   probe->result = sl_output_stream_write(sl, bytes, strlen(bytes));
+  if (probe->resize < 0 && probe->result == SL_OK) {
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = 16;
+    ws.ws_row = 8;
+    if (ioctl(probe->master_fd, TIOCSWINSZ, &ws) != 0)
+      probe->result = SL_ERROR_IO;
+    else
+      probe->result = sl_set_status_message(sl, NULL);
+  }
   (void)sl_cancel(sl);
 }
 
@@ -10605,6 +10755,11 @@ static void test_live_output_disables_native_scroll_after_widening(void) {
   (void)read_live_pty_output(master_fd, output, sizeof(output));
   vt_init(&screen, 8, 30);
   vt_apply(&screen, output);
+  if (strncmp(screen.cells[0] + 24, "OUTSID", 6) != 0 ||
+      !vt_contains(&screen, "FIRST") || !vt_contains(&screen, "SECOND") ||
+      !vt_contains(&screen, "THIRD")) {
+    vt_dump(&screen);
+  }
   ASSERT_TRUE(strncmp(screen.cells[0] + 24, "OUTSID", 6) == 0 &&
                   vt_contains(&screen, "FIRST") &&
                   vt_contains(&screen, "SECOND") &&
@@ -10630,6 +10785,7 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
   const char *sync_start;
   const char *reset;
   const char *prompt;
+  const char *resized;
 
   TEST("native scroll resets streamed style before plain prompt redraw");
   memset(&ws, 0, sizeof(ws));
@@ -10647,6 +10803,7 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
   memset(&probe, 0, sizeof(probe));
   probe.master_fd = master_fd;
   probe.output_fd = slave_fd;
+  probe.resize = -1;
   ASSERT_TRUE(sl_set_idle_callback(sl, native_scroll_probe_idle, &probe) ==
                   SL_OK,
               "idle callback setup failed");
@@ -10654,13 +10811,16 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
   ASSERT_TRUE(line == NULL && probe.fired && probe.result == SL_OK,
               "styled live write failed");
   (void)read_live_pty_output(master_fd, output, sizeof(output));
-  sync_start = strstr(output, "\033[?2026h");
-  reset = sync_start ? strstr(sync_start, "\033[0m") : NULL;
-  prompt = sync_start ? strstr(sync_start, "> ") : NULL;
+  sync_start = strstr(output, "\033[41mRED\r\nNEXT");
+  reset = sync_start ? strstr(sync_start, "\0337\033[0m") : NULL;
+  prompt = reset ? strstr(reset, "> ") : NULL;
   ASSERT_TRUE(sync_start && reset && prompt && reset < prompt,
-              "plain prompt inherited streamed background colour");
-  ASSERT_TRUE(contains_bytes(output, "\033[0;41mNEXT"),
-              "native scroll lost the stream's logical ANSI style");
+              "native stream was rewritten or leaked style into the prompt");
+  resized = reset ? strstr(reset + 6, "\033[1;7r\0338\0337") : NULL;
+  reset = resized ? strstr(resized, "\033[0m") : NULL;
+  prompt = resized ? strstr(resized, "> ") : NULL;
+  ASSERT_TRUE(resized && reset && prompt && reset < prompt,
+              "resize restored producer style onto the plain prompt");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
   sl_destroy(sl);
   close(slave_fd);
@@ -10719,7 +10879,7 @@ static void test_live_output_prompt_growth_preserves_history(void) {
   int tries;
   int status;
 
-  TEST("prompt growth scrolls displaced transcript into native history");
+  TEST("parked prompt growth preserves transcript positions");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 20;
   ws.ws_row = 8;
@@ -10758,9 +10918,9 @@ static void test_live_output_prompt_growth_preserves_history(void) {
   for (tries = 0; tries < 100; tries++) {
     vt_init(&screen, 8, 20);
     vt_apply(&screen, output);
-    if (vt_history_contains(&screen, "ONE") &&
-        vt_history_contains(&screen, "TWO") && vt_contains(&screen, "THREE") &&
-        vt_contains(&screen, "SEVEN") && vt_contains(&screen, "> "))
+    if (vt_contains(&screen, "ONE") && vt_contains(&screen, "TWO") &&
+        vt_contains(&screen, "THREE") && vt_contains(&screen, "SEVEN") &&
+        vt_contains(&screen, "> "))
       break;
     amount = read_some_with_timeout_ms(master_fd, chunk, sizeof(chunk), 50);
     if (amount <= 0)
@@ -10769,15 +10929,16 @@ static void test_live_output_prompt_growth_preserves_history(void) {
                 "prompt growth output exceeded test buffer");
     append_terminal_bytes(output, &used, sizeof(output), chunk, amount);
   }
-  if (!vt_history_contains(&screen, "ONE") ||
-      !vt_history_contains(&screen, "TWO") || !vt_contains(&screen, "THREE") ||
-      !vt_contains(&screen, "SEVEN"))
+  if (!vt_contains(&screen, "ONE") || !vt_contains(&screen, "TWO") ||
+      !vt_contains(&screen, "THREE") || !vt_contains(&screen, "SEVEN"))
     vt_dump(&screen);
-  ASSERT_TRUE(vt_history_contains(&screen, "ONE") &&
-                  vt_history_contains(&screen, "TWO") &&
-                  vt_contains(&screen, "THREE") &&
-                  vt_contains(&screen, "SEVEN"),
-              "prompt growth discarded transcript rows");
+  ASSERT_TRUE(screen.history_count == 0 &&
+                  strncmp(screen.cells[0], "ONE", 3) == 0 &&
+                  strncmp(screen.cells[1], "TWO", 3) == 0 &&
+                  strncmp(screen.cells[2], "THREE", 5) == 0 &&
+                  strncmp(screen.cells[6], "SEVEN", 5) == 0 &&
+                  strncmp(screen.cells[7], "> ", 2) == 0,
+              "parked prompt growth moved transcript rows");
   ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
                   WEXITSTATUS(status) == 0,
@@ -10873,9 +11034,10 @@ static void test_live_output_reconciles_physical_resize(void) {
               "resized output failed");
   ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
               "resized output missing");
-  ASSERT_TRUE(!contains_bytes(output, "\033[7;") &&
-                  contains_bytes(output, "\033[2;6H"),
-              "resized output used the old terminal row");
+  ASSERT_TRUE(contains_bytes(output, "\033[1;2r\0338 world\0337") &&
+                  !contains_bytes(output, "hello") &&
+                  !contains_bytes(output, "\n"),
+              "resized output replayed text or failed to restore its cursor");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
   sl_destroy(sl);
   close(slave_fd);
@@ -10957,13 +11119,10 @@ finish:
 static void test_live_output_resize_continues_current_row(void) {
   struct winsize ws;
   struct live_resize_tail_state state;
-  struct vt_screen screen;
   sl_config_t cfg;
   sl_t *sl;
   int master_fd;
   int slave_fd;
-  unsigned int history_before;
-  char native_transcript[5][120];
   char *line;
 
   TEST("live output width resize continues current row without scrolling");
@@ -10994,49 +11153,14 @@ static void test_live_output_resize_continues_current_row(void) {
                   !contains_bytes(state.after_resize, "SECOND") &&
                   !contains_bytes(state.after_resize, "abcdefghijklmnop"),
               "resize replayed cached transcript text");
-  /* Model the screen AFTER the terminal's native resize/reflow, before
-   * Softline sees the new geometry. Its transcript no longer matches the
-   * cached cell coordinates, including rows outside the retained surface. */
-  vt_init(&screen, 8, 16);
-  vt_apply(&screen, "\033[1;1HNATIVE REFLOW\033[2;1HFIRST"
-                    "\033[3;1HSECOND\033[4;1Habcdefghijklmnop\033[5;1Hqr"
-                    "\033[7;1H> hello world\033[8;1H  sentence");
-  history_before = screen.history_count;
-  memcpy(native_transcript, screen.cells, sizeof(native_transcript));
-  vt_apply(&screen, state.after_resize);
-  ASSERT_TRUE(
-      memcmp(native_transcript, screen.cells, sizeof(native_transcript)) == 0,
-      "resize erased or overwrote native transcript rows");
-  vt_apply(&screen, state.after_write);
-  memcpy(native_transcript, screen.cells, sizeof(native_transcript));
-  vt_apply(&screen, state.after_idle);
-  ASSERT_TRUE(screen.history_count == history_before &&
-                  memcmp(native_transcript, screen.cells,
-                         sizeof(native_transcript)) == 0 &&
-                  vt_count(&screen, "FIRST") == 1 &&
-                  vt_count(&screen, "SECOND") == 1 &&
-                  vt_contains(&screen, "abcdefghijklmnop") &&
-                  vt_contains(&screen, "qrs"),
-              "resized output lost cells or advanced scrollback");
-  ASSERT_TRUE(vt_contains(&screen, "> hello world") &&
-                  vt_contains(&screen, "sentence"),
-              "resized editor did not retain its draft");
-  vt_init(&screen, 8, 40);
-  vt_apply(&screen, "\033[1;1HNATIVE REFLOW\033[3;1HFIRST"
-                    "\033[4;1HSECOND\033[5;1Habcdefghijklmnopqrs"
-                    "\033[7;1H> hello world sentence");
-  memcpy(native_transcript, screen.cells, sizeof(native_transcript));
-  vt_apply(&screen, state.after_expand);
-  ASSERT_TRUE(
-      memcmp(native_transcript, screen.cells, sizeof(native_transcript)) == 0 &&
-          !contains_bytes(state.after_expand, "abcdefghijklmnop"),
-      "widening replayed or overwrote the native transcript");
-  vt_apply(&screen, state.after_expand_write);
-  ASSERT_TRUE(screen.history_count == 0 &&
+  ASSERT_TRUE(contains_bytes(state.after_write, "s\0337") &&
+                  contains_bytes(state.after_expand_write, "t\0337") &&
+                  !contains_bytes(state.after_expand, "FIRST") &&
+                  !contains_bytes(state.after_expand, "SECOND") &&
+                  !contains_bytes(state.after_expand, "abcdefghijklmnop") &&
                   !contains_bytes(state.after_expand, "\n") &&
-                  !contains_bytes(state.after_expand_write, "\n") &&
-                  vt_contains(&screen, "abcdefghijklmnopqrst"),
-              "output resumed at the wrong column after widening");
+                  !contains_bytes(state.after_expand_write, "\n"),
+              "resize rewrote output instead of continuing the saved cursor");
   sl_destroy(sl);
   close(slave_fd);
   close(master_fd);
@@ -11868,9 +11992,14 @@ static void test_live_output_error_resets_terminal_style(void) {
 }
 #endif
 
-int main(void) {
+int main(int argc, char **argv) {
   printf("softline unit tests\n");
   printf("===================\n\n");
+  if (argc == 2 && strcmp(argv[1], "native") == 0) {
+    test_native_output_preserves_source_bytes();
+    test_native_output_without_reported_size();
+    return tests_passed == tests_run ? 0 : 1;
+  }
 
   test_config_init();
   test_receiver_shell();
@@ -11984,6 +12113,8 @@ int main(void) {
   test_quoted_prompt_output_api();
   test_quoted_prompt_long_unbroken_word();
   test_quoted_prompt_chunk_boundary();
+  test_native_output_preserves_source_bytes();
+  test_native_output_without_reported_size();
   test_quoted_prompt_terminal_style();
   test_quoted_prompt_resets_inherited_style();
   test_quoted_prompt_spacing_across_sessions();

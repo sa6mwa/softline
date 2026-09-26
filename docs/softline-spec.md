@@ -221,9 +221,14 @@ prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 
 `output_stream_begin()` opens a persistent session; every later
 `output_stream_write()` forwards its byte span immediately, without waiting for
-EOF or the next prompt. `output_stream_end()` closes it without adding content.
-The visible TTY viewport survives across sessions. If one ends mid-row, the
-next output producer starts on a fresh row when it writes.
+EOF or the next prompt. Full-terminal sessions start at the existing cursor;
+the prompt follows output downward until it parks at the bottom. Producer
+bytes pass through unchanged in a VT scroll region above the prompt. Native
+transcript text is never cached, padded, rewrapped, cleared, or replayed.
+Prompt wrapping and resize page within reserved rows once parked, without
+moving transcript text. Ending chat clears the prompt, restores the full
+scroll region and visible cursor, and returns below output. Explicit shorter,
+narrow, or offset boxes retain only their visible cells.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. The bounded
 viewport stores only visible cells and partial ANSI/UTF-8 state. SGR and UTF-8

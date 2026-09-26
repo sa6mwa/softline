@@ -11,9 +11,10 @@ libsoftline, its Lua facade, headers, CMake exports, and package metadata have
 no libmdf dependency.
 
 libmdf 0.12.0 has incremental feed, a bound sink, and in-document width and
-margin changes through `set_geometry()`. The chat composer updates Softline
-bounds and both renderers on the Softline owner thread before feeding later
-Markdown. It uses a two-column left margin except on very narrow terminals,
+margin changes through `set_geometry()`. The chat composer updates both
+renderer geometries on the Softline owner thread before feeding later
+Markdown; Softline reads the terminal dimensions for its native prompt.
+The composer uses a two-column left margin except on very narrow terminals,
 where it drops the margin to retain libmdf's three content columns. Neither
 Softline nor the examples recreate or replay an unfinished Markdown document.
 Softline never infers libmdf margins.
@@ -55,22 +56,22 @@ features are exposed through the C receiver/free functions and Lua methods.
 
 ## Terminal ownership and geometry
 
-The output session and editor prompt have one serial terminal owner. The
-transcript lives above the prompt inside the bounds established by
-`sl_set_bounds()`. Every valid bound, including an offset or narrower-than-
-terminal rectangle, is supported. With no explicit bounds, a live session
-pins the prompt to the terminal bottom for its lifetime. A bounded display
-retains at most its visible viewport and partial terminal escape/UTF-8 state;
-it never retains or replays the complete response. A full-width main-screen
-session whose bounds reach the physical terminal bottom scrolls output into
-native terminal history, including rows displaced by prompt growth. Shorter,
-narrow, or offset bounds continue to clip to the viewport. Newly received
-bytes are rendered immediately. Viewport state supports repainting bounded
-rectangles and tracking the write position. Full-width native-history layouts
-leave transcript reflow to the terminal on resize and never clear or replay
-those transcript cells. The prompt redraw stays within its previous row
-reservation, paging around the cursor if necessary until the next buffer edit.
-Viewport state is not a producer-to-consumer staging buffer.
+The output session and editor prompt have one serial terminal owner. A
+full-terminal session begins at the existing terminal cursor. The prompt
+follows initial and later output downward until it parks at the bottom. The
+VT scroll region ends above the reserved prompt rows. Native producer bytes
+are written unchanged, with only bounded partial ANSI/UTF-8 parser state and
+an output cursor retained. Softline never rewraps, pads, clears, or replays
+native transcript text. Terminal resize leaves transcript reflow to the
+terminal and redraws only the prompt. Prompt growth uses free rows below it
+before parking; after parking, wrapping and queue/status changes page within
+the reservation without moving transcript rows. Ending chat clears the prompt,
+restores the full scroll region, shows the cursor, and returns below output.
+
+Every valid explicit bound, including a shorter, offset, or narrower rectangle,
+is supported. These boxes retain only visible cells and partial parser state,
+clip output to the viewport, and repaint their own cells when resized. Neither
+path buffers the producer's complete response.
 
 The application may call `sl_set_bounds()` and `sl_set_screen_width()` (or
 their receiver and Lua equivalents) while a session is open or while the

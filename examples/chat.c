@@ -81,8 +81,7 @@ static int sync_geometry(struct chat_state *state) {
   /* The composer updates both handles in one owner-thread callback. A very
    * narrow terminal drops the margin so libmdf retains three content columns.
    */
-  if (sl_set_bounds(state->sl, 0, 0, 0, 0) != SL_OK ||
-      state->note_renderer->set_geometry(state->note_renderer, columns,
+  if (state->note_renderer->set_geometry(state->note_renderer, columns,
                                          chat_margin_left(columns),
                                          0) != MDF_OK ||
       state->response_renderer->set_geometry(state->response_renderer, columns,
@@ -451,8 +450,7 @@ int main(void) {
   }
   state.columns = mdf_terminal_width(STDOUT_FILENO, 80);
   if ((interactive &&
-       (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
-        sl_set_prompt_queue(state.sl, 1, 64, 3) != SL_OK ||
+       (sl_set_prompt_queue(state.sl, 1, 64, 3) != SL_OK ||
         sl_set_prompt_queue_profile(
             state.sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) != SL_OK ||
         sl_set_prompt_queue_delivery(

@@ -134,11 +134,7 @@ external renderer.
 make run-simple
 make run-chat
 make run-chat-default
-make run-chat-default-sr
-make run-chat-accent-sr
-make run-chat-dracula-sr
 make run-chat-plain
-make run-chat-plain-sr
 make run-chat-riced
 make run-chat-monogreen
 make run-chat-monochrome
@@ -151,52 +147,34 @@ and Lua examples accept
 `SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
 expose that as `THEME=...`. The simple and chat examples default to `default`;
-`make run-chat` supplies Gruvbox. The C live output session uses the main
-terminal's scrollback for a full-width prompt; the `-sr` convenience targets
-do not change that output layout. `SOFTLINE_LIVE_SCROLL_REGION=1` remains
-available to the Lua chat example for finite `print_above()` calls.
+`make run-chat` supplies Gruvbox. Both chat examples use one persistent output
+session with the native terminal layout by default.
 
-## Bounded prompts
+## Terminal-native chat and bounded prompts
 
-Set `screen_width` and `screen_height` in `sl_config_t`, or call
-`sl_set_bounds()`, to anchor the prompt inside a terminal box. In bounded mode
-the prompt grows upward as input wraps while `sl_print_above()` pulls streamed
-chunks from a callback and writes them through the region above the prompt.
-Full-width bounds can use terminal scrolling. Narrow or offset bounds use a
-bounded cell viewport, not a VT scroll region that would alter outside columns.
-A persistent `sl_output_stream_*()` session accepts later chunks without
-waiting for EOF. Full-width sessions that reach the physical terminal bottom
-scroll the main terminal, preserving native scrollback; shorter, narrow, or
-offset sessions use the bounded viewport.
-Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
-bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
-in softline. Bounded rendering keeps a retained view of the visible editor
-rows: ordinary edits patch only changed cells, structural changes redraw the
-affected rows, and terminal geometry changes reflow the bounded box while
-editing. During a bounded structural update or transcript dispatch,
-softline hides the hardware cursor and restores it only at the final prompt
-position, preventing visible cursor travel across the prompt area.
+A full-terminal output session starts at the current terminal cursor. The
+prompt appears directly below initial output, follows later output downward,
+and parks when it reaches the bottom. A VT scroll region ends above the
+reserved prompt rows. Producer bytes, including libmdf styles and wrapping,
+pass through unchanged. Softline keeps parser state and the output cursor;
+it does not cache, pad, rewrap, clear, or replay the native transcript.
 
-For a normal scrollback prompt, streamed output uses the compatible
-clear-and-redraw path by default. Set `live_scroll_region = 1` in
-`sl_config_t`, or call `sl_set_live_scroll_region(sl, 1)`, to opt into a
-temporary full-width scroll region once the active prompt reaches the bottom
-row. That avoids repainting the live prompt while output streams. Queue
-previews, status lines, wrapping, and resize reflow change that region with the
-prompt. Softline resets the region whenever the edit finishes; terminals that
-do not answer the cursor-position report continue with clear-and-redraw.
+Before the prompt parks, it can grow into unused rows below it. Once parked,
+wrapping and queue/status changes page within the reserved rows around the
+editor cursor. Shrinking the draft does not move the transcript. Terminal
+resize redraws the prompt within its reservation and leaves transcript reflow
+to the terminal. Ending chat clears the prompt, restores the full scroll
+region, shows the cursor, and returns below the output.
 
-For a persistent bottom prompt, use bounded mode in either the normal or
-alternate screen. Softline never enters or leaves the alternate screen itself.
-The live viewport retains only visible terminal cells and partial parser state.
-Full-width main-screen sessions scroll those cells into native terminal
-scrollback. Softline does not keep its own transcript history.
-On terminal resize, those sessions leave transcript reflow to the terminal
-and redraw only the prompt within its existing row reservation. If narrower
-input needs more rows, the editor shows the portion containing the cursor;
-the next buffer edit allows the prompt to grow normally. Resizing does not
-clear or replay the transcript. Shorter, narrow, or offset viewports continue
-to repaint their own bounded cells.
+Use `sl_set_bounds()` for an explicit narrow, offset, or shorter terminal box.
+Those boxes keep a bounded cell viewport and clip output to their columns;
+they cannot use a full-width VT scroll region without changing outside cells.
+Zero bounds select dynamic terminal dimensions and the native output layout.
+Softline never enters or leaves the alternate screen itself.
+
+For ordinary finite `print_above()` calls without a persistent output
+session, `sl_set_live_scroll_region()` remains available to configure the
+readline scrollback editor. Chat examples use the persistent session API.
 
 ## Persistent output session
 

@@ -26,6 +26,8 @@ static const char *const observed[] = {
 
 struct terminal {
   int fd, rows, cols, row, col, escape;
+  int saved_row, saved_col, scroll_top, scroll_bottom;
+  int cursor_visible;
   char csi[64];
   size_t csi_len, raw_len;
   unsigned int seen;
@@ -71,30 +73,59 @@ static void term_init(struct terminal *t, int fd, int cols, int rows) {
   t->fd = fd;
   t->cols = cols;
   t->rows = rows;
+  t->scroll_bottom = rows - 1;
+  t->cursor_visible = 1;
   term_clear(t);
 }
 
 static void term_scroll(struct terminal *t) {
   int row;
-  memcpy(t->history[t->scrolls % 128u], t->cells[0], (size_t)t->cols + 1);
-  t->scrolls++;
-  for (row = 1; row < t->rows; row++)
+  if (t->scroll_top == 0 && t->scroll_bottom == t->rows - 1) {
+    memcpy(t->history[t->scrolls % 128u], t->cells[0], (size_t)t->cols + 1);
+    t->scrolls++;
+  }
+  for (row = t->scroll_top + 1; row <= t->scroll_bottom; row++)
     memcpy(t->cells[row - 1], t->cells[row], (size_t)t->cols + 1);
-  memset(t->cells[t->rows - 1], ' ', (size_t)t->cols);
-  t->cells[t->rows - 1][t->cols] = 0;
-  t->row = t->rows - 1;
+  memset(t->cells[t->scroll_bottom], ' ', (size_t)t->cols);
+  t->cells[t->scroll_bottom][t->cols] = 0;
+  t->row = t->scroll_bottom;
 }
 
 static void term_csi(struct terminal *t, char final) {
   int a, b;
   char *part;
   t->csi[t->csi_len] = 0;
-  if (t->csi[0] == '?')
+  if (t->csi[0] == '?') {
+    if (strcmp(t->csi, "?25") == 0)
+      t->cursor_visible = final == 'h';
     return;
+  }
   a = t->csi_len ? atoi(t->csi) : 0;
   part = strchr(t->csi, ';');
   b = part ? atoi(part + 1) : 0;
   switch (final) {
+  case 'n':
+    if (a == 6) {
+      char reply[48];
+      int count = snprintf(reply, sizeof(reply), "\033[%d;%dR", t->row + 1,
+                           t->col < t->cols ? t->col + 1 : t->cols);
+      if (count > 0 && count < (int)sizeof(reply))
+        (void)write(t->fd, reply, (size_t)count);
+    }
+    break;
+  case 'r':
+    t->scroll_top = a > 0 ? a - 1 : 0;
+    t->scroll_bottom = b > 0 && b <= t->rows ? b - 1 : t->rows - 1;
+    t->row = t->col = 0;
+    break;
+  case 'S': {
+    int count = a > 0 ? a : 1;
+    int old_row = t->row;
+    while (count-- > 0)
+      term_scroll(t);
+    t->row = old_row;
+    break;
+  }
   case 'H':
   case 'f':
     t->row = a > 0 ? a - 1 : 0;
@@ -135,7 +166,8 @@ static void term_csi(struct terminal *t, char final) {
     t->row = t->rows - 1;
   if (t->col < 0)
     t->col = 0;
-  if (t->col >= t->cols)
+  if (t->col >= t->cols &&
+      (final == 'H' || final == 'f' || final == 'C' || final == 'D'))
     t->col = t->cols - 1;
 }
 
@@ -149,6 +181,13 @@ static void term_feed(struct terminal *t, const char *bytes, size_t len) {
   for (i = 0; i < len; i++) {
     unsigned char ch = (unsigned char)bytes[i];
     if (t->escape == 1) {
+      if (ch == '7') {
+        t->saved_row = t->row;
+        t->saved_col = t->col;
+      } else if (ch == '8') {
+        t->row = t->saved_row < t->rows ? t->saved_row : t->rows - 1;
+        t->col = t->saved_col <= t->cols ? t->saved_col : t->cols - 1;
+      }
       t->escape = ch == '[' ? 2 : 0;
       if (t->escape == 2)
         t->csi_len = 0;
@@ -168,7 +207,7 @@ static void term_feed(struct terminal *t, const char *bytes, size_t len) {
     else if (ch == '\r')
       t->col = 0;
     else if (ch == '\n') {
-      if (t->row == t->rows - 1)
+      if (t->row == t->scroll_bottom)
         term_scroll(t);
       else
         t->row++;
@@ -176,7 +215,7 @@ static void term_feed(struct terminal *t, const char *bytes, size_t len) {
       size_t k;
       if (t->col >= t->cols) {
         t->col = 0;
-        if (t->row == t->rows - 1)
+        if (t->row == t->scroll_bottom)
           term_scroll(t);
         else
           t->row++;
@@ -218,15 +257,6 @@ static int term_contains(const struct terminal *t, const char *needle) {
   int row;
   for (row = 0; row < t->rows; row++)
     if (strstr(t->cells[row], needle))
-      return 1;
-  return 0;
-}
-
-static int term_history_contains(const struct terminal *t, const char *needle) {
-  unsigned int i;
-  unsigned int count = t->scrolls < 128u ? t->scrolls : 128u;
-  for (i = 0; i < count; i++)
-    if (strstr(t->history[i], needle))
       return 1;
   return 0;
 }
@@ -483,7 +513,7 @@ static void test_chat_live_queue(const char *path) {
               "italic status or prompt treatment missing");
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "heading not streamed");
-  ASSERT_TRUE(strstr(t.raw, "\033[0;3;96mfirst") != NULL,
+  ASSERT_TRUE(strstr(t.raw, "\033[3;96mfirst") != NULL,
               "quoted prompt did not use its italic accent style");
   ASSERT_TRUE(wait_screen(&t, "! Reasoning...", 3000) == 0,
               "status message did not update mid-stream");
@@ -509,24 +539,9 @@ static void test_chat_live_queue(const char *path) {
               "queued turn did not start next operation");
   ASSERT_TRUE(wait_screen(&t, "+ streaming demo", 10000) == 0,
               "queued turn did not finish");
-  if (!(t.scrolls > 0 && term_history_contains(&t, "> first"))) {
-    unsigned int hi;
-    fprintf(stderr, "native scrolls: %u\n", t.scrolls);
-    for (hi = 0; hi < t.scrolls && hi < 128u; hi++)
-      fprintf(stderr, "history %u: |%s|\n", hi, t.history[hi]);
-    term_dump(&t);
-    FAIL("first prompt was not preserved in terminal scrollback");
-  }
-  {
-    const char *sync_start = strstr(t.raw, "\033[?2026h");
-    const char *sync_end =
-        sync_start ? strstr(sync_start, "\033[?2026l") : NULL;
-    const char *top_repaint =
-        sync_start ? strstr(sync_start, "\033[1;1H") : NULL;
-    ASSERT_TRUE(sync_start && sync_end &&
-                    (!top_repaint || top_repaint > sync_end),
-                "native scroll repainted the output viewport");
-  }
+  ASSERT_TRUE(t.scroll_top == 0 && t.scroll_bottom < t.rows - 1 &&
+                  t.row > t.scroll_bottom && strstr(t.raw, "\033[2J") == NULL,
+              "stream did not keep its scroll region above the prompt");
   ASSERT_TRUE(cancel_and_quit(&t, fd, pid) == 0, "child failed");
   PASS();
 }
@@ -567,7 +582,7 @@ static void test_chat_long_unbroken_editor_word(const char *path) {
               "editor left a short or blank row in an unbroken word");
   quote_mark = t.raw_len;
   ASSERT_TRUE(write(fd, "\r", 1) == 1, "long word submit failed");
-  ASSERT_TRUE(wait_raw_since(&t, quote_mark, "\033[0;3;96m", 3000) == 0 &&
+  ASSERT_TRUE(wait_raw_since(&t, quote_mark, "\033[3;96m", 3000) == 0 &&
                   wait_screen(&t, "> ccccccc", 3000) == 0,
               "quoted long word was not rendered");
   quote_row = term_row_of(&t, "> aaaaaaaaaaaaaaaaaa");
@@ -954,6 +969,146 @@ static void test_chat_steer_after_last_seam_starts_turn(const char *path) {
   PASS();
 }
 
+static void test_chat_native_lifecycle(const char *path, int initial_row) {
+  struct terminal t;
+  struct winsize ws;
+  struct timespec deadline;
+  char transcript[MAX_ROWS][MAX_COLS + 1];
+  const char *draft =
+      "abcdefghijklmnopqrstabcdefghijklmnopqrstabcdefghijklmnopqrst";
+  int fd;
+  int status;
+  int protected_rows;
+  int tries;
+  int turn;
+  int cycle;
+  int row;
+  int reaped;
+  size_t mark;
+  pid_t pid;
+  TEST("native chat follows output, keeps wraps stable, and restores exit");
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "1", 1) == 0,
+              "delay setup failed");
+  pid = spawn(path, &fd, 40, 24);
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) == 0,
+              "delay restore failed");
+  ASSERT_TRUE(pid > 0, "spawn failed");
+  term_init(&t, fd, 40, 24);
+  memcpy(t.cells[0], "EXISTING SHELL OUTPUT", 21);
+  t.row = initial_row;
+  ASSERT_TRUE(wait_raw(&t, "\033[?2004h", CHAT_READY_TIMEOUT_MS) == 0 &&
+                  wait_screen(&t, "> ", 3000) == 0,
+              "initial prompt missing");
+  ASSERT_TRUE((initial_row == 4 && t.row > 4 && t.row < 23 &&
+               strncmp(t.cells[0], "EXISTING SHELL OUTPUT", 21) == 0) ||
+                  (initial_row == 23 && t.row == 23),
+              "initial prompt did not follow output from the original cursor");
+  for (turn = 0; turn < 3; turn++) {
+    mark = t.raw_len;
+    ASSERT_TRUE(write(fd, "hello world\r", 12) == 12, "send failed");
+    ASSERT_TRUE(wait_raw_since(&t, mark, "\033[32m+ ", 5000) == 0,
+                "response did not finish");
+    deadline = deadline_after(3000);
+    while (before_deadline(&deadline) &&
+           (t.row != 23 || t.col != 2 || !t.cursor_visible))
+      if (term_read(&t) < 0)
+        break;
+  }
+  ASSERT_TRUE(t.row == 23, "prompt did not park at the bottom after output");
+  protected_rows = t.scroll_bottom + 1;
+  memcpy(transcript, t.cells, sizeof(transcript));
+  mark = t.raw_len;
+  ASSERT_TRUE(write(fd, draft, strlen(draft)) == (ssize_t)strlen(draft),
+              "draft input failed");
+  for (tries = 0; tries < 100; tries++) {
+    ASSERT_TRUE(term_read(&t) >= 0, "draft render failed");
+    if (t.row == 23 && t.col == 24 &&
+        strstr(t.cells[23], "stabcdefghijklmnopqrst"))
+      break;
+  }
+  ASSERT_TRUE(tries < 100 &&
+                  memcmp(transcript, t.cells,
+                         (size_t)protected_rows * sizeof(t.cells[0])) == 0,
+              "wrapping the prompt moved or overwrote transcript rows");
+  for (cycle = 0; cycle < 4; cycle++) {
+    int cols;
+    int status_rows;
+    cols = cycle % 2 == 0 ? 30 : 80;
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = (unsigned short)cols;
+    ws.ws_row = 24;
+    mark = t.raw_len;
+    t.cols = cols;
+    if (t.col >= cols)
+      t.col = cols - 1;
+    if (t.saved_col >= cols)
+      t.saved_col = cols - 1;
+    ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "width resize failed");
+    deadline = deadline_after(3000);
+    while (before_deadline(&deadline) &&
+           (t.raw_len == mark || t.row != 23 || t.col != (cols == 30 ? 6 : 62)))
+      if (term_read(&t) < 0)
+        break;
+    if (t.row != 23 || t.col != (cols == 30 ? 6 : 62)) {
+      fprintf(stderr, "resize cycle %d, cols %d, bytes since resize %lu\n",
+              cycle, cols, (unsigned long)(t.raw_len - mark));
+      term_dump(&t);
+      FAIL("idle resize did not restore the draft cursor");
+    }
+    ASSERT_TRUE(strstr(t.raw + mark, "\n") == NULL &&
+                    strstr(t.raw + mark, "A short answer") == NULL &&
+                    strstr(t.raw + mark, "Next step") == NULL,
+                "idle resize scrolled or replayed transcript text");
+    for (row = 0; row < protected_rows; row++) {
+      if (memcmp(transcript[row], t.cells[row], (size_t)cols) != 0) {
+        fprintf(stderr, "cycle %d row %d before: |%s| after: |%s|\n", cycle,
+                row, transcript[row], t.cells[row]);
+        term_dump(&t);
+        FAIL("width resize overwrote a transcript row");
+      }
+    }
+    ASSERT_TRUE(t.row == 23 && t.scroll_bottom == protected_rows - 1,
+                "width resize moved the parked prompt or its scroll boundary");
+    status_rows = 0;
+    for (row = protected_rows; row < t.rows; row++)
+      if (strstr(t.cells[row], "streaming demo"))
+        status_rows++;
+    ASSERT_TRUE(status_rows <= 1,
+                "width resize left a duplicate status row above the prompt");
+  }
+  ASSERT_TRUE(write(fd, "\025", 1) == 1, "clear draft failed");
+  for (tries = 0; tries < 100 && t.col != 2; tries++)
+    ASSERT_TRUE(term_read(&t) >= 0, "draft clear render failed");
+  ASSERT_TRUE(t.row == 23 && t.col == 2 &&
+                  memcmp(transcript, t.cells,
+                         (size_t)protected_rows * sizeof(t.cells[0])) == 0,
+              "unwrapping the prompt moved transcript rows");
+  ASSERT_TRUE(write(fd, "/quit\r", 6) == 6, "quit failed");
+  deadline = deadline_after(5000);
+  reaped = 0;
+  while (before_deadline(&deadline)) {
+    if (term_read(&t) < 0)
+      break;
+    if (waitpid(pid, &status, WNOHANG) == pid) {
+      reaped = 1;
+      while (term_read(&t) > 0)
+        ;
+      break;
+    }
+  }
+  if (!reaped)
+    ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "exit wait failed");
+  close(fd);
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "chat exit failed");
+  ASSERT_TRUE(t.cursor_visible && t.scroll_top == 0 && t.scroll_bottom == 23 &&
+                  t.col == 0 && t.row == t.saved_row + (t.saved_col > 0) &&
+                  !term_contains(&t, "streaming demo") &&
+                  !term_contains(&t, "> /quit"),
+              "exit did not clear the prompt and return below output");
+  PASS();
+}
+
 static void test_chat_non_tty(const char *path) {
   int input[2], output[2], status;
   pid_t pid;
@@ -1058,11 +1213,21 @@ static void test_chat_piped_input_terminal_output(const char *path) {
 
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
-  if (argc != 3)
+  if (argc != 3 && argc != 4)
     return 2;
   if (setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) != 0)
     return 1;
   printf("softline example integration tests\n");
+  if (argc == 4) {
+    if (strcmp(argv[3], "word") == 0)
+      test_chat_long_unbroken_editor_word(argv[2]);
+    else
+      test_chat_native_lifecycle(argv[2],
+                                 strcmp(argv[3], "bottom") == 0 ? 23 : 4);
+    return tests_passed == tests_run ? 0 : 1;
+  }
+  test_chat_native_lifecycle(argv[2], 4);
+  test_chat_native_lifecycle(argv[2], 23);
   test_simple(argv[1]);
   test_chat_live_queue(argv[2]);
   test_chat_long_unbroken_editor_word(argv[2]);

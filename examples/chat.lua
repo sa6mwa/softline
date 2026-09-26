@@ -27,6 +27,7 @@ local worker
 local worker_pid
 local watch_id
 local dispatch_next_queued
+local stream_open = false
 
 local function operation_step_seconds()
   local value = tonumber(os.getenv("SOFTLINE_CHAT_OPERATION_STEP_MS"))
@@ -37,9 +38,11 @@ local function operation_step_seconds()
 end
 
 local function print_message(parts)
-  local ok, status = sl:print_above(parts)
-  if not ok then
-    error(sl:last_error() or ("print_above failed: " .. tostring(status)))
+  for _, part in ipairs(parts) do
+    local ok, status = sl:output_stream_write(part)
+    if not ok then
+      error(sl:last_error() or ("output_stream_write failed: " .. tostring(status)))
+    end
   end
 end
 
@@ -161,13 +164,6 @@ local function run()
   sl = softline.new()
   if interactive then
     assert(themes[theme_name], "invalid SOFTLINE_PROMPT_THEME: " .. theme_name)
-    local live_scroll_region = os.getenv("SOFTLINE_LIVE_SCROLL_REGION")
-    assert(live_scroll_region == nil or live_scroll_region == "" or
-        live_scroll_region == "0" or live_scroll_region == "1" or
-        live_scroll_region == "false" or live_scroll_region == "true",
-        "invalid SOFTLINE_LIVE_SCROLL_REGION: " .. tostring(live_scroll_region))
-    assert(sl:set_live_scroll_region(
-        live_scroll_region == "1" or live_scroll_region == "true"))
     assert(sl:set_prompt_theme(themes[theme_name]))
     assert(sl:set_prompt_queue(true, 64, 3))
     assert(sl:set_queue_profile("queued_turns"))
@@ -188,7 +184,12 @@ local function run()
       return softline.KEY_ACTION_CANCEL
     end))
     set_chat_busy(false)
+    assert(sl:output_stream_begin())
+    stream_open = true
     print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation; /quit leaves.\n" })
+  else
+    assert(sl:output_stream_begin())
+    stream_open = true
   end
 
   while true do
@@ -235,6 +236,9 @@ local ok, err = pcall(run)
 if sl then
   if worker then
     pcall(cancel_operation)
+  end
+  if stream_open then
+    sl:output_stream_end()
   end
   sl:close()
 end
