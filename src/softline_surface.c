@@ -227,11 +227,9 @@ int sl_surface_is_native(const sl_surface_t *surface) {
 static int sl_surface_native_region(sl_surface_t *surface) {
   char seq[48];
   int count;
-  if (surface->height < 1)
+  if (surface->height < 2)
     return -1;
-  count = surface->height > 1
-              ? snprintf(seq, sizeof(seq), "\033[1;%dr", surface->height)
-              : snprintf(seq, sizeof(seq), "\033[r");
+  count = snprintf(seq, sizeof(seq), "\033[1;%dr", surface->height);
   return count > 0 && count < (int)sizeof(seq)
              ? sl_surface_write_all(surface->fd, seq, (size_t)count)
              : -1;
@@ -307,18 +305,30 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   return 0;
 }
 
+int sl_surface_native_finish(sl_surface_t *surface, int prompt_row) {
+  char seq[48];
+  int count;
+  if (!sl_surface_is_native(surface))
+    return -1;
+  count = prompt_row >= 0
+              ? snprintf(seq, sizeof(seq), "\033[r\033[0m\033[%d;1H\033[?25h",
+                         prompt_row + 1)
+              : snprintf(seq, sizeof(seq), "\033[r%s\033[0m\r%s\033[?25h",
+                         surface->native_saved ? "\0338" : "",
+                         surface->native_saved && surface->col > 0 ? "\n" : "");
+  if (count <= 0 || count >= (int)sizeof(seq) ||
+      sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
+    return -1;
+  surface->native_stream = 0;
+  surface->native_saved = 0;
+  return 0;
+}
+
 void sl_surface_destroy(sl_surface_t *surface) {
   if (!surface)
     return;
-  if (surface->native_stream) {
-    (void)sl_surface_write_all(surface->fd, "\033[r", 3);
-    if (surface->native_saved) {
-      (void)sl_surface_write_all(surface->fd, "\0338\033[0m\r", 7);
-      if (surface->col > 0)
-        (void)sl_surface_write_all(surface->fd, "\n", 1);
-    }
-    (void)sl_surface_write_all(surface->fd, "\033[?25h", 6);
-  }
+  if (surface->native_stream)
+    (void)sl_surface_native_finish(surface, -1);
   free(surface);
 }
 

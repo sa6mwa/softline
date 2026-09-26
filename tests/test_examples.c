@@ -1207,10 +1207,13 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "chat exit failed");
   ASSERT_TRUE(t.cursor_visible && t.scroll_top == 0 && t.scroll_bottom == 23 &&
-                  t.col == 0 && t.row == t.saved_row + (t.saved_col > 0) &&
-                  !term_contains(&t, "streaming demo") &&
-                  !term_contains(&t, "> /quit"),
-              "exit did not clear the prompt and return below output");
+                  t.col == 0 && t.row == 23 && term_contains(&t, "Goodbye.") &&
+                  term_contains(&t, "streaming demo") &&
+                  term_row_of(&t, "! Goodbye.") <
+                      term_row_of(&t, "streaming demo") &&
+                  !term_contains(&t, "> /quit") &&
+                  strspn(t.cells[23], " ") == (size_t)t.cols,
+              "exit did not clear input and keep status on the same row");
   PASS();
 }
 
@@ -1418,7 +1421,8 @@ static int frame_exchange(struct terminal *t, int commands, int ack,
   return 0;
 }
 
-static void test_prompt_frames(sl_prompt_theme_t theme) {
+static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
+                               int destroy) {
   static const char source[] =
       "abcdefghijklmno\n\033[31mparagraph words\033[0m\n";
   struct terminal t;
@@ -1450,6 +1454,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme) {
     sl_config_init(&config);
     config.input_fd = config.output_fd = slave;
     config.prompt_theme = theme;
+    config.clear_prompt_on_exit = clear;
     config.prompt_queue = 1;
     config.statusline = 1;
     sl = sl_create_with_config(&config);
@@ -1465,7 +1470,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme) {
       _exit(2);
     line = sl_readline(sl, "> ");
     if (!line || strcmp(line, "draft\nmore") != 0 ||
-        sl_output_stream_end(sl) != SL_OK)
+        (!destroy && sl_output_stream_end(sl) != SL_OK))
       _exit(3);
     sl_free_string(sl, line);
     sl_destroy(sl);
@@ -1565,8 +1570,55 @@ static void test_prompt_frames(sl_prompt_theme_t theme) {
   ASSERT_TRUE(parked == 480 && t.frames > 1000,
               "producer feeds moved the bottom-anchored prompt");
   memset(t.guard, 0, sizeof(t.guard));
-  ASSERT_TRUE(write(fd, "\r", 1) == 1, "submit failed");
-  ASSERT_TRUE(finish(pid, fd) == 0, "frame producer failed");
+  {
+    char before[MAX_ROWS][MAX_COLS + 1];
+    size_t exit_mark = t.raw_len;
+    unsigned int scrolls = t.region_scrolls;
+    int row;
+    struct timespec deadline = deadline_after(3000);
+    int reaped = 0;
+    memcpy(before, t.cells, sizeof(before));
+    if (!clear) {
+      t.guard[0] = "fixture";
+      t.guard[1] = "notice";
+      t.guard[2] = "queued";
+    }
+    ASSERT_TRUE(write(fd, "\r", 1) == 1, "submit failed");
+    while (before_deadline(&deadline)) {
+      (void)term_read(&t);
+      if (waitpid(pid, &status, WNOHANG) == pid) {
+        reaped = 1;
+        while (term_read(&t) > 0)
+          ;
+        break;
+      }
+    }
+    ASSERT_TRUE(reaped && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "frame producer failed");
+    ASSERT_TRUE(t.cursor_visible && t.col == 0 && t.scroll_top == 0 &&
+                    t.scroll_bottom == t.rows - 1,
+                "exit did not restore the terminal cursor and margins");
+    ASSERT_TRUE(!term_contains(&t, "> draft") && !term_contains(&t, "more"),
+                "exit left input cells visible");
+    if (!clear) {
+      ASSERT_TRUE(t.row == t.rows - 1 && t.region_scrolls == scrolls &&
+                      strstr(t.raw + exit_mark, "\n") == NULL &&
+                      !t.frame_failure,
+                  "exit scrolled, advanced a row, or erased status cells");
+      for (row = 0; row < t.rows - 2; row++)
+        ASSERT_TRUE(memcmp(t.cells[row], before[row], (size_t)t.cols) == 0,
+                    "exit changed cells above the editor");
+      ASSERT_TRUE(strspn(t.cells[t.rows - 2], " ") == (size_t)t.cols &&
+                      strspn(t.cells[t.rows - 1], " ") == (size_t)t.cols,
+                  "exit did not clear all wrapped editor rows");
+    } else {
+      ASSERT_TRUE(!term_contains(&t, "fixture") &&
+                      !term_contains(&t, "notice") &&
+                      !term_contains(&t, "queued"),
+                  "full-clear exit left status or queue rows visible");
+    }
+    close(fd);
+  }
   close(commands[1]);
   close(ack[0]);
   PASS();
@@ -1745,8 +1797,10 @@ int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "frames") == 0) {
     test_queue_after_output_fills_prompt_region(SL_PROMPT_THEME_PLAIN);
     test_queue_after_output_fills_prompt_region(SL_PROMPT_THEME_DEFAULT);
-    test_prompt_frames(SL_PROMPT_THEME_PLAIN);
-    test_prompt_frames(SL_PROMPT_THEME_DEFAULT);
+    test_prompt_frames(SL_PROMPT_THEME_PLAIN, 0, 0);
+    test_prompt_frames(SL_PROMPT_THEME_DEFAULT, 0, 1);
+    test_prompt_frames(SL_PROMPT_THEME_PLAIN, 1, 0);
+    test_prompt_frames(SL_PROMPT_THEME_DEFAULT, 1, 1);
     return tests_passed == tests_run ? 0 : 1;
   }
   if (argc != 3 && argc != 4)
@@ -1756,7 +1810,7 @@ int main(int argc, char **argv) {
   printf("softline example integration tests\n");
   if (argc == 4) {
     if (strcmp(argv[3], "frames") == 0)
-      test_prompt_frames(SL_PROMPT_THEME_PLAIN);
+      test_prompt_frames(SL_PROMPT_THEME_PLAIN, 0, 0);
     else if (strcmp(argv[3], "resize") == 0)
       test_chat_resizes_while_streaming(argv[2]);
     else if (strcmp(argv[3], "word") == 0)

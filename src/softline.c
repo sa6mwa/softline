@@ -717,8 +717,9 @@ static int sl_output_prompt_rows(sl_impl_t *impl) {
   int height;
   rows = impl->native_prompt_rows > 0 ? impl->native_prompt_rows : 1;
   height = sl_terminal_height(impl);
-  if (height > 1 && rows >= height)
-    rows = height - 1;
+  /* DECSTBM requires at least two output rows. */
+  if (height > 2 && rows > height - 2)
+    rows = height - 2;
   return rows;
 }
 
@@ -745,8 +746,10 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
   if (!impl || !isatty(impl->input_fd) || !isatty(impl->output_fd))
     return 0;
   width = sl_terminal_columns(impl);
-  if (prompt_top < 1 || prompt_top >= sl_terminal_rows(impl))
+  if (prompt_top < 2 || prompt_top >= sl_terminal_rows(impl)) {
+    sl_set_error(self, "native output needs two scroll rows above the prompt");
     return -1;
+  }
   if (!impl->output_surface) {
     int row;
     if (sl_enable_raw(self) != 0)
@@ -1836,6 +1839,7 @@ static void sl_render_store_clear(sl_impl_t *impl) {
   impl->rendered_cols = NULL;
   impl->rendered_cap = 0;
   impl->rendered_rows = 0;
+  impl->rendered_editor_first = 0;
   impl->rendered_cursor_row = 0;
   impl->rendered_cursor_col = 0;
   impl->rendered_cursor_valid = 0;
@@ -1902,6 +1906,11 @@ static int sl_render_store_update(sl_impl_t *impl, sl_render_t *render,
     impl->rendered_cols[i] = 0;
   }
   impl->rendered_rows = row_count;
+  impl->rendered_editor_first = render->editor_first - first_row;
+  if (impl->rendered_editor_first < 0)
+    impl->rendered_editor_first = 0;
+  if (impl->rendered_editor_first > row_count)
+    impl->rendered_editor_first = row_count;
   impl->rendered_top_row = top_row;
   impl->rendered_cursor_row = cursor_row;
   impl->rendered_cursor_col = cursor_col;
@@ -1985,6 +1994,13 @@ static int sl_render_visible_equal(sl_impl_t *impl, sl_render_t *render,
                                    int first_row, int row_count, int cursor_row,
                                    int cursor_col, int top_row) {
   int i;
+  int editor_first = render->editor_first - first_row;
+  if (editor_first < 0)
+    editor_first = 0;
+  if (editor_first > row_count)
+    editor_first = row_count;
+  if (impl->rendered_editor_first != editor_first)
+    return 0;
   if (impl->rendered_rows != row_count)
     return 0;
   if (impl->rendered_top_row != top_row)
@@ -3218,6 +3234,36 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   return rc;
 }
 
+static int sl_native_session_close(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  int prompt_row = -1;
+  int i;
+  if (!impl->clear_prompt_on_exit && impl->rendered_rows > 0) {
+    prompt_row = impl->rendered_top_row + impl->rendered_cursor_row;
+    /* The cached frame separates editor cells from queue and status rows.
+     * Clear only visible input rows and leave the rest of the screen intact. */
+    for (i = impl->rendered_editor_first; i < impl->rendered_rows; i++) {
+      int row = impl->rendered_top_row + i;
+      if (row < 0 || row >= sl_terminal_rows(impl))
+        continue;
+      if (sl_write_cursor_pos(impl->output_fd, row, 0) != 0 ||
+          sl_clear_prompt_row(impl) != 0)
+        return -1;
+    }
+  }
+  if (impl->clear_prompt_on_exit && sl_render_clear_active(self) != 0)
+    return -1;
+  if (prompt_row >= sl_terminal_rows(impl))
+    prompt_row = sl_terminal_rows(impl) - 1;
+  if (sl_surface_native_finish(impl->output_surface, prompt_row) != 0)
+    return -1;
+  impl->cursor_hidden = 0;
+  sl_surface_destroy(impl->output_surface);
+  impl->output_surface = NULL;
+  sl_render_store_clear(impl);
+  return sl_show_cursor(impl);
+}
+
 static int sl_render_finish(sl_t *self, int queue_dispatch) {
   sl_impl_t *impl;
   impl = sl_impl(self);
@@ -3227,12 +3273,10 @@ static int sl_render_finish(sl_t *self, int queue_dispatch) {
       sl_wstr(impl->output_fd, "\033[0m") != 0)
     return -1;
   if (sl_surface_is_native(impl->output_surface)) {
-    if (sl_render_clear_active(self) != 0)
+    if (impl->clear_prompt_on_exit && sl_render_clear_active(self) != 0)
       return -1;
-    if (!impl->output_stream_active) {
-      sl_surface_destroy(impl->output_surface);
-      impl->output_surface = NULL;
-    }
+    if (!impl->output_stream_active)
+      return sl_native_session_close(self);
     return 0;
   }
   if (impl->auto_scroll_pinned) {
@@ -4160,8 +4204,8 @@ static int sl_output_stream_end_method(sl_t *self) {
   prompt_origin = impl->active_prompt && impl->rendered_rows > 0
                       ? impl->rendered_top_row
                       : -1;
-  if (impl->active_prompt && impl->rendered_rows > 0 &&
-      sl_render_clear_active(self) != 0) {
+  if (!sl_surface_is_native(impl->output_surface) && impl->active_prompt &&
+      impl->rendered_rows > 0 && sl_render_clear_active(self) != 0) {
     sl_set_error(self, "failed to clear prompt when ending live output");
     return SL_ERROR_IO;
   }
@@ -4175,8 +4219,8 @@ static int sl_output_stream_end_method(sl_t *self) {
     sl_surface_native_position(impl->output_surface, NULL, &col);
     if (col > 0 && impl->output_trailing_newlines < 2)
       impl->output_trailing_newlines++;
-    sl_surface_destroy(impl->output_surface);
-    impl->output_surface = NULL;
+    if (sl_native_session_close(self) != 0)
+      return SL_ERROR_IO;
     sl_disable_raw(self);
     return sl_show_cursor(impl) == 0 ? SL_OK : SL_ERROR_IO;
   }
@@ -5289,7 +5333,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   impl->active_readline = 1;
   free(impl->history_edit);
   impl->history_edit = NULL;
-  sl_render_store_clear(impl);
+  if (!sl_surface_is_native(impl->output_surface))
+    sl_render_store_clear(impl);
   impl->active_prompt = prompt;
   if (sl_render_apply(self, prompt) != 0) {
     impl->active_prompt = NULL;
@@ -5768,6 +5813,8 @@ static void sl_destroy_method(sl_t *self) {
     return;
   }
   if (impl) {
+    if (sl_surface_is_native(impl->output_surface))
+      (void)sl_native_session_close(self);
     sl_release_auto_scroll_region(impl);
     sl_disable_raw(self);
     (void)sl_show_cursor(impl);
@@ -6557,6 +6604,7 @@ void sl_config_init(sl_config_t *config) {
   config->status_spinner = 0;
   config->status_busy = 0;
   config->status_idle_marker = '+';
+  config->clear_prompt_on_exit = 0;
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
@@ -6568,8 +6616,8 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
     config = &local;
   }
   if (config->history_max_len < 0 || config->screen_width < 0 ||
-      config->live_scroll_region < 0 || config->prompt_queue < 0 ||
-      config->prompt_queue_max_entries < 1 ||
+      config->live_scroll_region < 0 || config->clear_prompt_on_exit < 0 ||
+      config->prompt_queue < 0 || config->prompt_queue_max_entries < 1 ||
       config->prompt_queue_preview_entries < 1 ||
       config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
       config->prompt_theme > SL_PROMPT_THEME_DEFAULT ||
@@ -6656,6 +6704,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->screen_width = config->screen_width;
   impl->line_max_len = config->line_max_len;
   impl->live_scroll_region = config->live_scroll_region;
+  impl->clear_prompt_on_exit = config->clear_prompt_on_exit;
   impl->prompt_queue.enabled = config->prompt_queue;
   impl->prompt_queue.max_entries = config->prompt_queue_max_entries;
   impl->prompt_queue.preview_entries = config->prompt_queue_preview_entries;

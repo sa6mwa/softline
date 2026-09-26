@@ -419,6 +419,11 @@ typedef struct sl_config {
   /** Printable ASCII marker shown while idle; defaults to '+'. '\0' leaves
    * its reserved status marker slot blank. */
   char status_idle_marker;
+  /** Native chat exit behavior. Zero (the default) clears only the
+   * input rows, keeps queue and status rows, and returns at column zero on the
+   * current input row. Non-zero clears the whole prompt area and returns below
+   * the transcript instead. */
+  int clear_prompt_on_exit;
 } sl_config_t;
 
 /**
@@ -583,10 +588,12 @@ struct sl {
    * unsupported terminal controls fail with SL_ERROR_INVALID. Malformed UTF-8
    * also fails. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
-  /** End the open session without adding a newline or finishing an external
-   * renderer document. The next TTY output starts on a fresh row if this
-   * session ended mid-row. Incomplete ANSI/UTF-8 leaves it open and returns
-   * SL_ERROR_INVALID so the caller may supply the missing bytes. */
+  /** End the open session without finishing an external renderer document.
+   * Native chat clears input rows by default, keeps queue and status rows, and
+   * returns at column zero on the current input row. clear_prompt_on_exit
+   * selects clearing the whole prompt area and returning below the transcript.
+   * Incomplete ANSI/UTF-8 leaves it open and returns SL_ERROR_INVALID so the
+   * caller may supply the missing bytes. */
   int (*output_stream_end)(sl_t *self);
   /** Set, replace, or clear the italic message above the status line.
    * The default prefix is "! "; long text wraps at words with continuation
@@ -871,11 +878,12 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
  * caller owns its producer, wakeup, renderer, and document lifecycle. A
  * native transcript starts at the current cursor; the editable prompt is
  * anchored at the bottom from its first frame. Output feeds preserve unchanged
- * prompt cells; prompt updates patch only changed cells. The reservation can
- * grow into unused space above it; once filled, prompt wrapping pages within
- * the reservation without moving transcript text. Native transcript reflow
- * belongs to the terminal; Softline never clears or replays it. Returns
- * SL_ERROR_INVALID if a session is already open. */
+ * prompt cells; prompt updates patch only changed cells. The output margin
+ * follows the current prompt frame height; growth scrolls existing output cells
+ * only enough to fit, and shrink returns rows without moving transcript cells.
+ * At least three terminal rows are required: two scroll rows and one prompt
+ * row. Native transcript reflow belongs to the terminal; Softline never clears
+ * or replays it. Returns SL_ERROR_INVALID if a session is already open. */
 int sl_output_stream_begin(sl_t *self);
 
 /** Forward length bytes immediately to the live output session. Zero length
@@ -885,10 +893,14 @@ int sl_output_stream_begin(sl_t *self);
  * while a successful write has emitted all complete input units. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
-/** End the output session. The caller remains
- * responsible for finishing any external renderer document first. The next
- * TTY cursor returns below output if this session ended mid-row. Incomplete
- * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open. */
+/** End the output session. The caller remains responsible for finishing any
+ * external renderer document first. By default, native input rows are cleared,
+ * queue and status rows remain visible, and the TTY cursor returns at column
+ * zero on the current input row. clear_prompt_on_exit selects clearing the
+ * whole prompt area and returning below output instead.
+ * Without a prompt, return below output. Incomplete ANSI/UTF-8 returns
+ * SL_ERROR_INVALID and leaves the session open.
+ */
 int sl_output_stream_end(sl_t *self);
 
 /** Write a submitted prompt as a themed quote into an open output stream.

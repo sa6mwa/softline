@@ -84,6 +84,7 @@ typedef struct sl_impl {
   int output_fd;
   int screen_width;
   int live_scroll_region;
+  int clear_prompt_on_exit;
   int auto_scroll_pinned;
   int output_stream_active;
   int output_trailing_newlines;
@@ -117,6 +118,7 @@ typedef struct sl_impl {
   int bracketed_paste;
   int cursor_hidden;
   int rendered_rows;
+  int rendered_editor_first;
   int rendered_top_row;
   int rendered_cursor_row;
   int rendered_cursor_col;

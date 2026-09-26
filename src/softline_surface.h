@@ -14,6 +14,7 @@ void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col);
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
                             size_t length);
+int sl_surface_native_finish(sl_surface_t *surface, int prompt_row);
 void sl_surface_destroy(sl_surface_t *surface);
 int sl_surface_resize(sl_surface_t *surface, int width, int height);
 void sl_surface_geometry(const sl_surface_t *surface, int *width, int *height,

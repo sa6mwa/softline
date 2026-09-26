@@ -67,8 +67,11 @@ and restore the editor cursor. The output margin follows the current rendered
 prompt height, with no empty queue slots or absent status-message rows. Growth
 scrolls existing output cells only enough to fit; shrink returns freed rows
 without moving transcript cells. The editor pages only at physical capacity.
-Ending chat clears the prompt, restores the full scroll region, shows the
-cursor, and returns below output.
+Ending chat restores the full scroll
+region and clears only input rows, preserving queue and status rows. The cursor
+stays at column zero on the current input row without a newline or scroll.
+`clear_prompt_on_exit = 1` selects clearing the whole prompt area and returning
+below the transcript.
 
 Rectangular viewports and bounds configuration are unsupported. Native chat
 always uses the physical terminal width. `sl_set_screen_width()` controls

@@ -1,6 +1,6 @@
 local softline = require("softline")
 
-local sl = assert(softline.new())
+local sl = assert(softline.new({clear_prompt_on_exit = arg[1] == "clear"}))
 assert(sl:output_stream_begin())
 
 -- The producer owns its process and fd. Its one-byte events are consumed on

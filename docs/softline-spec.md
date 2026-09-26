@@ -231,8 +231,10 @@ Prompt updates compare the previous frame and patch only changed cells; output
 feeds preserve unchanged prompt cells and restore the editor cursor. The
 scroll region ends immediately above the current prompt frame.
 Resize updates only prompt cells and preserves both cursor positions. Ending
-chat clears the prompt, restores the full scroll region and visible cursor,
-and returns below output.
+chat restores the full scroll region and clears input rows while retaining
+queue and status rows. The cursor stays at column zero on the current input
+row; exit adds no newline or scroll. `clear_prompt_on_exit` defaults to zero;
+setting it to one clears the whole prompt area and returns below the transcript.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
 only cursor geometry and bounded partial ANSI/UTF-8 state.

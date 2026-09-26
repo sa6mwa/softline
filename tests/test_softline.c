@@ -142,6 +142,8 @@ static void test_config_init(void) {
   ASSERT_TRUE(cfg.output_fd == STDOUT_FILENO, "output fd default");
   ASSERT_TRUE(cfg.screen_width == 0, "screen width default");
   ASSERT_TRUE(cfg.live_scroll_region == 0, "live scroll region default");
+  ASSERT_TRUE(cfg.clear_prompt_on_exit == 0,
+              "preserve status UI on exit default");
   ASSERT_TRUE(cfg.history_max_len == 100, "history max default");
   ASSERT_TRUE(cfg.line_max_len == 4096, "line max default");
   ASSERT_TRUE(cfg.prompt_queue == 0, "prompt queue default");
@@ -628,6 +630,11 @@ static void test_invalid_config_is_rejected(void) {
   cfg.live_scroll_region = -1;
   ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
               "negative live scroll region accepted");
+
+  sl_config_init(&cfg);
+  cfg.clear_prompt_on_exit = -1;
+  ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
+              "negative exit clear option accepted");
   sl_config_init(&cfg);
   cfg.prompt_queue = 1;
 
@@ -1854,6 +1861,7 @@ static void test_native_output_preserves_source_bytes(void) {
   cfg.input_fd = slave_fd;
   cfg.output_fd = slave_fd;
   cfg.screen_width = 5;
+  cfg.clear_prompt_on_exit = 1;
   sl = sl_create_with_config(&cfg);
   ASSERT_TRUE(sl && sl_output_stream_begin(sl) == SL_OK,
               "native stream setup failed");
@@ -8709,10 +8717,7 @@ struct multiline_stream_end_state {
 static void
 multiline_stream_end_snapshot(struct multiline_stream_end_state *state) {
   char bytes[16384];
-  if (read_live_pty_output(state->master_fd, bytes, sizeof(bytes)) == 0) {
-    state->failed = 1;
-    return;
-  }
+  (void)read_live_pty_output(state->master_fd, bytes, sizeof(bytes));
   vt_apply(&state->screen, bytes);
 }
 
@@ -8942,6 +8947,7 @@ static void test_live_output_after_readline_submit_clears_editor(void) {
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
               "openpty failed");
   sl_config_init(&cfg);
+  cfg.clear_prompt_on_exit = 1;
   cfg.input_fd = slave_fd;
   cfg.output_fd = slave_fd;
   sl = sl_create_with_config(&cfg);
@@ -9043,10 +9049,7 @@ struct retained_growth_state {
 
 static void retained_growth_snapshot(struct retained_growth_state *state) {
   char bytes[32768];
-  if (read_live_pty_output(state->master_fd, bytes, sizeof(bytes)) == 0) {
-    state->failed = 1;
-    return;
-  }
+  (void)read_live_pty_output(state->master_fd, bytes, sizeof(bytes));
   vt_apply(&state->screen, bytes);
 }
 

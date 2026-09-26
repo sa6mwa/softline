@@ -28,6 +28,9 @@ config table mirrors `sl_config_t`:
 - `output_fd`
 - `screen_width`
 - `live_scroll_region`
+- `clear_prompt_on_exit` (default `false`: clear input rows, keep queue and
+  status rows, and return at column zero on the current input row; `true` clears
+  the whole prompt area and returns below the transcript)
 - `prompt_queue`
 - `prompt_queue_max_entries`
 - `prompt_queue_preview_entries`

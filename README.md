@@ -167,8 +167,11 @@ prompt space. Growth scrolls existing output cells only enough to fit when
 needed; shrink returns freed rows to output without moving transcript cells.
 The editor pages only when the frame exceeds the terminal's available height.
 Terminal resize updates only the prompt and leaves transcript
-reflow to the terminal. Ending chat clears the prompt, restores the full
-scroll region, shows the cursor, and returns below the output.
+reflow to the terminal. Ending chat restores the full scroll region, clears
+only the input rows, and keeps queue and status rows visible. The cursor remains
+at column zero on the current input row, with no final newline or scroll. Set
+`sl_config_t.clear_prompt_on_exit = 1` to clear the whole prompt area and return
+below the transcript instead.
 
 Chat uses the full terminal width; rectangular viewports are unsupported.
 Softline never enters or leaves the alternate screen itself.

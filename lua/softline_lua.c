@@ -269,6 +269,10 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   if (!lua_isnil(L, -1))
     config->live_scroll_region = lua_toboolean(L, -1);
   lua_pop(L, 1);
+  lua_getfield(L, index, "clear_prompt_on_exit");
+  if (!lua_isnil(L, -1))
+    config->clear_prompt_on_exit = lua_toboolean(L, -1);
+  lua_pop(L, 1);
   lua_getfield(L, index, "prompt_queue");
   if (!lua_isnil(L, -1))
     config->prompt_queue = lua_toboolean(L, -1);
