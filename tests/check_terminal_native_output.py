@@ -207,6 +207,13 @@ def case(fixture, build, source, prefilled=False):
                     ack()
                     assert any(line == 'YY' for line in rows(actual)[0]), (
                         'post-editor resize split producer line', rows(actual)[0])
+                    resize(actual, actual_window, 40, 16)
+                    os.write(command_fd, b'r')
+                    assert ack() == (40, 16)
+                    os.write(command_fd, b'p')
+                    ack()
+                    assert any(line == 'YYY' for line in rows(actual)[0]), (
+                        'repeated growth overwrote producer line', rows(actual)[0])
                 resize(actual, actual_window, 32 if prefilled else 40, 6)
                 os.write(command_fd, b'x')
                 deadline = time.monotonic() + 4

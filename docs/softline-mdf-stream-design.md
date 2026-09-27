@@ -154,8 +154,8 @@ events. The core and Lua libraries do not import libmdf.
   first editor handoff and live width/height transitions with empty terminals
   and 100 prior rows, preserving internal blank rows. Finite output in one-byte
   Unicode chunks ends at the native endpoint before another stream begins.
-  A write after a retained editor frame and terminal growth resumes on the
-  producer's last line, with and without prior scrollback.
+  Writes after a retained editor frame and repeated terminal growth resume on
+  the producer's last line, with and without prior scrollback.
   After `readline` returns, shrinking rows and sometimes columns before session
   close clears the retained input row at its new location and exits at the new
   bottom row.

@@ -3035,7 +3035,9 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
   height_only = impl->rendered_width == width;
   offset = old_offset = impl->rendered_cursor_row;
   observed = impl->cursor_position_probe == 1 ? sl_query_cursor_row(self) : 0;
-  old_below = old_prompt_rows - 1 - old_offset;
+  /* A retained frame can remain above the new bottom after terminal growth.
+   * Its cached top and height identify the physical cursor we last painted. */
+  old_below = impl->rendered_height - 1 - (impl->rendered_top_row + old_offset);
   if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
       (size.ws_col != width || size.ws_row != height))
     return 1;
