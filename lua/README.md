@@ -183,7 +183,10 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:output_stream_begin()` opens one persistent output session above the
   prompt. Transcript output starts at the existing terminal cursor; the editable
   prompt is anchored at the bottom from its first frame. Producer bytes pass
-  through unchanged; transcript reflow belongs to the terminal. The output
+  through unchanged. Before the first frame, output uses the full terminal and
+  leaves its cursor in place between writes, preserving native autowrap and
+  Unicode clusters. Cursor reports occur at ownership and resize boundaries,
+  rather than per feed. Transcript reflow belongs to the terminal. The output
   margin follows the actual prompt height, including visible queue entries,
   nonempty status messages, status lines, and editor rows. Unused preview slots
   occupy no space. At physical capacity the editor pages, leaving at least two

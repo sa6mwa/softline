@@ -262,6 +262,40 @@ static int clipped_tab_case(int full_row) {
   return failed;
 }
 
+static int owned_cursor_resize_case(void) {
+  struct winsize size;
+  sl_surface_t *surface;
+  int master, slave, failed;
+  char bytes[1024];
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 40;
+  size.ws_row = 12;
+  if (openpty(&master, &slave, NULL, NULL, &size) != 0)
+    return 1;
+  (void)fcntl(master, F_SETFL, O_NONBLOCK);
+  surface = sl_surface_create_native(slave, 40, 12, 0, 0, cell_width);
+  if (!surface)
+    return 1;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed = sl_surface_native_write(surface, "hello", 5, -1, 0) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  /* A cursor report may be unavailable. The terminal still retains the
+   * physical producer cursor even when the stored bottom delta is clipped. */
+  size.ws_row = 6;
+  failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+            sl_surface_resize(surface, 40, 6) != 0;
+  failed |= drain(master, bytes, sizeof(bytes)) != 0;
+  failed |= sl_surface_native_write(surface, "X", 1, -1, 0) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= strcmp(bytes, "\033[0mX\033[0m") != 0;
+  sl_surface_destroy(surface);
+  close(slave);
+  close(master);
+  if (failed)
+    fprintf(stderr, "prompt-free shrink moved the live producer cursor\n");
+  return failed;
+}
+
 int main(void) {
   static const int dimensions[][2] = {{16, 5},  {40, 5},  {80, 5}, {16, 12},
                                       {80, 12}, {16, 18}, {80, 18}};
@@ -281,6 +315,7 @@ int main(void) {
     failed |= newline_case((int)i);
   failed |= clipped_tab_case(0);
   failed |= clipped_tab_case(1);
+  failed |= owned_cursor_resize_case();
   if (!failed)
     puts("21 physical resize cases preserve cells; prompt growth still "
          "scrolls.");

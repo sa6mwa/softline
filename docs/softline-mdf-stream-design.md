@@ -78,9 +78,14 @@ layout; transcript reflow remains owned by the terminal. The
 producer tracks display cells since its last hard line boundary so growth can
 restore the column of a previously wrapped line without storing its text.
 When no prompt frame has been rendered, the live cursor belongs to the producer.
-After resize its cursor report refreshes the stored bottom-relative row delta
-before the scroll-margin update moves that cursor. With no rendered prompt,
-that update reserves no editor rows; rendering a prompt sets its actual margin.
+Writes leave that cursor in place, preserving native pending wrap and Unicode
+clusters across chunks. No editor rows are reserved until a frame exists.
+A full-height region follows terminal resize without another margin command.
+Cursor reports refresh the producer's bottom-relative row and column at resize,
+first editor handoff, finite-output completion, and session close; they are not
+requested per feed. Moving to an editor or temporary parked cursor releases
+producer ownership, so later writes use the stored output position. Rendering
+a prompt sets its actual margin.
 Updating margins after physical resize
 must not scroll the transcript again; cells clipped off the top are not
 recovered or replayed. When an unfinished line leaves the screen, its next
@@ -143,6 +148,12 @@ events. The core and Lua libraries do not import libmdf.
 
 ## Verification
 
+- Real VTE PTY responses and tmux compare chunked producer output and the exit
+  cursor with direct terminal bytes. Cases cover exact-width ASCII, combining
+  marks, flags, joined emoji, variation selectors, and keycaps. VTE also checks
+  first editor handoff and live width/height transitions with empty terminals
+  and 100 prior rows, preserving internal blank rows. Finite output in one-byte
+  Unicode chunks ends at the native endpoint before another stream begins.
 - When GTK3 VTE and `xvfb-run` are installed, a real-engine regression runs the
   chat example in an already filled terminal. It compares physical transcript
   rows across 97↔96 and stepwise 110↔90 column changes with three responses,

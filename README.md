@@ -159,6 +159,12 @@ bytes, including libmdf styles and wrapping, pass through unchanged. Softline ke
 parser state and the output cursor; it does not cache, pad, rewrap, clear, or
 replay the native transcript.
 
+Before a prompt frame exists, output uses the full terminal and keeps the
+producer cursor in place between writes. Native autowrap and Unicode clusters
+survive chunk boundaries. Full-height output follows terminal resize without
+another margin command. Cursor reports refresh the producer position at
+resize and cursor handoffs, rather than per feed.
+
 Softline retains the previous prompt frame and patches only changed cells.
 Feeding output leaves unchanged prompt cells intact and restores the editor
 cursor. The output region follows the current frame height: only visible

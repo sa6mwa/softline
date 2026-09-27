@@ -9585,7 +9585,8 @@ static void test_live_output_prompt_growth_preserves_history(void) {
   if (!vt_contains(&screen, "TWO") || !vt_contains(&screen, "THREE") ||
       !vt_contains(&screen, "SEVEN"))
     vt_dump(&screen);
-  ASSERT_TRUE(screen.history_count == 0 &&
+  ASSERT_TRUE(screen.history_count == 1 &&
+                  strncmp(screen.history[0], "ONE", 3) == 0 &&
                   strncmp(screen.cells[0], "TWO", 3) == 0 &&
                   strncmp(screen.cells[1], "THREE", 5) == 0 &&
                   strncmp(screen.cells[2], "FOUR", 4) == 0 &&

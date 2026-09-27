@@ -73,6 +73,10 @@ if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(native_output_fixture native_output_fixture.c)
+  target_link_libraries(native_output_fixture PRIVATE softline)
+  softline_apply_warnings(native_output_fixture)
+  softline_local_runtime(native_output_fixture)
   add_executable(test_native_resize test_native_resize.c
     "${PROJECT_SOURCE_DIR}/src/softline_surface.c")
   target_include_directories(test_native_resize PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -107,6 +111,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     NO_CMAKE_FIND_ROOT_PATH)
   if(SOFTLINE_TEST_XVFB_RUN AND SOFTLINE_TEST_VTE)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME softline_terminal_native_output
+      COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_native_output.py"
+      "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
+    set_tests_properties(softline_terminal_native_output PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 120)
     add_test(NAME softline_terminal_blank_reflow
       COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_blank_reflow.py"
@@ -126,6 +136,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   find_program(SOFTLINE_TEST_TMUX tmux)
   if(SOFTLINE_TEST_TMUX)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME softline_terminal_native_output_tmux
+      COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_native_output_tmux.py"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:native_output_fixture>"
+      "${PROJECT_BINARY_DIR}")
+    set_tests_properties(softline_terminal_native_output_tmux PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 30)
     add_executable(terminal_resize_fixture terminal_resize_fixture.c)
     target_link_libraries(terminal_resize_fixture PRIVATE softline)
     softline_enable_dev_libmdf(terminal_resize_fixture)
