@@ -243,10 +243,13 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
   }
   if (byte == '\t') {
     if (surface->tracking) {
-      surface->line_cells += (size_t)(8 - (surface->col % 8));
-      surface->col += 8 - (surface->col % 8);
-      if (surface->col >= surface->width)
-        surface->col = surface->width - 1;
+      int next = surface->col + 8 - (surface->col % 8);
+      if (next >= surface->width)
+        next = surface->width - 1;
+      /* HT cancels pending wrap, so a full-row endpoint can move back one. */
+      surface->line_cells =
+          surface->line_cells - (size_t)surface->col + (size_t)next;
+      surface->col = next;
     }
     return 0;
   }

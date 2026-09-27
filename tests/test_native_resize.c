@@ -225,6 +225,43 @@ static int newline_case(int mode) {
   return failed;
 }
 
+static int clipped_tab_case(int full_row) {
+  struct winsize size;
+  sl_surface_t *surface;
+  int master, slave, failed, row, col;
+  char bytes[1024];
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 20;
+  size.ws_row = 8;
+  if (openpty(&master, &slave, NULL, NULL, &size) != 0)
+    return 1;
+  (void)fcntl(master, F_SETFL, O_NONBLOCK);
+  surface = sl_surface_create_native(slave, 20, 7, 0, 0, cell_width);
+  if (!surface)
+    return 1;
+  failed = sl_surface_native_write(surface,
+                                   full_row ? "abcdefghijklmnopqrst\t"
+                                            : "abcdefghijklmnopqr\tX",
+                                   full_row ? 21 : 20, 7, 0) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  size.ws_col = 40;
+  failed |= ioctl(master, TIOCSWINSZ, &size) != 0;
+  failed |= sl_surface_resize(surface, 40, 7) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= sl_surface_native_write(surface, "Y", 1, 7, 0) != 0;
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != 0 || col != (full_row ? 20 : 21);
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |=
+      strstr(bytes, full_row ? "\033[65535;20H" : "\033[65535;21H") == NULL;
+  sl_surface_destroy(surface);
+  close(slave);
+  close(master);
+  if (failed)
+    fprintf(stderr, "clipped tab introduced a gap after width growth\n");
+  return failed;
+}
+
 int main(void) {
   static const int dimensions[][2] = {{16, 5},  {40, 5},  {80, 5}, {16, 12},
                                       {80, 12}, {16, 18}, {80, 18}};
@@ -242,6 +279,8 @@ int main(void) {
   failed |= clipped_tail_case(0);
   for (i = 0; i < 3; i++)
     failed |= newline_case((int)i);
+  failed |= clipped_tab_case(0);
+  failed |= clipped_tab_case(1);
   if (!failed)
     puts("21 physical resize cases preserve cells; prompt growth still "
          "scrolls.");
