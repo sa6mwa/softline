@@ -4077,14 +4077,22 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
                         &old_terminal_rows);
     if (old_width != sl_terminal_width(impl) ||
         old_terminal_rows != sl_terminal_rows(impl)) {
-      int prompt_top = sl_prompt_top(impl, sl_output_prompt_rows(impl));
-      if (impl->rendered_rows == 0) {
+      if (impl->rendered_rows > 0) {
+        int attempt, result = 1;
+        for (attempt = 0; attempt < 3 && result == 1; attempt++)
+          result = sl_native_reconcile_rendered_frame(
+              self, sl_terminal_columns(impl), sl_terminal_rows(impl));
+        if (result != 0) {
+          sl_set_error(self,
+                       "failed to reconcile retained prompt after resize");
+          return SL_ERROR_IO;
+        }
+      } else {
         /* No editor cells exist to reserve below the output cursor. */
-        prompt_top = sl_terminal_rows(impl);
-      }
-      if (sl_output_surface_reconcile(self, prompt_top) != 0) {
-        sl_set_error(self, "failed to resize live output surface");
-        return SL_ERROR_IO;
+        if (sl_output_surface_reconcile(self, sl_terminal_rows(impl)) != 0) {
+          sl_set_error(self, "failed to resize live output surface");
+          return SL_ERROR_IO;
+        }
       }
     }
   }
