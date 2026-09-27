@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
+#include <termios.h>
 #include <unistd.h>
 
 #define SL_ROW(surface)                                                        \
@@ -161,7 +162,8 @@ static int sl_surface_parse_sgr(sl_surface_t *surface) {
   return 0;
 }
 
-static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
+static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
+                           int newline_returns) {
   unsigned long cp;
   unsigned int i;
   if (surface->parser == 1) {
@@ -222,8 +224,11 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
   }
   if (byte == '\n') {
     if (surface->tracking) {
-      surface->col = 0;
-      surface->line_cells = 0;
+      if (newline_returns)
+        surface->col = 0;
+      else if (surface->col >= surface->width)
+        surface->col = surface->width - 1;
+      surface->line_cells = (size_t)surface->col;
       if (SL_ROW(surface) + 1 < surface->height)
         surface->producer_below--;
     }
@@ -393,10 +398,16 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   struct iovec parts[3];
   sl_surface_t next;
   char prefix[192], suffix[64];
-  int count, style_count, suffix_count, first;
+  int count, style_count, suffix_count, first, newline_returns;
+  struct termios attributes;
   size_t i;
   if (!sl_surface_is_native(surface))
     return -1;
+  if (tcgetattr(surface->fd, &attributes) != 0)
+    return -1;
+  /* Track the line discipline without changing the producer's bytes. */
+  newline_returns =
+      (attributes.c_oflag & OPOST) && (attributes.c_oflag & ONLCR);
   if (SL_ROW(surface) < 0) {
     /* Continue a clipped, unfinished line at the first visible output row.
      * At a hard line boundary there is no text to continue: start new output
@@ -439,7 +450,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   sl_surface_reset_partial(&next);
   next.tracking = 1;
   for (i = 0; i < length; i++) {
-    if (sl_surface_byte(&next, (unsigned char)bytes[i]) != 0)
+    if (sl_surface_byte(&next, (unsigned char)bytes[i], newline_returns) != 0)
       return -1;
   }
   parts[0].iov_base = prefix;
@@ -584,7 +595,7 @@ int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,
     return -2;
   *accepted = 0;
   for (i = 0; i < length; i++) {
-    status = sl_surface_byte(surface, (unsigned char)bytes[i]);
+    status = sl_surface_byte(surface, (unsigned char)bytes[i], 0);
     if (status != 0) {
       *accepted = i;
       return status;

@@ -43,7 +43,10 @@ Chunk boundaries have no display semantics. In particular, Softline inserts
 no newline, response separator, or space in producer content at a write
 boundary. Terminal cursor and style controls surround native writes to isolate
 the editor. Output position and producer style are tracked by Softline rather
-than by terminal cursor save/restore sequences.
+than by terminal cursor save/restore sequences. Native LF positioning follows
+the output TTY's OPOST/ONLCR settings; producer bytes and terminal settings
+are unchanged. A failed native session startup restores raw mode only when
+that startup acquired it, preserving raw mode already owned by the editor.
 Ending a session does not finish a Markdown document. The application calls its
 renderer’s document lifecycle itself. Each successful write accepts its entire
 span; errors are reported on the handle and never silently discard accepted
@@ -112,7 +115,10 @@ frame for cell comparisons.
 below the transcript. Ending a stream inside an active editor retains the
 prompt and scroll region for later finite output or another stream. Closing
 the handle always restores terminal state. Non-TTY sessions emit no teardown
-controls. Native chat needs at least three terminal rows: two for output and
+controls. Ctrl-C restores unrestricted scroll margins, the bottom input cursor,
+and termios before raising SIGINT. If a handler returns, the existing native
+output session remains available and its scroll margin is reinstated.
+Native chat needs at least three terminal rows: two for output and
 one for the prompt.
 
 Rectangular viewports and bounds configuration are unsupported. Native chat

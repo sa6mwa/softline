@@ -57,7 +57,9 @@ live scroll regions, status lines, and spinners are off; the theme is
 ## Methods
 
 - `sl:readline([prompt])` returns a submitted string, or `nil, status` for EOF,
-  cancellation, interrupt, or error.
+  cancellation, interrupt, or error. Ctrl-C restores terminal state before
+  raising SIGINT; if a handler returns, an existing native output session
+  remains available.
 - `sl:next_prompt([prompt])` returns `line, source`. Automatic queue delivery
   dispatches FIFO entries before opening an editor; manual delivery retains
   them for explicit take or Alt-Enter promotion. `source` is
@@ -198,7 +200,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   Chunk boundaries add no newline or response separator. The stream accepts
   printable UTF-8, LF/CR/Tab, and ANSI SGR styling; malformed or unsupported
   terminal controls return `nil, status`. An empty string succeeds without
-  changing the screen. No full response is buffered.
+  changing the screen. No full response is buffered. Native LF positioning
+  follows the output TTY's OPOST/ONLCR settings without changing those settings
+  or producer bytes.
 - `sl:output_stream_write_quoted_prompt(text)` writes submitted text between
   renderer segments as a wrapped, themed quote, repeating the prefix on every
   visible row and keeping one empty row on each side. The text is literal, so

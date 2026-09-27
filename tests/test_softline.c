@@ -2479,10 +2479,14 @@ struct text_stream_state {
 };
 
 static volatile sig_atomic_t ctrl_c_sigint_count = 0;
+static int ctrl_c_signal_marker_fd = -1;
 
 static void count_ctrl_c_sigint(int signum) {
-  if (signum == SIGINT)
+  if (signum == SIGINT) {
     ctrl_c_sigint_count++;
+    if (ctrl_c_signal_marker_fd >= 0)
+      (void)write(ctrl_c_signal_marker_fd, "SIGNAL_MARKER", 13);
+  }
 }
 
 struct enter_override_state {
@@ -5748,7 +5752,89 @@ static void test_visual_up_moves_across_wrapped_rows(void) {
   PASS();
 }
 
-static void test_ctrl_c_interrupts_child(void) {
+struct begin_failure_probe {
+  int fd;
+  int fired;
+  int result;
+  int retained_raw;
+};
+
+static void begin_failure_idle(sl_t *sl, void *userdata) {
+  struct begin_failure_probe *probe = (struct begin_failure_probe *)userdata;
+  struct termios before, after;
+  struct winsize small, previous;
+  if (probe->fired)
+    return;
+  probe->fired = 1;
+  if (tcgetattr(probe->fd, &before) != 0 ||
+      ioctl(probe->fd, TIOCGWINSZ, &previous) != 0)
+    return;
+  small = previous;
+  small.ws_row = 2;
+  if (ioctl(probe->fd, TIOCSWINSZ, &small) != 0)
+    return;
+  probe->result = sl_output_stream_begin(sl);
+  probe->retained_raw = tcgetattr(probe->fd, &after) == 0 &&
+                        termios_same_observable(&before, &after) &&
+                        !(after.c_lflag & (ICANON | ECHO));
+  (void)ioctl(probe->fd, TIOCSWINSZ, &previous);
+  (void)sl_cancel(sl);
+}
+
+static void test_native_begin_failure_restores_termios(void) {
+  int master, slave, readonly_fd, result, restored;
+  sl_config_t config;
+  sl_t *sl;
+  struct termios before, after;
+  struct winsize size;
+  struct begin_failure_probe probe;
+  TEST("failed native begin restores newly acquired raw mode");
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 20;
+  size.ws_row = 8;
+  ASSERT_TRUE(openpty(&master, &slave, NULL, NULL, &size) == 0,
+              "openpty failed");
+  readonly_fd = open(ttyname(slave), O_RDONLY | O_NOCTTY);
+  ASSERT_TRUE(readonly_fd >= 0 && tcgetattr(slave, &before) == 0,
+              "read-only output setup failed");
+  sl_config_init(&config);
+  config.input_fd = slave;
+  config.output_fd = readonly_fd;
+  sl = sl_create_with_config(&config);
+  ASSERT_TRUE(sl != NULL, "sl_create failed");
+  result = sl_output_stream_begin(sl);
+  restored =
+      tcgetattr(slave, &after) == 0 && termios_same_observable(&before, &after);
+  sl_destroy(sl);
+  close(readonly_fd);
+  close(slave);
+  close(master);
+  ASSERT_TRUE(result == SL_ERROR_IO && restored,
+              "failed native begin left input in raw mode");
+  PASS();
+
+  TEST("failed native begin preserves raw mode owned by readline");
+  ASSERT_TRUE(openpty(&master, &slave, NULL, NULL, &size) == 0,
+              "openpty failed");
+  sl_config_init(&config);
+  config.input_fd = slave;
+  config.output_fd = slave;
+  sl = sl_create_with_config(&config);
+  memset(&probe, 0, sizeof(probe));
+  probe.fd = slave;
+  ASSERT_TRUE(sl &&
+                  sl_set_idle_callback(sl, begin_failure_idle, &probe) == SL_OK,
+              "begin failure callback setup failed");
+  ASSERT_TRUE(sl_readline(sl, "> ") == NULL && probe.fired &&
+                  probe.result == SL_ERROR_IO && probe.retained_raw,
+              "failed begin released the editor's raw mode");
+  sl_destroy(sl);
+  close(slave);
+  close(master);
+  PASS();
+}
+
+static void test_ctrl_c_interrupts_child(int native) {
   int master_fd;
   int slave_fd;
   pid_t pid;
@@ -5758,7 +5844,8 @@ static void test_ctrl_c_interrupts_child(void) {
   ssize_t n;
   int tries;
 
-  TEST("Ctrl-C interrupts active readline");
+  TEST(native ? "native Ctrl-C restores margins before terminating"
+              : "Ctrl-C interrupts active readline");
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
               "openpty failed");
   pid = fork();
@@ -5774,7 +5861,7 @@ static void test_ctrl_c_interrupts_child(void) {
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     sl = sl_create_with_config(&cfg);
-    if (!sl)
+    if (!sl || (native && sl_output_stream_begin(sl) != SL_OK))
       _exit(2);
     line = sl->readline(sl, "p> ");
     if (line)
@@ -5801,14 +5888,24 @@ static void test_ctrl_c_interrupts_child(void) {
       usleep(10000);
     tries++;
   } while (n == 0 && tries < 200);
-  close(master_fd);
   ASSERT_TRUE(n == pid, "child did not exit after Ctrl-C");
   ASSERT_TRUE(WIFSIGNALED(status) && WTERMSIG(status) == SIGINT,
               "child was not interrupted by SIGINT");
+  while (terminal_len + 1 < sizeof(terminal) &&
+         (n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                                     sizeof(terminal) - 1 - terminal_len)) > 0)
+    terminal_len += (size_t)n;
+  terminal[terminal_len] = '\0';
+  close(master_fd);
+  if (native) {
+    const char *reset = strstr(terminal, "\033[r");
+    ASSERT_TRUE(reset && strstr(reset, "\033[65535;1H"),
+                "native SIGINT left restricted margins or a homed cursor");
+  }
   PASS();
 }
 
-static void test_ctrl_c_signal_is_not_delivered_twice(void) {
+static void test_ctrl_c_signal_is_not_delivered_twice(int native) {
   int master_fd;
   int slave_fd;
   int result_pipe[2];
@@ -5820,7 +5917,8 @@ static void test_ctrl_c_signal_is_not_delivered_twice(void) {
   ssize_t n;
   int tries;
 
-  TEST("Ctrl-C is raised once after raw cleanup");
+  TEST(native ? "native Ctrl-C restores margins before a returning handler"
+              : "Ctrl-C is raised once after raw cleanup");
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == 0,
               "openpty failed");
   ASSERT_TRUE(pipe(result_pipe) == 0, "result pipe failed");
@@ -5844,13 +5942,14 @@ static void test_ctrl_c_signal_is_not_delivered_twice(void) {
     if (tcgetattr(slave_fd, &before) != 0)
       _exit(2);
     ctrl_c_sigint_count = 0;
+    ctrl_c_signal_marker_fd = native ? slave_fd : -1;
     if (signal(SIGINT, count_ctrl_c_sigint) == SIG_ERR)
       _exit(3);
     sl_config_init(&cfg);
     cfg.input_fd = slave_fd;
     cfg.output_fd = slave_fd;
     sl = sl_create_with_config(&cfg);
-    if (!sl)
+    if (!sl || (native && sl_output_stream_begin(sl) != SL_OK))
       _exit(4);
     line = sl->readline(sl, "p> ");
     if (line)
@@ -5859,6 +5958,10 @@ static void test_ctrl_c_signal_is_not_delivered_twice(void) {
     if (tcgetattr(slave_fd, &after) != 0)
       _exit(5);
     restored = termios_same_observable(&before, &after);
+    if (native &&
+        (sl_output_stream_write(sl, "AFTER INTERRUPT\n", 16) != SL_OK ||
+         sl_output_stream_end(sl) != SL_OK))
+      _exit(6);
     sl->destroy(sl);
     written = snprintf(msg, sizeof(msg), "%d %d %d", (int)ctrl_c_sigint_count,
                        restored, readline_status);
@@ -5890,13 +5993,25 @@ static void test_ctrl_c_signal_is_not_delivered_twice(void) {
       usleep(10000);
     tries++;
   } while (n == 0 && tries < 200);
-  close(master_fd);
   close(result_pipe[0]);
   ASSERT_TRUE(n == pid, "child did not exit after Ctrl-C");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
   ASSERT_TRUE(strcmp(result, "1 1 4") == 0,
               "Ctrl-C signal count or terminal cleanup mismatch");
+  while (terminal_len + 1 < sizeof(terminal) &&
+         (n = read_some_with_timeout(master_fd, terminal + terminal_len,
+                                     sizeof(terminal) - 1 - terminal_len)) > 0)
+    terminal_len += (size_t)n;
+  terminal[terminal_len] = '\0';
+  close(master_fd);
+  if (native) {
+    const char *marker = strstr(terminal, "SIGNAL_MARKER");
+    const char *reset = strstr(terminal, "\033[r");
+    ASSERT_TRUE(marker && reset && reset < marker &&
+                    strstr(marker, "AFTER INTERRUPT"),
+                "signal handler ran before native terminal cleanup");
+  }
   PASS();
 }
 
@@ -10069,12 +10184,19 @@ static void test_visual_up_moves_across_wrapped_rows(void) {
   printf("SKIP\n");
   tests_passed++;
 }
-static void test_ctrl_c_interrupts_child(void) {
+static void test_native_begin_failure_restores_termios(void) {
+  TEST("failed native begin restores termios ownership");
+  printf("SKIP\n");
+  tests_passed++;
+}
+static void test_ctrl_c_interrupts_child(int native) {
+  (void)native;
   TEST("Ctrl-C interrupts active readline");
   printf("SKIP\n");
   tests_passed++;
 }
-static void test_ctrl_c_signal_is_not_delivered_twice(void) {
+static void test_ctrl_c_signal_is_not_delivered_twice(int native) {
+  (void)native;
   TEST("Ctrl-C is raised once after raw cleanup");
   printf("SKIP\n");
   tests_passed++;
@@ -10183,6 +10305,12 @@ int main(int argc, char **argv) {
     test_finite_output_recovers_from_partial_sequences();
     return tests_passed == tests_run ? 0 : 1;
   }
+  if (argc == 2 && strcmp(argv[1], "cleanup") == 0) {
+    test_native_begin_failure_restores_termios();
+    test_ctrl_c_interrupts_child(1);
+    test_ctrl_c_signal_is_not_delivered_twice(1);
+    return tests_passed == tests_run ? 0 : 1;
+  }
 
   test_config_init();
   test_receiver_shell();
@@ -10262,8 +10390,11 @@ int main(int argc, char **argv) {
   test_normal_prompt_growth_scrolls_at_screen_bottom();
   test_resize_reflows_without_keypress();
   test_visual_up_moves_across_wrapped_rows();
-  test_ctrl_c_interrupts_child();
-  test_ctrl_c_signal_is_not_delivered_twice();
+  test_native_begin_failure_restores_termios();
+  test_ctrl_c_interrupts_child(0);
+  test_ctrl_c_interrupts_child(1);
+  test_ctrl_c_signal_is_not_delivered_twice(0);
+  test_ctrl_c_signal_is_not_delivered_twice(1);
   test_idle_callback_can_submit_without_input();
   test_idle_callback_runs_with_quiet_watch();
   test_busy_spinner_ticks_with_quiet_watch();

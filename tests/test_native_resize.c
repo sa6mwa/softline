@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <unistd.h>
 
 static int cell_width(unsigned long codepoint) {
@@ -181,6 +182,49 @@ static int clipped_tail_case(int line_open) {
   return failed;
 }
 
+static int newline_case(int mode) {
+  struct winsize size;
+  struct termios attributes;
+  sl_surface_t *surface;
+  int master, slave, failed, row, col;
+  char bytes[1024];
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 20;
+  size.ws_row = 8;
+  if (openpty(&master, &slave, NULL, NULL, &size) != 0 ||
+      tcgetattr(slave, &attributes) != 0)
+    return 1;
+  attributes.c_oflag |= OPOST | ONLCR;
+  if (mode == 1)
+    attributes.c_oflag &= ~OPOST;
+  else if (mode == 2)
+    attributes.c_oflag &= ~ONLCR;
+  if (tcsetattr(slave, TCSANOW, &attributes) != 0)
+    return 1;
+  (void)fcntl(master, F_SETFL, O_NONBLOCK);
+  surface = sl_surface_create_native(slave, 20, 7, 0, 0, cell_width);
+  if (!surface)
+    return 1;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed = sl_surface_native_write(surface, "a\nb", 3, 7, 0) != 0;
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != 1 || col != (mode == 0 ? 1 : 2);
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= strstr(bytes, mode == 0 ? "a\r\nb" : "a\nb") == NULL;
+  failed |= sl_surface_native_write(surface, "c", 1, 7, 0) != 0;
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != 1 || col != (mode == 0 ? 2 : 3);
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |=
+      strstr(bytes, mode == 0 ? "\033[65535;2H" : "\033[65535;3H") == NULL;
+  sl_surface_destroy(surface);
+  close(slave);
+  close(master);
+  if (failed)
+    fprintf(stderr, "newline mode %d overwrote a native continuation\n", mode);
+  return failed;
+}
+
 int main(void) {
   static const int dimensions[][2] = {{16, 5},  {40, 5},  {80, 5}, {16, 12},
                                       {80, 12}, {16, 18}, {80, 18}};
@@ -196,6 +240,8 @@ int main(void) {
   failed |= exact_width_case();
   failed |= clipped_tail_case(1);
   failed |= clipped_tail_case(0);
+  for (i = 0; i < 3; i++)
+    failed |= newline_case((int)i);
   if (!failed)
     puts("21 physical resize cases preserve cells; prompt growth still "
          "scrolls.");

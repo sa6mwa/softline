@@ -441,6 +441,8 @@ struct sl {
    * Returns a softline-allocated string on submitted input, or NULL for EOF,
    * cancellation, interrupt, or error. Use last_readline_status() before the
    * next readline() call to classify a NULL return.
+   * Ctrl-C restores terminal state before raising SIGINT. If the handler
+   * returns, an existing native output session remains available.
    */
   char *(*readline)(sl_t *self, const char *prompt);
   /** Destroy the handle; NULL-safe through sl_destroy(). */
@@ -597,7 +599,8 @@ struct sl {
    * document boundary. bytes may be NULL only when
    * length is zero. Input must be printable UTF-8, LF/CR/Tab, or ANSI SGR;
    * unsupported terminal controls fail with SL_ERROR_INVALID. Malformed UTF-8
-   * also fails. */
+   * also fails. Native LF positioning follows the output TTY's OPOST/ONLCR
+   * settings without altering producer bytes or terminal settings. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
   /** End the open session without finishing an external renderer document.
    * An active editor keeps its native prompt and scroll region for later
@@ -672,6 +675,8 @@ sl_t *sl_create_with_config(const sl_config_t *config);
  * readline() returns a project-allocated string on submitted input and NULL for
  * EOF, cancellation, interrupt, or error. Call sl_last_readline_status() before
  * the next readline() call to classify NULL precisely.
+ * Ctrl-C restores terminal state before raising SIGINT. A returning handler
+ * leaves an existing native output session available.
  */
 char *sl_readline(sl_t *self, const char *prompt);
 
@@ -911,7 +916,9 @@ int sl_output_stream_begin(sl_t *self);
  * is a no-op; no newline or response boundary is implied. Valid bytes are
  * printable UTF-8, LF/CR/Tab, and ANSI SGR; malformed or unsupported control
  * sequences report SL_ERROR_INVALID. A failed write may have emitted a prefix,
- * while a successful write has emitted all complete input units. */
+ * while a successful write has emitted all complete input units. Native LF
+ * positioning follows the output TTY's OPOST/ONLCR settings; producer bytes
+ * and terminal settings are unchanged. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
 /** End the output session. The caller remains responsible for finishing any

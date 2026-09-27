@@ -761,6 +761,7 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
   }
   if (!impl->output_surface) {
     int row, col;
+    int was_raw = impl->raw_active;
     if (sl_enable_raw(self) != 0)
       return -1;
     row = sl_query_cursor_row(self);
@@ -773,6 +774,8 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
       row = 0;
     impl->output_surface = sl_surface_create_native(
         impl->output_fd, width, prompt_top, row, col, sl_codepoint_width);
+    if (!impl->output_surface && !was_raw)
+      sl_disable_raw(self);
     return impl->output_surface ? 0 : -1;
   }
   return sl_surface_resize(impl->output_surface, width, prompt_top);
@@ -5801,7 +5804,20 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     sl_disable_bracketed_paste(impl);
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_INTERRUPTED);
+    if (sl_surface_is_native(impl->output_surface)) {
+      /* Signal handlers and the shell must see unrestricted terminal rows. */
+      sl_reset_scroll_region(impl->output_fd);
+      (void)sl_write_frame_cursor(impl, sl_terminal_rows(impl),
+                                  sl_terminal_rows(impl) - 1, 0);
+    }
     raise(SIGINT);
+    if (sl_surface_is_native(impl->output_surface)) {
+      /* A returning handler keeps the output session available. */
+      (void)sl_output_surface_reconcile(
+          self, sl_prompt_top(impl, sl_output_prompt_rows(impl)));
+      (void)sl_write_frame_cursor(impl, sl_terminal_rows(impl),
+                                  sl_terminal_rows(impl) - 1, 0);
+    }
     return NULL;
   }
   if (failed) {
