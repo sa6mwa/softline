@@ -492,7 +492,8 @@ struct sl {
   /** Stream callback output above the active prompt. Ordinary readline clears
    * and redraws by default, or uses an enabled live scroll region after
    * reaching the terminal bottom. Native chat retains its prompt frame.
-   * Finite output cannot overlap an open live session. */
+   * Finite output cannot overlap an open live session. Failed native finite
+   * output discards partial ANSI/UTF-8 bytes; later calls start cleanly. */
   int (*print_above)(sl_t *self, sl_stream_callback_t callback, void *userdata);
   /** Return the most recent readline() status for this handle. */
   sl_readline_status_t (*last_readline_status)(const sl_t *self);
@@ -887,7 +888,8 @@ int sl_cancel(sl_t *self);
  * clears and redraws by default, or uses an
  * enabled live scroll region once the prompt reaches the terminal bottom.
  * Native chat retains its prompt frame after a live session. Finite output
- * cannot overlap an open live session. */
+ * cannot overlap an open live session. Failed native finite output discards
+ * partial ANSI/UTF-8 bytes; later calls start cleanly. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Start a persistent output session on self's editor-owner thread. The

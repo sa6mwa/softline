@@ -175,6 +175,11 @@ events. The core and Lua libraries do not import libmdf.
   production workaround or transcript replay.
 - Sink/write failure and session teardown leave a usable editor and report
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
+  Native finite-output regressions reject incomplete ANSI/UTF-8 and callback
+  failures, then verify the next call emits its bytes without stale prefixes.
+  Starting a live stream during ordinary readline pages an existing wrapped
+  draft before creating its output surface, preserving two output rows and
+  the complete editable buffer.
 - The C chat example composes a libmdf incremental renderer with the generic
   session. The composer configures default palette and a two-column
   left margin, passes submitted prompts to Softline's themed quoted-prompt

@@ -19,6 +19,13 @@ watch = assert(sl:watch_add(producer,
         assert(sl:output_stream_write_quoted_prompt("*literal*"))
         assert(sl:set_quoted_prompt_style(nil))
         assert(sl:set_quoted_prompt_prefix(nil))
+        assert(sl:output_stream_end())
+        for _, partial in ipairs({"\27[", "\226\130"}) do
+          local ok, err = sl:print_above(partial)
+          assert(not ok and err, "incomplete finite output was accepted")
+          assert(sl:print_above("recovered"))
+        end
+        assert(sl:output_stream_begin())
       elseif byte == "B" then
         assert(sl:set_screen_width(24))
         assert(sl:output_stream_write(" second"))

@@ -344,6 +344,7 @@ static void test_parser_only_stream_allows_geometry_changes(void) {
 
 struct full_editor_stream_probe {
   int fired;
+  int start_inside;
   int setup_result;
   int write_result;
   size_t draft_length;
@@ -362,8 +363,12 @@ static void full_editor_stream_idle(sl_t *sl, void *userdata) {
   probe->fired = 1;
   memset(draft, 'x', sizeof(draft) - 1);
   draft[sizeof(draft) - 1] = '\0';
+  if (probe->start_inside)
+    draft[60] = '\0';
   probe->setup_result = sl_set_buffer(sl, draft);
-  if (probe->setup_result == SL_OK)
+  if (probe->setup_result == SL_OK && probe->start_inside)
+    probe->setup_result = sl_output_stream_begin(sl);
+  if (probe->setup_result == SL_OK && !probe->start_inside)
     probe->setup_result = sl_set_status_message(
         sl, "Hello world, this is a long status line, that continues on "
             "multiple lines.");
@@ -374,7 +379,7 @@ static void full_editor_stream_idle(sl_t *sl, void *userdata) {
   (void)sl_cancel(sl);
 }
 
-static void test_live_output_retains_row_with_full_editor(void) {
+static void test_live_output_retains_row_with_full_editor(int start_inside) {
 #if SL_TEST_PTY
   struct winsize ws;
   struct full_editor_stream_probe probe;
@@ -384,26 +389,30 @@ static void test_live_output_retains_row_with_full_editor(void) {
   int slave_fd;
   char output[16384];
   char *line;
-  TEST("live stream keeps an output row under a full editor and status");
+  TEST(start_inside
+           ? "starting a stream pages an existing wrapped draft"
+           : "live stream keeps an output row under a full editor and status");
   memset(&ws, 0, sizeof(ws));
-  ws.ws_col = 40;
-  ws.ws_row = 8;
+  ws.ws_col = (unsigned short)(start_inside ? 20 : 40);
+  ws.ws_row = (unsigned short)(start_inside ? 5 : 8);
   ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
               "openpty failed");
   sl_config_init(&cfg);
   cfg.input_fd = slave_fd;
   cfg.output_fd = slave_fd;
   sl = sl_create_with_config(&cfg);
-  ASSERT_TRUE(sl && sl_set_statusline(sl, 1, 0) == SL_OK &&
-                  sl_output_stream_begin(sl) == SL_OK,
+  ASSERT_TRUE(sl && sl_set_statusline(sl, !start_inside, 0) == SL_OK &&
+                  (start_inside || sl_output_stream_begin(sl) == SL_OK),
               "full editor stream setup failed");
   memset(&probe, 0, sizeof(probe));
+  probe.start_inside = start_inside;
   ASSERT_TRUE(sl_set_idle_callback(sl, full_editor_stream_idle, &probe) ==
                   SL_OK,
               "idle callback setup failed");
   line = sl_readline(sl, "> ");
   ASSERT_TRUE(line == NULL && probe.fired && probe.setup_result == SL_OK &&
-                  probe.write_result == SL_OK && probe.draft_length == 300,
+                  probe.write_result == SL_OK &&
+                  probe.draft_length == (size_t)(start_inside ? 60 : 300),
               "full editor blocked live output or lost its draft");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
   (void)read_live_pty_output(master_fd, output, sizeof(output));
@@ -414,7 +423,109 @@ static void test_live_output_retains_row_with_full_editor(void) {
   close(master_fd);
   PASS();
 #else
+  (void)start_inside;
   TEST("live stream keeps an output row under a full editor and status");
+  PASS();
+#endif
+}
+
+struct finite_recovery_probe {
+  int fired;
+  int setup_result;
+  int invalid[3];
+  int recovered[3];
+};
+
+struct finite_partial_chunk {
+  const char *text;
+  int sent;
+  int end_result;
+};
+
+static int finite_partial_stream(sl_t *sl, void *userdata, const char **chunk,
+                                 size_t *length) {
+  struct finite_partial_chunk *state = (struct finite_partial_chunk *)userdata;
+  (void)sl;
+  *chunk = state->sent ? NULL : state->text;
+  *length = state->sent ? 0 : strlen(state->text);
+  if (state->sent)
+    return state->end_result;
+  state->sent = 1;
+  return SL_OK;
+}
+
+static void finite_recovery_idle(sl_t *sl, void *userdata) {
+  struct finite_recovery_probe *probe =
+      (struct finite_recovery_probe *)userdata;
+  static const char *const incomplete[] = {"before\033[", "before\xe2\x82",
+                                           "before\033["};
+  int i;
+  if (probe->fired)
+    return;
+  probe->fired = 1;
+  probe->setup_result = sl_output_stream_begin(sl);
+  if (probe->setup_result == SL_OK)
+    probe->setup_result = sl_output_stream_end(sl);
+  for (i = 0; probe->setup_result == SL_OK && i < 3; i++) {
+    struct finite_partial_chunk bad;
+    struct one_chunk_once good;
+    bad.text = incomplete[i];
+    bad.sent = 0;
+    bad.end_result = i == 2 ? SL_ERROR : SL_OK;
+    probe->invalid[i] = sl_print_above(sl, finite_partial_stream, &bad);
+    good.text = "RECOVERED";
+    good.sent = 0;
+    probe->recovered[i] = sl_print_above(sl, one_chunk_once_stream, &good);
+  }
+  (void)sl_cancel(sl);
+}
+
+static void test_finite_output_recovers_from_partial_sequences(void) {
+#if SL_TEST_PTY
+  struct winsize ws;
+  struct finite_recovery_probe probe;
+  sl_config_t config;
+  sl_t *sl;
+  int master, slave, i, count;
+  char output[16384];
+  const char *next;
+  TEST("finite output recovers after incomplete ANSI, UTF-8, or callback "
+       "errors");
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = 40;
+  ws.ws_row = 8;
+  ASSERT_TRUE(openpty(&master, &slave, NULL, NULL, &ws) == 0, "openpty failed");
+  sl_config_init(&config);
+  config.input_fd = slave;
+  config.output_fd = slave;
+  sl = sl_create_with_config(&config);
+  memset(&probe, 0, sizeof(probe));
+  ASSERT_TRUE(sl && sl_set_idle_callback(sl, finite_recovery_idle, &probe) ==
+                        SL_OK,
+              "finite recovery setup failed");
+  ASSERT_TRUE(sl_readline(sl, "> ") == NULL && probe.fired &&
+                  probe.setup_result == SL_OK,
+              "native session was not retained during readline");
+  for (i = 0; i < 3; i++) {
+    ASSERT_TRUE(probe.invalid[i] == (i == 2 ? SL_ERROR : SL_ERROR_INVALID),
+                "finite output did not report the original failure");
+    ASSERT_TRUE(probe.recovered[i] == SL_OK,
+                "partial sequence contaminated the next finite output");
+  }
+  (void)read_live_pty_output(master, output, sizeof(output));
+  next = output;
+  count = 0;
+  while ((next = strstr(next, "RECOVERED")) != NULL) {
+    count++;
+    next += strlen("RECOVERED");
+  }
+  ASSERT_TRUE(count == 3, "recovered finite output was not emitted");
+  sl_destroy(sl);
+  close(slave);
+  close(master);
+  PASS();
+#else
+  TEST("finite output recovers after incomplete sequences");
   PASS();
 #endif
 }
@@ -10067,12 +10178,19 @@ int main(int argc, char **argv) {
     test_native_output_without_reported_size();
     return tests_passed == tests_run ? 0 : 1;
   }
+  if (argc == 2 && strcmp(argv[1], "review") == 0) {
+    test_live_output_retains_row_with_full_editor(1);
+    test_finite_output_recovers_from_partial_sequences();
+    return tests_passed == tests_run ? 0 : 1;
+  }
 
   test_config_init();
   test_receiver_shell();
   test_status_message_api();
   test_parser_only_stream_allows_geometry_changes();
-  test_live_output_retains_row_with_full_editor();
+  test_live_output_retains_row_with_full_editor(0);
+  test_live_output_retains_row_with_full_editor(1);
+  test_finite_output_recovers_from_partial_sequences();
   test_free_function_wrappers_use_receiver_methods();
   test_prompt_queue_control_api();
   test_set_cursor_clamps_to_utf8_cluster_boundary();

@@ -3012,7 +3012,9 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   }
   if (render->width != width)
     return 1;
-  if (sl_surface_is_native(impl->output_surface)) {
+  /* Stream creation must page the frame before its surface exists. */
+  if (impl->output_stream_active ||
+      sl_surface_is_native(impl->output_surface)) {
     impl->native_prompt_rows = sl_native_prompt_height(impl, render);
     sl_render_page_editor(render, sl_output_prompt_rows(impl));
   }
@@ -3093,7 +3095,8 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
     sl_render_store_clear(impl);
   }
   visible = render->count;
-  if (sl_surface_is_native(impl->output_surface) &&
+  if ((impl->output_stream_active ||
+       sl_surface_is_native(impl->output_surface)) &&
       visible > sl_output_prompt_rows(impl))
     visible = sl_output_prompt_rows(impl);
   if (visible > height)
@@ -3113,9 +3116,10 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   if (cursor_row >= visible)
     cursor_row = visible - 1;
   top = sl_prompt_top(impl, visible);
-  transcript_top = sl_surface_is_native(impl->output_surface)
-                       ? sl_prompt_top(impl, sl_output_prompt_rows(impl))
-                       : top;
+  transcript_top =
+      (impl->output_stream_active || sl_surface_is_native(impl->output_surface))
+          ? sl_prompt_top(impl, sl_output_prompt_rows(impl))
+          : top;
   if ((impl->output_stream_active || impl->output_surface) &&
       (!impl->output_surface ||
        !sl_surface_matches(impl->output_surface, width, transcript_top))) {
@@ -3674,8 +3678,10 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
     sl_set_error(self, "output ends in an incomplete ANSI or UTF-8 sequence");
     result = SL_ERROR_INVALID;
   }
-  if (result != SL_OK)
+  if (result != SL_OK) {
     sl_surface_reset_partial(impl->output_surface);
+    impl->output_pending_len = 0;
+  }
   if (impl->active_prompt && impl->rendered_rows > 0 &&
       sl_write_frame_cursor(impl, impl->rendered_height,
                             impl->rendered_top_row + impl->rendered_cursor_row,
