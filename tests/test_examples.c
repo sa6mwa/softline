@@ -587,6 +587,8 @@ static void test_chat_live_queue(const char *path) {
               "status message missing");
   ASSERT_TRUE(wait_screen(&t, "streaming demo", 3000) == 0,
               "status line missing while thinking");
+  ASSERT_TRUE(wait_screen(&t, "demo/project", 3000) == 0,
+              "neutral demo location missing from status line");
   ASSERT_TRUE(term_row_of(&t, "Thinking...") <
                   term_row_of(&t, "streaming demo"),
               "status message is not above the status line");

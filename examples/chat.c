@@ -462,7 +462,7 @@ static void report_failure(struct chat_state *state, const char *operation) {
 
 int main(void) {
   static const char *const status_elements[] = {"streaming demo", "ctx 36%",
-                                                "~/g/softline", "queue demo"};
+                                                "demo/project", "queue demo"};
   struct chat_state state;
   sl_prompt_source_t source;
   sl_readline_status_t status;

@@ -172,7 +172,7 @@ local function run()
     assert(sl:set_status_elements({
       "gpt-5.6-terra high",
       "ctx 36%",
-      "~/g/softline",
+      "demo/project",
       "weekly 56%",
       "queue demo",
       "turn processor",

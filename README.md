@@ -347,7 +347,7 @@ the first element and slot 0 for the second.
 
 ```c
 static const char *const status[] = {
-    "gpt-5.6-terra high", "ctx 36%", "~/g/softline", "feat/prompt-queue"};
+    "gpt-5.6-terra high", "ctx 36%", "demo/project", "feat/prompt-queue"};
 
 sl->set_statusline(sl, 1, 0);
 sl->set_status_elements(sl, status, 4);
