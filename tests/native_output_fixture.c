@@ -1,10 +1,57 @@
 #define _POSIX_C_SOURCE 200809L
 #include "softline/softline.h"
 #include <fcntl.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <unistd.h>
+
+static volatile sig_atomic_t interrupt_count;
+
+static void returned_interrupt(int signum) {
+  (void)signum;
+  interrupt_count++;
+}
+
+static int same_input_mode(const struct termios *before,
+                           const struct termios *after) {
+  return before->c_iflag == after->c_iflag &&
+         before->c_oflag == after->c_oflag &&
+         before->c_cflag == after->c_cflag &&
+         before->c_lflag == after->c_lflag &&
+         memcmp(before->c_cc, after->c_cc, sizeof(before->c_cc)) == 0;
+}
+
+static int interrupted(int handler) {
+  sl_t *sl;
+  char *input;
+  int result;
+  struct termios before, after;
+  if (tcgetattr(STDIN_FILENO, &before) != 0 ||
+      signal(SIGINT, handler ? returned_interrupt : SIG_IGN) == SIG_ERR)
+    return 2;
+  sl = sl_create();
+  if (!sl || sl_output_stream_begin(sl) != SL_OK)
+    return 2;
+  input = sl_readline(sl, "> ");
+  result = !input && sl_last_readline_status(sl) == SL_READLINE_INTERRUPTED &&
+                   tcgetattr(STDIN_FILENO, &after) == 0 &&
+                   same_input_mode(&before, &after) &&
+                   interrupt_count == (handler ? 1 : 0)
+               ? SL_OK
+               : SL_ERROR;
+  sl_free_string(sl, input);
+  if (result == SL_OK)
+    result = sl_output_stream_write(sl, "AFTER INTERRUPT", 15);
+  if (result == SL_OK)
+    result = sl_output_stream_end(sl);
+  sl_destroy(sl);
+  if (tcgetattr(STDIN_FILENO, &after) != 0 || !same_input_mode(&before, &after))
+    return 2;
+  return result == SL_OK ? 0 : 1;
+}
 
 static int stream_chunks(const char *text, const char *chunk_text,
                          int handoff) {
@@ -116,6 +163,8 @@ static int gated(const char *command_path, const char *ack_path,
 }
 
 int main(int argc, char **argv) {
+  if (argc == 3 && strcmp(argv[1], "--interrupt") == 0)
+    return interrupted(strcmp(argv[2], "handler") == 0);
   if (argc == 4 && strcmp(argv[1], "--chunks") == 0)
     return stream_chunks(argv[2], argv[3], 0);
   if (argc == 4 && strcmp(argv[1], "--handoff") == 0)

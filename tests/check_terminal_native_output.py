@@ -242,6 +242,40 @@ def case(fixture, build, source, prefilled=False):
         vt.pump()
 
 
+def interrupt_case(fixture, disposition):
+    widget, window = terminal()
+    child = None
+    try:
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 8, 40, 0, 0))
+        terminal_pty = vt.foreign_pty(master, None, None)
+        assert terminal_pty
+        vt.set_pty(widget, terminal_pty)
+        vt.unref(terminal_pty)
+        child = subprocess.Popen([fixture, '--interrupt', disposition],
+                                 stdin=slave, stdout=slave, stderr=slave)
+        os.close(slave)
+        sent = False
+        deadline = time.monotonic() + 5
+        while child.poll() is None:
+            vt.pump()
+            if not sent and any(line.startswith('> ') for line in full_transcript(widget)):
+                vt.send(widget, b'\x03', 1)
+                sent = True
+            assert time.monotonic() < deadline, 'post-interrupt fixture timed out'
+        assert sent and child.wait() == 0, 'post-interrupt fixture failed'
+        vt.pump()
+        transcript = full_transcript(widget)
+        assert transcript == ['AFTER INTERRUPT'], ('cursor report leaked', disposition, transcript)
+        assert rows(widget)[1] == (1, 0), ('post-interrupt exit cursor', disposition, rows(widget)[1])
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait()
+        vt.destroy(window)
+        vt.pump()
+
+
 def main():
     assert len(sys.argv) == 3, 'usage: check_terminal_native_output.py FIXTURE BUILD'
     fixture, build = sys.argv[1:]
@@ -259,6 +293,8 @@ def main():
                    '1️⃣' * 22 + 'X', 'a' * 40):
         for prefilled in (False, True):
             case(fixture, build, source, prefilled)
+    for disposition in ('ignore', 'handler'):
+        interrupt_case(fixture, disposition)
     print('Native output preserves bytes, reflow, cursor handoff, and exit.')
 
 

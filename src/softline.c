@@ -4709,7 +4709,7 @@ static int sl_decimal_append_int(int *value, char ch) {
 /* Read a Device Status Report cursor-position reply while preserving any user
  * input that happens to arrive first. A terminal that does not support DSR is
  * simply left on the ordinary readline rendering path. */
-static int sl_query_cursor_row(sl_t *self) {
+static int sl_read_cursor_report(sl_t *self) {
   sl_impl_t *impl;
   char candidate[SL_PENDING_INPUT_MAX];
   size_t candidate_len;
@@ -4836,6 +4836,41 @@ preserve_failed:
   sl_set_error(self, "failed to preserve input during cursor probe");
   impl->cursor_position_probe = -1;
   return -1;
+}
+
+/* A returning signal handler leaves the session's input restored. Cursor
+ * reports must still be read without echo or canonical line buffering. */
+static int sl_query_cursor_row(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  struct termios original, query;
+  int temporary, result;
+  if (!impl || impl->cursor_position_probe < 0 || !isatty(impl->input_fd) ||
+      !isatty(impl->output_fd))
+    return -1;
+  temporary = !impl->raw_active;
+  if (temporary) {
+    if (tcgetattr(impl->input_fd, &original) != 0) {
+      sl_set_error(self, "failed to read input attributes for cursor report");
+      return -1;
+    }
+    query = original;
+    query.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    query.c_cflag |= CS8;
+    query.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    query.c_cc[VMIN] = 0;
+    query.c_cc[VTIME] = 1;
+    /* Preserve queued user input while changing the report-reading mode. */
+    if (tcsetattr(impl->input_fd, TCSANOW, &query) != 0) {
+      sl_set_error(self, "failed to acquire input for cursor report");
+      return -1;
+    }
+  }
+  result = sl_read_cursor_report(self);
+  if (temporary && tcsetattr(impl->input_fd, TCSANOW, &original) != 0) {
+    sl_set_error(self, "failed to restore input after cursor report");
+    return -1;
+  }
+  return result;
 }
 
 static int sl_try_pin_scroll_region(sl_t *self) {

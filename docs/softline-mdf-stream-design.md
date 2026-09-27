@@ -123,6 +123,8 @@ the handle always restores terminal state. Non-TTY sessions emit no teardown
 controls. Ctrl-C restores unrestricted scroll margins, the bottom input cursor,
 and termios before raising SIGINT. If a handler returns, the existing native
 output session remains available and its scroll margin is reinstated.
+Cursor queries outside an active raw readline temporarily acquire noncanonical,
+non-echo input without flushing pending bytes, then restore the prior attributes.
 Native chat needs at least three terminal rows: two for output and
 one for the prompt.
 
@@ -159,6 +161,9 @@ events. The core and Lua libraries do not import libmdf.
   Writes after a retained editor frame and repeated terminal growth resume on
   the producer's last line, including a width hint between resize and write,
   with and without prior scrollback.
+  Ignored SIGINT and returning handlers leave the input mode restored before
+  more output; subsequent cursor reports remain absent from the transcript and
+  session close restores the original input attributes.
   After `readline` returns, shrinking rows and sometimes columns before session
   close clears the retained input row at its new location and exits at the new
   bottom row.
