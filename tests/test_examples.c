@@ -36,6 +36,7 @@ struct terminal {
   size_t frames, frame_failure, frame_offset;
   char csi[64];
   size_t csi_len, raw_len;
+  size_t read_chunk;
   unsigned int seen;
   char cells[MAX_ROWS][MAX_COLS + 1];
   char raw[RAW_CAP];
@@ -321,7 +322,7 @@ static int term_read(struct terminal *t) {
   tv.tv_usec = 50000;
   if (select(t->fd + 1, &fds, NULL, NULL, &tv) <= 0)
     return 0;
-  n = read(t->fd, bytes, sizeof(bytes));
+  n = read(t->fd, bytes, t->read_chunk ? t->read_chunk : sizeof(bytes));
   if (n < 0 && (errno == EINTR || errno == EAGAIN))
     return 0;
   if (n <= 0) {
@@ -347,6 +348,14 @@ static int term_row_of(const struct terminal *t, const char *needle) {
     if (strstr(t->cells[row], needle))
       return row;
   return -1;
+}
+
+static int term_rows_blank(const struct terminal *t, int first, int last) {
+  int row;
+  for (row = first; row <= last; row++)
+    if (strspn(t->cells[row], " ") != (size_t)t->cols)
+      return 0;
+  return 1;
 }
 
 static struct timespec deadline_after(int milliseconds) {
@@ -1128,6 +1137,9 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
     ASSERT_TRUE(memcmp(transcript[row + t.region_scrolls - region_scrolls],
                        t.cells[row], (size_t)t.cols) == 0,
                 "wrapping overwrote surviving transcript cells");
+  /* A PTY read may end at any byte, including before the renderer clears
+   * prompt rows released by a width increase. */
+  t.read_chunk = 1;
   for (cycle = 0; cycle < 4; cycle++) {
     int cols;
     int status_rows;
@@ -1147,10 +1159,13 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
     ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "width resize failed");
     deadline = deadline_after(3000);
     while (before_deadline(&deadline) &&
-           (t.raw_len == mark || t.row != 23 || t.col != (cols == 30 ? 6 : 62)))
+           (t.raw_len == mark || t.row != 23 ||
+            t.col != (cols == 30 ? 6 : 62) ||
+            !term_rows_blank(&t, protected_rows, t.scroll_bottom)))
       if (term_read(&t) < 0)
         break;
-    if (t.row != 23 || t.col != (cols == 30 ? 6 : 62)) {
+    if (t.row != 23 || t.col != (cols == 30 ? 6 : 62) ||
+        !term_rows_blank(&t, protected_rows, t.scroll_bottom)) {
       fprintf(stderr, "resize cycle %d, cols %d, bytes since resize %lu\n",
               cycle, cols, (unsigned long)(t.raw_len - mark));
       term_dump(&t);
@@ -1185,12 +1200,14 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   memcpy(transcript, t.cells, sizeof(transcript));
   region_scrolls = t.region_scrolls;
   ASSERT_TRUE(write(fd, "\025", 1) == 1, "clear draft failed");
-  for (tries = 0; tries < 100 && t.col != 2; tries++)
+  deadline = deadline_after(3000);
+  while (before_deadline(&deadline) && (t.row != 23 || t.col != 2))
     ASSERT_TRUE(term_read(&t) >= 0, "draft clear render failed");
   ASSERT_TRUE(t.row == 23 && t.col == 2 && t.region_scrolls == region_scrolls &&
                   memcmp(transcript, t.cells,
                          (size_t)protected_rows * sizeof(t.cells[0])) == 0,
               "unwrapping the prompt moved transcript rows");
+  t.read_chunk = 0;
   ASSERT_TRUE(write(fd, "/quit\r", 6) == 6, "quit failed");
   deadline = deadline_after(5000);
   reaped = 0;
