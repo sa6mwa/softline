@@ -5,7 +5,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/uio.h>
 #include <unistd.h>
+
+#define SL_ROW(surface)                                                        \
+  ((surface)->terminal_rows - 1 - (surface)->producer_below)
 
 struct sl_surface {
   int fd;
@@ -14,9 +18,13 @@ struct sl_surface {
   int terminal_rows;
   int terminal_columns;
   int native_stream;
-  int native_row;
-  int native_saved;
+  int producer_below;
+  int tracking;
+  unsigned int attributes;
+  int foreground[4];
+  int background[4];
   int col;
+  size_t line_cells;
   int (*cell_width)(unsigned long);
   int parser; /* 0 text, 1 ESC, 2 CSI */
   char csi[128];
@@ -52,17 +60,18 @@ static int sl_surface_write_all(int fd, const char *bytes, size_t length) {
 
 static int sl_surface_put(sl_surface_t *surface, unsigned long codepoint) {
   int cells;
-  if (!surface->native_stream)
+  if (!surface->tracking)
     return 0;
   cells = surface->cell_width(codepoint);
   if (cells < 0)
     cells = 1;
   if (surface->col + cells > surface->width) {
     surface->col = 0;
-    if (surface->native_row + 1 < surface->height)
-      surface->native_row++;
+    if (SL_ROW(surface) + 1 < surface->height)
+      surface->producer_below--;
   }
   surface->col += cells;
+  surface->line_cells += (size_t)cells;
   return 0;
 }
 
@@ -115,6 +124,39 @@ static int sl_surface_parse_sgr(sl_surface_t *surface) {
         return -2;
     } else
       return -2;
+  }
+  if (!surface->tracking)
+    return 0;
+  for (i = 0; i < count; i++) {
+    int code = params[i];
+    int *color = code == 38 || code == 39 || (code >= 30 && code <= 37) ||
+                         (code >= 90 && code <= 97)
+                     ? surface->foreground
+                     : surface->background;
+    if (code == 0) {
+      surface->attributes = 0;
+      memset(surface->foreground, 0, sizeof(surface->foreground));
+      memset(surface->background, 0, sizeof(surface->background));
+    } else if (code == 1 || code == 2 || code == 3 || code == 4 || code == 7 ||
+               code == 9) {
+      surface->attributes |= 1u << code;
+    } else if (code == 22) {
+      surface->attributes &= ~((1u << 1) | (1u << 2));
+    } else if (code == 23 || code == 24 || code == 27 || code == 29) {
+      surface->attributes &= ~(1u << (code - 20));
+    } else if (code == 39 || code == 49) {
+      memset(color, 0, 4 * sizeof(*color));
+    } else if (code == 38 || code == 48) {
+      color[0] = params[++i];
+      color[1] = params[++i];
+      if (color[0] == 2) {
+        color[2] = params[++i];
+        color[3] = params[++i];
+      }
+    } else {
+      color[0] = 1;
+      color[1] = code;
+    }
   }
   return 0;
 }
@@ -179,19 +221,24 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte) {
     return 0;
   }
   if (byte == '\n') {
-    if (surface->native_stream) {
+    if (surface->tracking) {
       surface->col = 0;
-      if (surface->native_row + 1 < surface->height)
-        surface->native_row++;
+      surface->line_cells = 0;
+      if (SL_ROW(surface) + 1 < surface->height)
+        surface->producer_below--;
     }
     return 0;
   }
   if (byte == '\r') {
-    surface->col = 0;
+    if (surface->tracking) {
+      surface->col = 0;
+      surface->line_cells = 0;
+    }
     return 0;
   }
   if (byte == '\t') {
-    if (surface->native_stream) {
+    if (surface->tracking) {
+      surface->line_cells += (size_t)(8 - (surface->col % 8));
       surface->col += 8 - (surface->col % 8);
       if (surface->col >= surface->width)
         surface->col = surface->width - 1;
@@ -235,92 +282,218 @@ static int sl_surface_native_region(sl_surface_t *surface) {
              : -1;
 }
 
+/* Address the physical bottom before moving up. CUD inside DECSTBM cannot
+ * cross its bottom margin, so returning to the prompt needs this anchor. */
+static int sl_surface_cursor(char *seq, size_t capacity, int below, int col) {
+  int count;
+  count = snprintf(seq, capacity, "\033[65535;%dH", col + 1);
+  if (below > 0 && count > 0 && (size_t)count < capacity)
+    count += snprintf(seq + count, capacity - (size_t)count, "\033[%dA", below);
+  return count > 0 && (size_t)count < capacity ? count : -1;
+}
+
+static int sl_surface_style(const sl_surface_t *surface, char *seq,
+                            size_t capacity) {
+  int count = snprintf(seq, capacity, "\033[0");
+  int i;
+  for (i = 1; i <= 9; i++) {
+    if (surface->attributes & (1u << i))
+      count += snprintf(seq + count, capacity - (size_t)count, ";%d", i);
+  }
+  for (i = 0; i < 2; i++) {
+    const int *color = i == 0 ? surface->foreground : surface->background;
+    if (color[0] == 1)
+      count += snprintf(seq + count, capacity - (size_t)count, ";%d", color[1]);
+    else if (color[0] == 5)
+      count += snprintf(seq + count, capacity - (size_t)count, ";%d;5;%d",
+                        i == 0 ? 38 : 48, color[1]);
+    else if (color[0] == 2)
+      count += snprintf(seq + count, capacity - (size_t)count, ";%d;2;%d;%d;%d",
+                        i == 0 ? 38 : 48, color[1], color[2], color[3]);
+  }
+  if (count <= 0 || (size_t)count + 1 >= capacity)
+    return -1;
+  seq[count++] = 'm';
+  return count;
+}
+
 sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
                                        int col,
                                        int (*cell_width)(unsigned long)) {
-  sl_surface_t *surface;
+  sl_surface_t *surface = sl_surface_create_validator();
   struct winsize terminal;
-  char seq[64];
-  int count;
-  int shift;
-  surface = sl_surface_create_validator();
+  char seq[128];
+  int count, shift;
   if (!surface)
     return NULL;
   surface->fd = fd;
   surface->width = width;
   surface->height = height;
   surface->native_stream = 1;
-  surface->native_row = row < height ? row : height - 1;
   surface->col = col;
   surface->cell_width = cell_width;
-  if (sl_surface_terminal_size(fd, &terminal) != 0 ||
-      sl_surface_write_all(fd, "\0337", 2) != 0) {
-    sl_surface_destroy(surface);
-    return NULL;
-  }
-  shift = row >= height ? row - height + 1 : 0;
-  if (shift > 0) {
-    count = snprintf(seq, sizeof(seq), "\033[r\033[%dS\0338\033[%dA\0337",
-                     shift, shift);
-    if (count <= 0 || count >= (int)sizeof(seq) ||
-        sl_surface_write_all(fd, seq, (size_t)count) != 0) {
-      sl_surface_destroy(surface);
-      return NULL;
-    }
-  }
-  if (sl_surface_native_region(surface) != 0 ||
-      sl_surface_write_all(fd, "\0338\033[0m", 6) != 0) {
-    sl_surface_destroy(surface);
-    return NULL;
-  }
+  if (sl_surface_terminal_size(fd, &terminal) != 0)
+    goto fail;
   surface->terminal_rows = terminal.ws_row;
   surface->terminal_columns = terminal.ws_col;
-  surface->native_saved = 1;
+  shift = row >= height ? row - height + 1 : 0;
+  surface->producer_below = surface->terminal_rows - 1 - row + shift;
+  if (shift > 0) {
+    count = snprintf(seq, sizeof(seq), "\033[r\033[%dS", shift);
+    if (sl_surface_write_all(fd, seq, (size_t)count) != 0)
+      goto fail;
+  }
+  count = sl_surface_cursor(seq, sizeof(seq), surface->producer_below, col);
+  if (sl_surface_native_region(surface) != 0 || count < 0 ||
+      sl_surface_write_all(fd, seq, (size_t)count) != 0 ||
+      sl_surface_write_all(fd, "\033[0m", 4) != 0)
+    goto fail;
+  surface->line_cells = (size_t)col;
   return surface;
-}
-
-void sl_surface_native_cursor(sl_surface_t *surface, int row, int col) {
-  if (!sl_surface_is_native(surface) || row < 0 || col < 0)
-    return;
-  surface->native_row = row < surface->height ? row : surface->height - 1;
-  surface->col = col;
+fail:
+  surface->native_stream = 0;
+  sl_surface_destroy(surface);
+  return NULL;
 }
 
 void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col) {
   if (row)
-    *row = surface->native_row;
+    *row = SL_ROW(surface);
   if (col)
     *col = surface->col;
 }
 
+/* Apply the movement of the live input cursor, excluding reflow inside our
+ * prompt. The terminal owns all rows above that frame. */
+void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows) {
+  if (sl_surface_is_native(surface))
+    surface->producer_below += extra_rows;
+}
+
+/* SGR alone must not consume a pending wrap, nor may a following LF wrap
+ * twice. Find the first text character without modifying producer bytes. */
+static int sl_surface_continues_row(const char *bytes, size_t length) {
+  size_t i = 0;
+  while (i < length) {
+    unsigned char ch = (unsigned char)bytes[i++];
+    if (ch == 27) {
+      while (i < length && bytes[i++] != 'm')
+        ;
+      continue;
+    }
+    return ch != '\n' && ch != '\r' && ch != '\t';
+  }
+  return 0;
+}
+
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length) {
-  if (!sl_surface_is_native(surface) ||
-      sl_surface_native_region(surface) != 0 ||
-      sl_surface_write_all(surface->fd, "\0338", 2) != 0 ||
-      sl_surface_write_all(surface->fd, bytes, length) != 0 ||
-      sl_surface_write_all(surface->fd, "\0337\033[0m", 6) != 0)
+                            size_t length, int prompt_row, int prompt_col) {
+  struct iovec parts[3];
+  sl_surface_t next;
+  char prefix[192], suffix[64];
+  int count, style_count, suffix_count, first;
+  size_t i;
+  if (!sl_surface_is_native(surface))
     return -1;
+  if (SL_ROW(surface) < 0) {
+    /* Continue a clipped, unfinished line at the first visible output row.
+     * At a hard line boundary there is no text to continue: start new output
+     * next to the prompt. Existing scrollback remains untouched. */
+    surface->producer_below = surface->line_cells > 0
+                                  ? surface->terminal_rows - 1
+                                  : surface->terminal_rows - surface->height;
+    surface->col = 0;
+    surface->line_cells = 0;
+  }
+  count = sl_surface_cursor(prefix, sizeof(prefix), surface->producer_below,
+                            surface->col < surface->width ? surface->col
+                                                          : surface->width - 1);
+  if (count < 0)
+    return -1;
+  /* Cursor addressing cancels pending wrap. Resume on the following row when
+   * a printable continuation follows a completely filled row. */
+  if (surface->col == surface->width &&
+      sl_surface_continues_row(bytes, length)) {
+    memcpy(prefix + count, "\r\033D", 3);
+    count += 3;
+    surface->line_cells = 0;
+  }
+  style_count =
+      sl_surface_style(surface, prefix + count, sizeof(prefix) - (size_t)count);
+  if (style_count < 0)
+    return -1;
+  count += style_count;
+  memcpy(suffix, "\033[0m", 4);
+  suffix_count = 4;
+  if (prompt_row >= 0) {
+    int position =
+        sl_surface_cursor(suffix + 4, sizeof(suffix) - 4,
+                          surface->terminal_rows - 1 - prompt_row, prompt_col);
+    if (position < 0)
+      return -1;
+    suffix_count += position;
+  }
+  next = *surface;
+  sl_surface_reset_partial(&next);
+  next.tracking = 1;
+  for (i = 0; i < length; i++) {
+    if (sl_surface_byte(&next, (unsigned char)bytes[i]) != 0)
+      return -1;
+  }
+  parts[0].iov_base = prefix;
+  parts[0].iov_len = (size_t)count;
+  parts[1].iov_base = (void *)bytes;
+  parts[1].iov_len = length;
+  parts[2].iov_base = suffix;
+  parts[2].iov_len = (size_t)suffix_count;
+  first = 0;
+  while (first < 3) {
+    ssize_t written = writev(surface->fd, parts + first, 3 - first);
+    if (written < 0 && errno == EINTR)
+      continue;
+    if (written <= 0)
+      return -1;
+    while (first < 3 && (size_t)written >= parts[first].iov_len) {
+      written -= (ssize_t)parts[first].iov_len;
+      first++;
+    }
+    if (first < 3) {
+      parts[first].iov_base = (char *)parts[first].iov_base + written;
+      parts[first].iov_len -= (size_t)written;
+    }
+  }
+  surface->producer_below = next.producer_below;
+  surface->col = next.col;
+  surface->line_cells = next.line_cells;
+  surface->attributes = next.attributes;
+  memcpy(surface->foreground, next.foreground, sizeof(next.foreground));
+  memcpy(surface->background, next.background, sizeof(next.background));
   return 0;
 }
 
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row) {
-  char seq[48];
-  int count;
+  char seq[96];
+  int count, position;
   if (!sl_surface_is_native(surface))
     return -1;
-  count = prompt_row >= 0
-              ? snprintf(seq, sizeof(seq), "\033[r\033[0m\033[%d;1H\033[?25h",
-                         prompt_row + 1)
-              : snprintf(seq, sizeof(seq), "\033[r%s\033[0m\r%s\033[?25h",
-                         surface->native_saved ? "\0338" : "",
-                         surface->native_saved && surface->col > 0 ? "\n" : "");
-  if (count <= 0 || count >= (int)sizeof(seq) ||
-      sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
+  memcpy(seq, "\033[r\033[0m", 7);
+  count = 7;
+  position = sl_surface_cursor(seq + count, sizeof(seq) - (size_t)count,
+                               prompt_row >= 0
+                                   ? surface->terminal_rows - 1 - prompt_row
+                                   : surface->producer_below,
+                               0);
+  if (position < 0)
+    return -1;
+  count += position;
+  if (prompt_row < 0 && surface->col > 0)
+    seq[count++] = '\n';
+  memcpy(seq + count, "\033[?25h", 6);
+  count += 6;
+  if (sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
     return -1;
   surface->native_stream = 0;
-  surface->native_saved = 0;
   return 0;
 }
 
@@ -363,38 +536,43 @@ int sl_surface_native_resize_pending(const sl_surface_t *surface) {
 
 int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   struct winsize terminal;
-  char seq[48];
-  int shift;
-  int previous_height;
-  int count;
+  char seq[64];
+  int shift, count, previous_height;
   if (!sl_surface_is_native(surface) || width < 1 || height < 2 ||
       sl_surface_terminal_size(surface->fd, &terminal) != 0)
     return -1;
-  if (surface->native_row >= (int)terminal.ws_row)
-    surface->native_row = (int)terminal.ws_row - 1;
-  shift = surface->native_row >= height ? surface->native_row - height + 1 : 0;
-  /* When the prompt grows into occupied output, move the existing cells
-   * within the old output region before reducing its bottom margin. Merely
-   * moving the producer cursor would overwrite the preceding output. */
-  previous_height = surface->height;
+  previous_height =
+      surface->height + (int)terminal.ws_row - surface->terminal_rows;
+  if (previous_height < 2)
+    previous_height = 2;
   if (previous_height > (int)terminal.ws_row)
-    previous_height = (int)terminal.ws_row;
+    previous_height = terminal.ws_row;
+  surface->terminal_rows = terminal.ws_row;
+  surface->terminal_columns = terminal.ws_col;
+  if (surface->width != width && surface->line_cells > 0) {
+    surface->col = (int)(surface->line_cells % (size_t)width);
+    /* Keep an exact right-edge endpoint distinct from an empty row. Cursor
+     * addressing loses the terminal's pending-wrap flag; the next write must
+     * continue below this row rather than overwrite its first character. */
+    if (surface->col == 0)
+      surface->col = width;
+  }
+  shift = SL_ROW(surface) >= height ? SL_ROW(surface) - height + 1 : 0;
   if (shift > 0) {
-    count = snprintf(seq, sizeof(seq), "\033[1;%dr\033[%dS\0338\033[%dA\0337",
-                     previous_height, shift, shift);
-    if (count <= 0 || count >= (int)sizeof(seq) ||
-        sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
-      return -1;
-    surface->native_row -= shift;
+    /* Only actual prompt growth reserves additional cells. The physical
+     * resize has already moved the terminal's transcript. */
+    if (height < previous_height) {
+      count = snprintf(seq, sizeof(seq), "\033[1;%dr\033[%dS", previous_height,
+                       shift);
+      if (count <= 0 || count >= (int)sizeof(seq) ||
+          sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
+        return -1;
+    }
+    surface->producer_below += shift;
   }
   surface->width = width;
   surface->height = height;
-  surface->terminal_rows = terminal.ws_row;
-  surface->terminal_columns = terminal.ws_col;
-  if (sl_surface_native_region(surface) != 0 ||
-      sl_surface_write_all(surface->fd, "\0338", 2) != 0)
-    return -1;
-  return sl_surface_write_all(surface->fd, "\0337\033[0m", 6);
+  return sl_surface_native_region(surface);
 }
 
 int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,

@@ -1902,11 +1902,12 @@ static void test_native_output_preserves_source_bytes(void) {
                   current.c_iflag == original.c_iflag &&
                   current.c_oflag == original.c_oflag,
               "native stream end did not restore terminal attributes");
-  ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
-                  strstr(output, "\033[r\0338\033[0m\r") != NULL &&
-                  strstr(output, "\n") != NULL &&
-                  strstr(output, "\033[?25h") != NULL,
-              "native teardown did not restore the terminal below output");
+  ASSERT_TRUE(
+      read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
+          strstr(output, "\033[r\033[0m") != NULL &&
+          strstr(output, "\0337") == NULL && strstr(output, "\0338") == NULL &&
+          strstr(output, "\n") != NULL && strstr(output, "\033[?25h") != NULL,
+      "native teardown did not restore the terminal below output");
   sl_destroy(sl);
   close(slave_fd);
   close(master_fd);
@@ -6343,7 +6344,7 @@ static void test_live_output_end_restores_unbounded_cursor(void) {
     last_show = next;
     next++;
   }
-  ASSERT_TRUE(last_show && (!last_hide || last_show > last_hide),
+  ASSERT_TRUE(!last_hide || (last_show && last_show > last_hide),
               "stream end left the editor cursor hidden");
   ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "submit failed");
   n = read_some_with_timeout(result_pipe[0], buf, sizeof(buf) - 1);
@@ -9278,14 +9279,13 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
               "styled live write failed");
   (void)read_live_pty_output(master_fd, output, sizeof(output));
   sync_start = strstr(output, "\033[41mRED\r\nNEXT");
-  reset = sync_start ? strstr(sync_start, "\0337\033[0m") : NULL;
-  prompt = reset ? strstr(reset, "\033[8;3H") : NULL;
+  reset = sync_start ? strstr(sync_start, "\033[0m") : NULL;
+  prompt = reset ? strstr(reset, "\033[65535;3H") : NULL;
   ASSERT_TRUE(sync_start && reset && prompt && reset < prompt,
               "native stream was rewritten or leaked style into the prompt");
-  resized = reset ? strstr(reset + 6, "\033[1;7r\0338\0337") : NULL;
-  reset = resized ? strstr(resized, "\033[0m") : NULL;
-  prompt = resized ? strstr(resized, "\033[8;3H") : NULL;
-  ASSERT_TRUE(resized && reset && prompt && reset < prompt,
+  resized = reset ? strstr(reset + 4, "\033[1;7r") : NULL;
+  ASSERT_TRUE(resized && !strstr(resized, "\033[41m") &&
+                  !strstr(output, "\0337") && !strstr(output, "\0338"),
               "resize restored producer style onto the plain prompt");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
   sl_destroy(sl);
@@ -9424,7 +9424,9 @@ static void test_live_output_error_resets_terminal_style(void) {
   ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0 &&
                   contains_bytes(output, "visible") &&
                   !contains_bytes(output, "secret") &&
-                  contains_bytes(output, "\0338visible"),
+                  contains_bytes(output, "\033[0mvisible") &&
+                  !contains_bytes(output, "\0337") &&
+                  !contains_bytes(output, "\0338"),
               "unsupported SGR changed rendered output or style");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "second stream end failed");
   sl_destroy(sl);
@@ -9461,7 +9463,9 @@ static void test_live_output_reconciles_physical_resize(void) {
               "resized output failed");
   ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
               "resized output missing");
-  ASSERT_TRUE(contains_bytes(output, "\033[1;2r\0338 world\0337") &&
+  ASSERT_TRUE(contains_bytes(output, " world\033[0m") &&
+                  !contains_bytes(output, "\0337") &&
+                  !contains_bytes(output, "\0338") &&
                   !contains_bytes(output, "hello") &&
                   !contains_bytes(output, "\n"),
               "resized output replayed text or failed to restore its cursor");
@@ -9579,14 +9583,14 @@ static void test_live_output_resize_continues_current_row(void) {
                   !contains_bytes(state.after_resize, "SECOND") &&
                   !contains_bytes(state.after_resize, "abcdefghijklmnop"),
               "resize replayed cached transcript text");
-  ASSERT_TRUE(contains_bytes(state.after_write, "s\0337") &&
-                  contains_bytes(state.after_expand_write, "t\0337") &&
+  ASSERT_TRUE(contains_bytes(state.after_write, "s\033[0m") &&
+                  contains_bytes(state.after_expand_write, "t\033[0m") &&
                   !contains_bytes(state.after_expand, "FIRST") &&
                   !contains_bytes(state.after_expand, "SECOND") &&
                   !contains_bytes(state.after_expand, "abcdefghijklmnop") &&
                   !contains_bytes(state.after_expand, "\n") &&
                   !contains_bytes(state.after_expand_write, "\n"),
-              "resize rewrote output instead of continuing the saved cursor");
+              "resize rewrote output instead of continuing the tracked cursor");
   sl_destroy(sl);
   close(slave_fd);
   close(master_fd);

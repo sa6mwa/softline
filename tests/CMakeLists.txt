@@ -73,6 +73,15 @@ if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(test_native_resize test_native_resize.c
+    "${PROJECT_SOURCE_DIR}/src/softline_surface.c")
+  target_include_directories(test_native_resize PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(test_native_resize PRIVATE util)
+  softline_apply_warnings(test_native_resize)
+  softline_local_runtime(test_native_resize)
+  add_test(NAME softline_native_resize COMMAND test_native_resize)
+  set_tests_properties(softline_native_resize PROPERTIES
+    LABELS "integration;streaming" TIMEOUT 10)
   add_executable(test_examples test_examples.c)
   target_link_libraries(test_examples PRIVATE util softline)
   softline_apply_warnings(test_examples)
@@ -88,4 +97,69 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET examp
     $<TARGET_FILE:example_chat>
   )
   set_tests_properties(softline_examples PROPERTIES LABELS "integration" TIMEOUT 60)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
+  # A second real terminal engine catches erased blank-cell extent that tmux's
+  # grid drops. Keep these host-only test dependencies out of the library.
+  find_program(SOFTLINE_TEST_XVFB_RUN xvfb-run)
+  find_library(SOFTLINE_TEST_VTE NAMES vte-2.91 libvte-2.91.so.0
+    NO_CMAKE_FIND_ROOT_PATH)
+  if(SOFTLINE_TEST_XVFB_RUN AND SOFTLINE_TEST_VTE)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME softline_terminal_blank_reflow
+      COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_blank_reflow.py"
+      "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
+    set_tests_properties(softline_terminal_blank_reflow PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 60)
+    add_test(NAME softline_terminal_streaming_resize
+      COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_blank_reflow.py"
+      "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}" --streaming)
+    set_tests_properties(softline_terminal_streaming_resize PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 60)
+  endif()
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
+  find_program(SOFTLINE_TEST_TMUX tmux)
+  if(SOFTLINE_TEST_TMUX)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(terminal_resize_fixture terminal_resize_fixture.c)
+    target_link_libraries(terminal_resize_fixture PRIVATE softline)
+    softline_enable_dev_libmdf(terminal_resize_fixture)
+    softline_apply_warnings(terminal_resize_fixture)
+    softline_local_runtime(terminal_resize_fixture)
+    add_test(NAME softline_terminal_resize COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+      "$<TARGET_FILE:terminal_resize_fixture>")
+    add_test(NAME softline_terminal_growth COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+      "$<TARGET_FILE:terminal_resize_fixture>" --grow-both)
+    set_tests_properties(softline_terminal_growth PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 30)
+    add_test(NAME softline_terminal_quoted_resize COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+      "$<TARGET_FILE:terminal_resize_fixture>" --quoted)
+    set_tests_properties(softline_terminal_quoted_resize PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 30)
+    add_test(NAME softline_terminal_static_resize COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+      "$<TARGET_FILE:terminal_resize_fixture>" --static)
+    add_test(NAME softline_terminal_height_roundtrip COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+      "$<TARGET_FILE:terminal_resize_fixture>" --height-roundtrip)
+    set_tests_properties(softline_terminal_height_roundtrip PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 30)
+    set_tests_properties(softline_terminal_static_resize PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 30)
+    set_tests_properties(softline_terminal_resize PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 90)
+  endif()
 endif()

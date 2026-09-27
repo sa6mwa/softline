@@ -9,11 +9,12 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
                                        int col,
                                        int (*cell_width)(unsigned long));
 int sl_surface_is_native(const sl_surface_t *surface);
-void sl_surface_native_cursor(sl_surface_t *surface, int row, int col);
+/* Apply the observed movement delta of the owned prompt to the producer. */
+void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows);
 void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col);
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length);
+                            size_t length, int prompt_row, int prompt_col);
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row);
 void sl_surface_destroy(sl_surface_t *surface);
 int sl_surface_resize(sl_surface_t *surface, int width, int height);

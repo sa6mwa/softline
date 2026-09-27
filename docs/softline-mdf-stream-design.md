@@ -42,7 +42,8 @@ is needed to make an already-decided fragment appear.
 Chunk boundaries have no display semantics. In particular, Softline inserts
 no newline, response separator, or space in producer content at a write
 boundary. Terminal cursor and style controls surround native writes to isolate
-the editor; restoring the output cursor also restores the producer style.
+the editor. Output position and producer style are tracked by Softline rather
+than by terminal cursor save/restore sequences.
 Ending a session does not finish a Markdown document. The application calls its
 renderer’s document lifecycle itself. Each successful write accepts its entire
 span; errors are reported on the handle and never silently discard accepted
@@ -66,16 +67,43 @@ prompt is anchored at the bottom from its first frame. The VT scroll region
 ends immediately above the current prompt frame. Native producer bytes
 are written unchanged, with only bounded partial ANSI/UTF-8 parser state and
 an output cursor retained. Softline never rewraps, pads, clears, or replays
-native transcript text. Terminal resize leaves transcript reflow to the
-terminal and updates only the prompt. A cached previous prompt frame allows
+native transcript text. Positions are distances from the terminal bottom.
+Resize reconciliation queries the live input cursor and combines its observed
+movement with the known layout of the old prompt. Unchanged prompt rows that
+fit the new width keep their cached cells. Width resize rebuilds only prompt
+layout; transcript reflow remains owned by the terminal. The
+producer tracks display cells since its last hard line boundary so growth can
+restore the column of a previously wrapped line without storing its text.
+Updating margins after physical resize
+must not scroll the transcript again; cells clipped off the top are not
+recovered or replayed. When an unfinished line leaves the screen, its next
+fragment resumes at the first visible output row. If the clipped position was
+at a hard line boundary, new output starts next to the prompt. Neither case
+changes cells or blank rows already in scrollback.
+A cached previous prompt frame allows
 patches of only changed cells; native feeds preserve unchanged prompt cells
-and restore the editor cursor. The output margin follows the current rendered
+and restore the editor cursor. Erasing an owned prompt row uses the default
+background and erase-to-end from column zero. This avoids leaving a full-width
+blank row that native terminal reflow can split when the width shrinks.
+The output margin follows the current rendered
 prompt height, with no empty queue slots or absent status-message rows. Growth
 scrolls existing output cells only enough to fit; shrink returns freed rows
 without moving transcript cells. The editor pages only at physical capacity.
-Ending chat restores the full scroll
+Native feeds batch bounded chunks with cursor restoration, retrying short
+writes as needed, without hiding the cursor or probing its position on
+unchanged frames. Ending chat restores the full scroll
 region and clears only input rows, preserving queue and status rows. The cursor
 stays at column zero on the current input row without a newline or scroll.
+
+The geometry model follows the terminal's live cursor rather than a saved
+terminal cursor slot. [tmux's resize implementation](https://github.com/tmux/tmux/blob/3.6/screen.c)
+moves rows above the cursor into history on shrink and pulls history back on
+growth; it resets scroll margins after height changes. The
+[Codex history writer](https://github.com/openai/codex/blob/main/codex-rs/tui/src/insert_history.rs)
+uses a full-width vertical scroll region above its editable viewport and
+application-owned coordinates to return to the input cursor. Softline applies
+that separation to incremental producer writes and retains only the prompt
+frame for cell comparisons.
 `clear_prompt_on_exit = 1` selects clearing the whole prompt area and returning
 below the transcript. Ending a stream inside an active editor retains the
 prompt and scroll region for later finite output or another stream. Closing
@@ -105,6 +133,15 @@ events. The core and Lua libraries do not import libmdf.
 
 ## Verification
 
+- When GTK3 VTE and `xvfb-run` are installed, a real-engine regression runs the
+  chat example in an already filled terminal. It compares physical transcript
+  rows across 97↔96 and stepwise 110↔90 column changes with three responses,
+  three prompt themes, and two terminal heights. Blank rows count as part of
+  the transcript, so an erased row wrapping into an extra gap fails the test.
+  A second VTE check generates three varied responses continuously while
+  changing both width and height, with an editable draft and existing
+  scrollback, under plain and Gruvbox prompts. It verifies complete paragraphs
+  remain in order and the draft remains visible.
 - A PTY test writes `Hello`, pauses, and observes it above an editable prompt
   before EOF. Later writes of ` world` continue the same line. Typing and
   queue edits remain responsive between writes.
@@ -112,9 +149,30 @@ events. The core and Lua libraries do not import libmdf.
   screen, including styled ANSI and UTF-8 split across write boundaries.
 - Prompt growth, queue/status rows, width setters, and terminal resize retain
   native geometry without replaying or clearing producer output.
-  Real-terminal reflow stress tests also check transcript order. An open
-  resize regression remains in that testing, so emulator frame checks
-  alone do not establish reflow correctness.
+  Real-terminal reflow tests use a gated libmdf producer with short paragraphs,
+  lists, quotes, code blocks, combining characters, and wide characters. Each
+  content set runs both without resizing and through width/height transitions;
+  the driver waits until the application observes each requested PTY size.
+  Static resize checks pause the producer and compare surviving transcript
+  cells before and after Softline handles the resize; the terminal's own
+  reflow is the reference. They cover paragraphs, lists, code, Unicode, and
+  queue rows. A separate PTY matrix rejects scroll commands during physical
+  resize and verifies scrolling remains available for ordinary prompt growth.
+  Combined row/column growth tests append to an unfinished wrapped line after
+  native reflow, with and without pre-existing scrollback, and compare the
+  entire retained transcript to ensure earlier output was not overwritten.
+  Clipped unfinished-line tests compare native scrollback before and after
+  continuation and reject newly inserted gaps; blank rows already introduced
+  by native resize are preserved. The clipped-line PTY check also covers new
+  output at a hard line boundary.
+- The tmux live-example check spaces resize commands so each PTY notification
+  settles. [tmux queues notifications for 250 ms](https://github.com/tmux/tmux/blob/3.6/server-client.c#L2647-L2713)
+  while changing its grid immediately. Faster successive resizes can leave the
+  visible grid and reported PTY geometry different while output is emitted;
+  that case can still corrupt output. The `--queued-resize` diagnostic in
+  `tests/check_terminal_resize.py` retains this reproducer. The standard paced
+  test does not prove that diagnostic passes. There is no tmux-specific
+  production workaround or transcript replay.
 - Sink/write failure and session teardown leave a usable editor and report
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
 - The C chat example composes a libmdf incremental renderer with the generic

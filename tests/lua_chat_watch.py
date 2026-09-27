@@ -12,11 +12,9 @@ import time
 
 def contains_output(data, needle, start=0):
     span = bytes(data[start:])
-    if needle.startswith(b"["):
-        # Inspect producer spans without mixing in prompt/status redraws.
-        span = b"".join(re.findall(rb"\x1b8(.*?)\x1b7", span, re.DOTALL))
     if b"\x1b" not in needle:
-        # Each native producer span may have cursor/style controls around it.
+        # These producer markers do not occur in the draft or status text.
+        # A marker may span writes surrounded by cursor/style controls.
         span = re.sub(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[78])", b"", span)
     return needle in span
 

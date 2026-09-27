@@ -238,6 +238,9 @@ setting it to one clears the whole prompt area and returns below the transcript.
 Ending a producer session inside an active editor retains the native prompt and
 scroll region for subsequent finite output or another stream; closing the handle
 always restores terminal state. Non-TTY sessions emit no teardown controls.
+Native feeds batch bounded chunks with cursor restoration and retry short
+writes as needed, without cursor visibility toggles or cursor-position probes
+on unchanged frames.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
 only cursor geometry and bounded partial ANSI/UTF-8 state.
@@ -436,7 +439,20 @@ single-owner rendering rule.
 
 `print_above()` and a persistent output session handle chunked output above the
 active prompt. Softline retains cursor geometry and bounded parser state.
-The terminal owns transcript cells and scrollback.
+The terminal owns transcript cells and scrollback. Physical resizing leaves
+surviving output cells as the terminal reflowed them; changing the output
+margin does not scroll them again. Output clipped off the top is not recovered
+or replayed by Softline. If an unfinished line moves into scrollback, its next
+fragment starts at the first visible output row instead of adding empty rows
+down to the prompt. If the clipped position was at a hard line boundary, new
+output starts next to the prompt. Native scrollback cells and spacing remain
+unchanged.
+Positions are tracked relative to the terminal bottom,
+without terminal cursor save/restore. Resize reconciliation queries the live
+input cursor to account for terminal movement and adjusts only owned prompt
+rows whose cells or placement changed. Fitted, unchanged rows are preserved.
+Width changes rebuild prompt layout. The editable prompt stays anchored at the
+bottom.
 
 Missing:
 

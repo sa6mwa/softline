@@ -185,6 +185,10 @@ live scroll regions, status lines, and spinners are off; the theme is
   occupy no space. At physical capacity the editor pages, leaving at least two
   output rows. Native chat needs at least three terminal rows, uses physical
   terminal width, and supports no rectangular viewport.
+  An unfinished line clipped into scrollback continues at the first visible
+  output row without replay. If the clipped position was at a hard line
+  boundary, new output starts next to the prompt. Existing scrollback cells
+  and spacing are preserved.
   The application owns its renderer, wakeup, and
   response/document lifecycle; Softline has no Markdown dependency.
 - `sl:output_stream_write(bytes)` sends a Lua byte string immediately into the

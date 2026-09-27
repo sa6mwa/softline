@@ -585,6 +585,9 @@ struct sl {
    * output bytes are passed through unchanged; terminal wrapping and scrollback
    * are preserved. The output margin follows actual prompt height. At least
    * three terminal rows are required: two output rows and one prompt row.
+   * An unfinished line clipped into scrollback continues at the first visible
+   * output row without replay. A clipped hard line boundary resumes next to
+   * the prompt; existing scrollback cells and spacing are preserved.
    * With either descriptor off-TTY, output is validated and forwarded without
    * terminal controls. */
   int (*output_stream_begin)(sl_t *self);
@@ -896,7 +899,10 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
  * only enough to fit, and shrink returns rows without moving transcript cells.
  * At least three terminal rows are required: two scroll rows and one prompt
  * row. Native transcript reflow belongs to the terminal; Softline never clears
- * or replays it. Returns SL_ERROR_INVALID if a session is already open. */
+ * or replays it. An unfinished line clipped into scrollback continues at the
+ * first visible output row. A clipped hard line boundary resumes next to the
+ * prompt; existing scrollback cells and spacing are preserved.
+ * Returns SL_ERROR_INVALID if a session is already open. */
 int sl_output_stream_begin(sl_t *self);
 
 /** Forward length bytes immediately to the live output session. Zero length

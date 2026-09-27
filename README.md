@@ -166,14 +166,30 @@ queue entries, nonempty status messages, status lines, and editor rows occupy
 prompt space. Growth scrolls existing output cells only enough to fit when
 needed; shrink returns freed rows to output without moving transcript cells.
 The editor pages only when the frame exceeds the terminal's available height.
-Terminal resize updates only the prompt and leaves transcript
-reflow to the terminal. Ending chat restores the full scroll region, clears
+Resize leaves transcript cells to the terminal. Softline queries the live input
+cursor once when reconciling changed geometry and applies its movement to the
+tracked output position. Cursor positions are stored as distances from the
+bottom; no terminal cursor save/restore sequences are used. Unchanged prompt
+rows that still fit are preserved. Width changes rebuild only prompt layout;
+transcript reflow belongs to the terminal.
+A bounded cell counter tracks the open output line so width growth restores its
+reflowed column rather than overwriting the last physical row. No transcript
+bytes are retained for this calculation.
+Updating the output margin after a physical resize does not scroll the
+transcript again. Softline does not recover or replay output that leaves the
+visible screen. An unfinished line that moves into scrollback continues at the
+first visible output row. If the clipped position was at a hard line boundary,
+new output starts next to the prompt. Existing scrollback, including native
+blank rows, stays intact. Ending chat restores the full scroll region, clears
 only the input rows, and keeps queue and status rows visible. The cursor remains
 at column zero on the current input row, with no final newline or scroll. Set
 `sl_config_t.clear_prompt_on_exit = 1` to clear the whole prompt area and return
 below the transcript instead. Ending a stream inside an active editor keeps
 the prompt and scroll region for later finite output or another stream;
-destroying the handle always closes native chat.
+destroying the handle always closes native chat. Native feeds do not toggle
+cursor visibility or wait for cursor-position replies on unchanged frames;
+bounded chunks are batched with cursor restoration, retrying short writes as
+needed.
 
 Chat uses the full terminal width and needs at least three rows: two for the
 VT100 scroll region and one for the prompt. Rectangular viewports are unsupported.

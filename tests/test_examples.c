@@ -31,6 +31,7 @@ struct terminal {
   int saved_row, saved_col, scroll_top, scroll_bottom;
   int cursor_visible;
   int farewell_above_status;
+  unsigned int region_updates;
   const char *guard[5];
   size_t frames, frame_failure, frame_offset;
   char csi[64];
@@ -98,7 +99,7 @@ static void term_scroll(struct terminal *t) {
 }
 
 /* Main-screen resize preserves cells, scrolling only enough to retain the
- * current cursor. DEC's saved output cursor moves with the same cells. */
+ * live input cursor. Real width reflow is exercised separately in tmux. */
 static void term_resize(struct terminal *t, int cols, int rows) {
   int shift = t->row >= rows ? t->row - rows + 1 : 0;
   int row, old_row = t->row, old_rows = t->rows, old_cols = t->cols;
@@ -149,6 +150,7 @@ static void term_csi(struct terminal *t, char final) {
     }
     break;
   case 'r':
+    t->region_updates++;
     t->scroll_top = a > 0 ? a - 1 : 0;
     t->scroll_bottom = b > 0 && b <= t->rows ? b - 1 : t->rows - 1;
     t->row = t->col = 0;
@@ -323,7 +325,8 @@ static int term_read(struct terminal *t) {
   if (n < 0 && (errno == EINTR || errno == EAGAIN))
     return 0;
   if (n <= 0) {
-    fprintf(stderr, "terminal read ended: n=%ld errno=%d\n", (long)n, errno);
+    if (n != 0 && errno != EIO)
+      fprintf(stderr, "terminal read ended: n=%ld errno=%d\n", (long)n, errno);
     return -1;
   }
   term_feed(t, bytes, (size_t)n);
@@ -1347,6 +1350,16 @@ struct frame_producer {
   int ack;
 };
 
+static int frame_finite_source(sl_t *sl, void *userdata, const char **bytes,
+                               size_t *length) {
+  int *sent = userdata;
+  (void)sl;
+  *bytes = "BATCH\n";
+  *length = *sent ? 0 : 6;
+  *sent = 1;
+  return SL_OK;
+}
+
 static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
                                 void *userdata) {
   struct frame_producer *producer = userdata;
@@ -1366,7 +1379,16 @@ static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
     sl_free_string(sl, line);
     if (result == SL_OK)
       result = sl_set_status_message(sl, "notice");
-  } else if (byte == '#')
+  } else if (byte == '%') {
+    int sent = 0;
+    result = sl_output_stream_end(sl);
+    if (result == SL_OK)
+      result = sl_print_above(sl, frame_finite_source, &sent);
+    if (result == SL_OK)
+      result = sl_output_stream_begin(sl);
+  } else if (byte == '=')
+    result = sl_set_screen_width(sl, 0);
+  else if (byte == '#')
     result = sl_set_status_message(sl, "notice");
   else if (byte == '!')
     result = sl_set_status_message(sl, NULL);
@@ -1491,26 +1513,45 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
   t.guard[2] = "fixture";
   t.guard[3] = "notice";
   t.guard[4] = "queued";
+  for (step = 0; step < 3; step++) {
+    static const int fitted_widths[] = {38, 36, 40};
+    size_t mark = t.raw_len;
+    ws.ws_col = (unsigned short)fitted_widths[step];
+    ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "fitted frame resize failed");
+    term_resize(&t, ws.ws_col, ws.ws_row);
+    ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0,
+                "fitted frame resize did not finish");
+    ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
+                "fitted resize displaced the input cursor");
+    ASSERT_TRUE(strstr(t.raw + mark, "\0337") == NULL &&
+                    strstr(t.raw + mark, "\0338") == NULL &&
+                    strstr(t.raw + mark, "\033[s") == NULL &&
+                    strstr(t.raw + mark, "\033[u") == NULL &&
+                    strstr(t.raw + mark, "\033[2K") == NULL &&
+                    strstr(t.raw + mark, "\033[0K") == NULL &&
+                    strstr(t.raw + mark, "> draft") == NULL &&
+                    strstr(t.raw + mark, "fixture") == NULL &&
+                    strstr(t.raw + mark, "notice") == NULL &&
+                    strstr(t.raw + mark, "queued") == NULL &&
+                    strstr(t.raw + mark, "more") == NULL,
+                "width resize erased or repainted a fitted prompt frame");
+  }
   for (step = 0; step < 480; step++) {
     char byte = source[(size_t)step % (sizeof(source) - 1)];
     size_t mark;
+    unsigned int region_updates;
     if (step > 0 && step % (int)(sizeof(source) - 1) == 0) {
       int cycle = step / (int)(sizeof(source) - 1);
-      int output_row, output_col, row, shift,
-          transcript_rows = t.scroll_bottom + 1;
+      int row, shift, transcript_rows = t.scroll_bottom + 1;
       unsigned int scrolls;
       char transcript[MAX_ROWS][MAX_COLS + 1];
       ws.ws_col = cycle % 2 ? 30 : 40;
       ws.ws_row = cycle % 3 == 0 ? 18 : cycle % 3 == 1 ? 28 : 24;
       ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "frame resize failed");
-      if (cycle % 2 && ws.ws_row < t.rows)
-        t.row = t.saved_row; /* Resize while the producer cursor is visible. */
       if (t.row >= ws.ws_row)
         transcript_rows -= t.row - ws.ws_row + 1;
       term_resize(&t, ws.ws_col, ws.ws_row);
       memcpy(transcript, t.cells, sizeof(transcript));
-      output_row = t.saved_row;
-      output_col = t.saved_col;
       scrolls = t.region_scrolls;
       /* Layout changes may reflow the prompt; feed guards start after that
        * frame is settled. No transcript replay is allowed during resize. */
@@ -1520,10 +1561,6 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
                   "resize displaced the editor cursor");
       shift = (int)(t.region_scrolls - scrolls);
-      if (output_row > t.scroll_bottom)
-        output_row = t.scroll_bottom;
-      ASSERT_TRUE(t.saved_row == output_row && t.saved_col == output_col,
-                  "resize moved the producer cursor away from its output");
       for (row = 0; row + shift < transcript_rows && row <= t.scroll_bottom;
            row++) {
         if (memcmp(t.cells[row], transcript[row + shift], (size_t)t.cols) !=
@@ -1540,10 +1577,18 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       t.guard[4] = "queued";
     }
     mark = t.raw_len;
+    region_updates = t.region_updates;
+    ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '=') == 0 &&
+                    t.raw_len == mark,
+                "native width setter repainted an unchanged prompt");
     if (step == 0 || step == (int)(sizeof(source) - 1) * 8)
       byte = '@';
+    if (step == (int)(sizeof(source) - 1) * 3)
+      byte = '%';
     ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], byte) == 0,
                 "producer feed did not complete");
+    ASSERT_TRUE(t.region_updates == region_updates,
+                "native feed reset or changed the output margins");
     if (t.frame_failure) {
       term_dump(&t);
       fprintf(stderr, "feed %d lost prompt content at byte %lu\n", step,
@@ -1555,8 +1600,15 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       close(ack[0]);
       FAIL("a producer feed exposed an incomplete prompt frame");
     }
-    ASSERT_TRUE(strstr(t.raw + mark, "\033[2K") == NULL &&
+    ASSERT_TRUE(strstr(t.raw + mark, "\0337") == NULL &&
+                    strstr(t.raw + mark, "\0338") == NULL &&
+                    strstr(t.raw + mark, "\033[s") == NULL &&
+                    strstr(t.raw + mark, "\033[u") == NULL &&
+                    strstr(t.raw + mark, "\033[2K") == NULL &&
                     strstr(t.raw + mark, "\033[0K") == NULL &&
+                    strstr(t.raw + mark, "\033[?25l") == NULL &&
+                    strstr(t.raw + mark, "\033[?25h") == NULL &&
+                    strstr(t.raw + mark, "\033[6n") == NULL &&
                     strstr(t.raw + mark, "fixture") == NULL &&
                     strstr(t.raw + mark, "notice") == NULL &&
                     strstr(t.raw + mark, "> draft") == NULL &&
@@ -1689,7 +1741,7 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
   ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], 'p') == 0 &&
                   frame_exchange(&t, commands[1], ack[0], 1) == 0 &&
                   t.scroll_bottom == 9 && t.region_scrolls == 0 &&
-                  t.cells[0][0] == 'p' && t.saved_row == 0 && t.saved_col == 1,
+                  t.cells[0][0] == 'p',
               "prompt growth scrolled output despite available space");
   ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '-') == 0 &&
                   frame_exchange(&t, commands[1], ack[0], '!') == 0 &&
@@ -1698,7 +1750,7 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
               "sparse prompt shrink moved output or retained unused rows");
   ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '@') == 0,
               "output did not fill its region");
-  ASSERT_TRUE(t.saved_row == t.scroll_bottom && term_contains(&t, "third"),
+  ASSERT_TRUE(strncmp(t.cells[t.scroll_bottom], "third", 5) == 0,
               "fixture did not park the producer at its bottom margin");
   transcript_rows = t.scroll_bottom + 1;
   memcpy(transcript, t.cells, sizeof(transcript));
@@ -1710,8 +1762,8 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
     ASSERT_TRUE(t.scroll_bottom == 10 - i &&
                     t.region_scrolls == scrolls + (unsigned int)i + 1,
                 "queue growth did not use exactly its rendered rows");
-    ASSERT_TRUE(t.saved_row == t.scroll_bottom && t.saved_col == 5,
-                "queue growth lost the producer cursor");
+    ASSERT_TRUE(strncmp(t.cells[t.scroll_bottom], "third", 5) == 0,
+                "queue growth lost the live output row");
     ASSERT_TRUE(term_contains(&t, "Q 1. first"), "first queue entry hidden");
     if (i >= 2)
       ASSERT_TRUE(term_contains(&t, "Q 2. second"),
@@ -1742,8 +1794,9 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
   t.guard[3] = "... 1 more";
   t.guard[4] = "last";
   ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], 'x') == 0 &&
-                  !t.frame_failure,
-              "live output erased queued previews");
+                  !t.frame_failure &&
+                  strncmp(t.cells[t.scroll_bottom], "thirdx", 6) == 0,
+              "live output lost its position or erased queued previews");
   memset(t.guard, 0, sizeof(t.guard));
   ASSERT_TRUE(write(fd, "\n1\n2\n3\n4\n5\n6\n7\ntail", 19) == 19 &&
                   wait_screen(&t, "tail", 3000) == 0 &&

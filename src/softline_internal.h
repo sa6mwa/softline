@@ -95,6 +95,9 @@ typedef struct sl_impl {
   sl_surface_t *output_surface;
   int cursor_position_probe;
   int probed_cursor_col;
+  /* Last native teardown position, for terminals without cursor reports. */
+  int native_cursor_valid;
+  int native_cursor_below;
   char *buf;
   size_t len;
   size_t cap;
