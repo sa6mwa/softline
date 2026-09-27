@@ -9,7 +9,8 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
                                        int col,
                                        int (*cell_width)(unsigned long));
 int sl_surface_is_native(const sl_surface_t *surface);
-/* Apply the observed movement delta of the owned prompt to the producer. */
+/* Apply the observed cursor delta to the producer; exclude prompt reflow
+ * when the observed cursor belongs to an editor frame. */
 void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows);
 void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col);

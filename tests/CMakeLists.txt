@@ -131,6 +131,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     softline_enable_dev_libmdf(terminal_resize_fixture)
     softline_apply_warnings(terminal_resize_fixture)
     softline_local_runtime(terminal_resize_fixture)
+    add_test(NAME softline_terminal_producer_resize COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+      "$<TARGET_FILE:terminal_resize_fixture>" --producer-only)
+    set_tests_properties(softline_terminal_producer_resize PROPERTIES
+      LABELS "integration;streaming" TIMEOUT 45)
     add_test(NAME softline_terminal_resize COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"

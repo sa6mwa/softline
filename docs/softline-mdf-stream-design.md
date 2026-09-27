@@ -74,6 +74,10 @@ fit the new width keep their cached cells. Width resize rebuilds only prompt
 layout; transcript reflow remains owned by the terminal. The
 producer tracks display cells since its last hard line boundary so growth can
 restore the column of a previously wrapped line without storing its text.
+When no prompt frame has been rendered, the live cursor belongs to the producer.
+After resize its cursor report refreshes the stored bottom-relative row delta
+before the scroll-margin update moves that cursor. With no rendered prompt,
+that update reserves no editor rows; rendering a prompt sets its actual margin.
 Updating margins after physical resize
 must not scroll the transcript again; cells clipped off the top are not
 recovered or replayed. When an unfinished line leaves the screen, its next
@@ -161,6 +165,10 @@ events. The core and Lua libraries do not import libmdf.
   Combined row/column growth tests append to an unfinished wrapped line after
   native reflow, with and without pre-existing scrollback, and compare the
   entire retained transcript to ensure earlier output was not overwritten.
+  A producer-only matrix appends after width, height and combined resize,
+  with ASCII, hard line breaks and Unicode, with and without scrollback.
+  It compares the complete transcript to the terminal's native endpoint and
+  then checks the handoff to a bottom-anchored editable prompt.
   Clipped unfinished-line tests compare native scrollback before and after
   continuation and reject newly inserted gaps; blank rows already introduced
   by native resize are preserved. The clipped-line PTY check also covers new

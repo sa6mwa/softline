@@ -753,7 +753,9 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
   if (!impl || !isatty(impl->input_fd) || !isatty(impl->output_fd))
     return 0;
   width = sl_terminal_columns(impl);
-  if (prompt_top < 2 || prompt_top >= sl_terminal_rows(impl)) {
+  if (prompt_top < 2 || prompt_top > sl_terminal_rows(impl) ||
+      (prompt_top == sl_terminal_rows(impl) &&
+       (impl->active_prompt || impl->rendered_rows > 0))) {
     sl_set_error(self, "native output needs two scroll rows above the prompt");
     return -1;
   }
@@ -3998,12 +4000,27 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
     int old_terminal_rows;
     sl_surface_geometry(impl->output_surface, &old_width, NULL,
                         &old_terminal_rows);
-    if ((old_width != sl_terminal_width(impl) ||
-         old_terminal_rows != sl_terminal_rows(impl)) &&
-        sl_output_surface_reconcile(
-            self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0) {
-      sl_set_error(self, "failed to resize live output surface");
-      return SL_ERROR_IO;
+    if (old_width != sl_terminal_width(impl) ||
+        old_terminal_rows != sl_terminal_rows(impl)) {
+      int prompt_top = sl_prompt_top(impl, sl_output_prompt_rows(impl));
+      if (impl->rendered_rows == 0) {
+        int row;
+        int observed = sl_query_cursor_row(self);
+        /* With no frame the live cursor belongs to the producer. Refresh
+         * its bottom delta before changing margins homes that cursor. */
+        if (observed > 0) {
+          sl_surface_native_position(impl->output_surface, &row, NULL);
+          sl_surface_native_prompt_reflow(impl->output_surface,
+                                          sl_terminal_rows(impl) - observed -
+                                              (old_terminal_rows - 1 - row));
+        }
+        /* No editor cells exist to reserve below the output cursor. */
+        prompt_top = sl_terminal_rows(impl);
+      }
+      if (sl_output_surface_reconcile(self, prompt_top) != 0) {
+        sl_set_error(self, "failed to resize live output surface");
+        return SL_ERROR_IO;
+      }
     }
   }
   return sl_output_write_validated(self, bytes, length);

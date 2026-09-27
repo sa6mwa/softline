@@ -437,8 +437,133 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                            capture_output=True)
 
 
+def producer_only_case(tmux, fixture, build, document, sizes, prefilled):
+    """Append at the terminal's native endpoint, with no editable frame."""
+    source = ("abcdefghijklmnopqrstuvwxyz", "one\nABC", "café 中文")[document]
+    with tempfile.TemporaryDirectory(prefix="producer-", dir=build) as work:
+        socket = str(pathlib.Path(work, "socket"))
+        commands = pathlib.Path(work, "commands")
+        acknowledgments = pathlib.Path(work, "acknowledgments")
+        os.mkfifo(commands)
+        os.mkfifo(acknowledgments)
+        command_fd = os.open(commands, os.O_RDWR | os.O_NONBLOCK)
+        ack_fd = os.open(acknowledgments, os.O_RDWR | os.O_NONBLOCK)
+
+        def run(*args):
+            return subprocess.check_output(
+                [tmux, "-S", socket, "-f", "/dev/null", *args], text=True)
+
+        def capture():
+            return run("capture-pane", "-p", "-J", "-S", "-",
+                       "-t", "producer:0.0").rstrip("\n").splitlines()
+
+        def acknowledgment():
+            reply = b""
+            deadline = time.monotonic() + 4
+            while len(reply) < 6:
+                remaining = deadline - time.monotonic()
+                assert remaining > 0, "producer acknowledgment timed out"
+                if select.select([ack_fd], [], [], remaining)[0]:
+                    reply += os.read(ack_fd, 6 - len(reply))
+            assert reply[:1] == b"a", reply
+            return (reply[1] * 256 + reply[2], reply[3] * 256 + reply[4])
+
+        def wait_capture(expected):
+            deadline = time.monotonic() + 4
+            while True:
+                actual = capture()
+                if actual == expected:
+                    return
+                assert time.monotonic() < deadline, (
+                    f"producer {document}, prefilled={prefilled}: "
+                    f"native endpoint changed\nexpected={expected!r}\nactual={actual!r}")
+                time.sleep(0.02)
+
+        try:
+            launch = "exec " + shlex.join(
+                [fixture, str(commands), str(acknowledgments), str(document),
+                 "--producer-only"])
+            if prefilled:
+                prior = "".join(f"existing terminal row {i:03d}\n" for i in range(100))
+                launch = "printf %s " + shlex.quote(prior) + "; " + launch
+            run("new-session", "-d", "-s", "producer", "-x", "20", "-y", "10", launch)
+            run("set-option", "-w", "remain-on-exit", "on")
+            acknowledgment()
+            os.write(command_fd, b"s")
+            acknowledgment()
+            deadline = time.monotonic() + 4
+            while source not in "\n".join(capture()):
+                assert time.monotonic() < deadline, "initial producer output missing"
+                time.sleep(0.02)
+            for width, height in sizes:
+                run("resize-window", "-t", "producer:0", "-x", str(width), "-y", str(height))
+                deadline = time.monotonic() + 4
+                while True:
+                    os.write(command_fd, b"r")
+                    if acknowledgment() == (width, height):
+                        break
+                    assert time.monotonic() < deadline, "producer PTY resize timed out"
+                    time.sleep(0.02)
+                before = capture()
+                expected = before[:]
+                expected[-1] += "END"
+                os.write(command_fd, b"p")
+                acknowledgment()
+                wait_capture(expected)
+            # A readline width hint is not a physical terminal resize. Its
+            # margin update moves the live cursor, so treating it as a resize
+            # would incorrectly observe that cursor as the producer endpoint.
+            os.write(command_fd, b"w")
+            acknowledgment()
+            wait_capture(expected)
+            expected[-1] += "END"
+            os.write(command_fd, b"p")
+            acknowledgment()
+            wait_capture(expected)
+            # A prompt-free stream must still hand off to the ordinary chat
+            # frame, reserving exactly its input rows at the physical bottom.
+            os.write(command_fd, b"i")
+            deadline = time.monotonic() + 4
+            while not capture()[-1].startswith(">"):
+                assert time.monotonic() < deadline, "editor handoff timed out"
+                time.sleep(0.02)
+            run("send-keys", "-t", "producer:0.0", "-l", "draft")
+            deadline = time.monotonic() + 4
+            while capture()[-1] != "> draft":
+                assert time.monotonic() < deadline, "editor draft missing"
+                time.sleep(0.02)
+            # Bottom anchoring adds empty screen rows below sparse output.
+            retained = "\n".join(capture()[:-1]).rstrip("\n").splitlines()
+            assert retained == expected, f"editor handoff changed producer text: {retained!r}"
+            row, height = map(int, run("display-message", "-p", "-t", "producer:0.0",
+                                      "#{cursor_y},#{pane_height}").strip().split(","))
+            assert row == height - 1, "editor handoff is not bottom anchored"
+            run("send-keys", "-t", "producer:0.0", "Enter")
+            acknowledgment()
+            os.write(command_fd, b"x")
+            deadline = time.monotonic() + 4
+            while run("display-message", "-p", "-t", "producer:0.0", "#{pane_dead}").strip() != "1":
+                assert time.monotonic() < deadline, "producer teardown timed out"
+                time.sleep(0.02)
+            assert run("display-message", "-p", "-t", "producer:0.0",
+                       "#{pane_dead_status}").strip() == "0", "producer teardown failed"
+            print(f"Producer {document}, prefilled={prefilled}: native append survives {sizes}")
+        finally:
+            os.close(command_fd)
+            os.close(ack_fd)
+            subprocess.run([tmux, "-S", socket, "kill-server"], check=False,
+                           capture_output=True)
+
+
 def main():
     tmux, example, build, fixture = sys.argv[1:5]
+    if sys.argv[5:] == ["--producer-only"]:
+        for document in range(3):
+            for prefilled in (False, True):
+                for sizes in (((40, 10),), ((20, 14),), ((20, 6),),
+                              ((40, 14), (18, 6), (48, 16), (20, 10))):
+                    producer_only_case(tmux, fixture, build, document, sizes, prefilled)
+        return
     if sys.argv[5:] == ["--queued-resize"]:
         # Diagnostic for tmux's grid/PTY size mismatch during its 250 ms
         # notification throttle. Retain the reproducer rather than implying

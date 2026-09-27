@@ -364,8 +364,9 @@ void sl_surface_native_position(const sl_surface_t *surface, int *row,
     *col = surface->col;
 }
 
-/* Apply the movement of the live input cursor, excluding reflow inside our
- * prompt. The terminal owns all rows above that frame. */
+/* Apply an observed bottom-relative cursor delta. For an input cursor the
+ * caller excludes reflow inside its prompt. Transcript cells stay terminal
+ * owned; no text is retained or moved here. */
 void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows) {
   if (sl_surface_is_native(surface))
     surface->producer_below += extra_rows;

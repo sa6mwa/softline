@@ -3,6 +3,7 @@
 #include "softline/softline.h"
 #include <libmdf/mdf.h>
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,50 @@ struct fixture {
   int commands;
   int acknowledgments;
 };
+
+/* Exercise the live-output API before its first editor frame. */
+static int producer_only(struct fixture *fixture, int document) {
+  static const char *const text[] = {"abcdefghijklmnopqrstuvwxyz", "one\nABC",
+                                     "caf\303\251 \344\270\255\346\226\207"};
+  char command = 'r';
+  if (sl_output_stream_begin(fixture->sl) != SL_OK)
+    return 2;
+  for (;;) {
+    struct winsize size;
+    unsigned char reply[6];
+    int result = SL_OK;
+    ssize_t received;
+    if (command == 's')
+      result = sl_output_stream_write(fixture->sl, text[document],
+                                      strlen(text[document]));
+    else if (command == 'p')
+      result = sl_output_stream_write(fixture->sl, "END", 3);
+    else if (command == 'w')
+      result = sl_set_screen_width(fixture->sl, 12);
+    else if (command == 'i') {
+      char *line = sl_readline(fixture->sl, "> ");
+      result = line && strcmp(line, "draft") == 0 ? SL_OK : SL_ERROR;
+      sl_free_string(fixture->sl, line);
+    } else if (command == 'x')
+      return sl_output_stream_end(fixture->sl) == SL_OK ? 0 : 2;
+    if (result != SL_OK || ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0)
+      return 2;
+    reply[0] = 'a';
+    reply[1] = (unsigned char)(size.ws_col >> 8);
+    reply[2] = (unsigned char)size.ws_col;
+    reply[3] = (unsigned char)(size.ws_row >> 8);
+    reply[4] = (unsigned char)size.ws_row;
+    reply[5] = 0;
+    if (write(fixture->acknowledgments, reply, sizeof(reply)) !=
+        (ssize_t)sizeof(reply))
+      return 2;
+    do {
+      received = read(fixture->commands, &command, 1);
+    } while (received < 0 && errno == EINTR);
+    if (received != 1)
+      return 2;
+  }
+}
 
 static int sink(void *userdata, const char *bytes, size_t length) {
   struct fixture *fixture = userdata;
@@ -143,7 +188,7 @@ int main(int argc, char **argv) {
   char *line;
   int document;
   const char *elements[] = {"fixture"};
-  if (argc != 4)
+  if (argc != 4 && !(argc == 5 && strcmp(argv[4], "--producer-only") == 0))
     return 2;
   document = atoi(argv[3]);
   if (document < 0 ||
@@ -156,8 +201,18 @@ int main(int argc, char **argv) {
   sl_config_init(&config);
   config.prompt_theme = SL_PROMPT_THEME_PLAIN;
   config.prompt_queue = 1;
-  config.statusline = 1;
+  config.statusline = argc == 4;
   fixture.sl = sl_create_with_config(&config);
+  if (argc == 5) {
+    int result;
+    if (fixture.commands < 0 || fixture.acknowledgments < 0 || !fixture.sl)
+      return 2;
+    result = producer_only(&fixture, document);
+    sl_destroy(fixture.sl);
+    close(fixture.commands);
+    close(fixture.acknowledgments);
+    return result;
+  }
   mdf_options_init(&options);
   options.output_fd = STDOUT_FILENO;
   options.width = 80;
