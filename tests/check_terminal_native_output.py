@@ -189,12 +189,29 @@ def case(fixture, build, source, prefilled=False):
                 advance(b'p', b'Y')
                 advance(b'f', b'\r\nF: ' + source.replace('\n', '\r\n').encode() + b'\r\n')
                 advance(b'p', b'Y')
+                # The last readline has returned but its frame is retained.
+                # Shrink before ending the stream: teardown must clear the
+                # actual input row and leave the cursor at its new position.
+                os.write(command_fd, b'i')
+                deadline = time.monotonic() + 4
+                while not any(line.startswith('> ') for line in rows(actual)[0]):
+                    vt.pump()
+                    assert child.poll() is None and time.monotonic() < deadline, 'editor handoff timed out'
+                vt.send(actual, b'\r', 1)
+                ack()
+                resize(actual, actual_window, 32 if prefilled else 40, 6)
                 os.write(command_fd, b'x')
                 deadline = time.monotonic() + 4
                 while child.poll() is None:
                     vt.pump()
                     assert time.monotonic() < deadline, 'teardown timed out'
                 assert child.wait() == 0
+                vt.pump()
+                final_rows, final_cursor = rows(actual)
+                visible_cursor = (final_cursor[0] - int(adjustment_value(get_adjustment(actual))),
+                                  final_cursor[1])
+                assert visible_cursor == (5, 0), ('stale exit cursor', source, visible_cursor)
+                assert not any(line.startswith('> ') for line in final_rows), ('stale input row', source, final_rows)
                 print('PASS', prefilled, repr(source), flush=True)
             finally:
                 os.close(command_fd)

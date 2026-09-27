@@ -3019,6 +3019,67 @@ static void sl_render_page_editor(sl_render_t *render, int limit) {
   render->count = render->editor_first + rows;
 }
 
+/* A retained editor frame still has physical cells after readline returns.
+ * Reconcile those cells before either repainting or closing the session. */
+static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
+                                              int height) {
+  sl_impl_t *impl = sl_impl(self);
+  struct winsize size;
+  int span, height_only, old_prompt_rows, old_offset, offset, observed;
+  int old_below, i;
+  if (!sl_surface_is_native(impl->output_surface) || impl->rendered_rows == 0 ||
+      (!sl_native_resize_pending(impl) && impl->rendered_width == width &&
+       impl->rendered_height == height))
+    return 0;
+  span = old_prompt_rows = impl->rendered_rows;
+  height_only = impl->rendered_width == width;
+  offset = old_offset = impl->rendered_cursor_row;
+  observed = impl->cursor_position_probe == 1 ? sl_query_cursor_row(self) : 0;
+  old_below = old_prompt_rows - 1 - old_offset;
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
+      (size.ws_col != width || size.ws_row != height))
+    return 1;
+  if (!height_only) {
+    span = 0;
+    offset = 0;
+    for (i = 0; i < old_prompt_rows; i++) {
+      int rows = impl->rendered_cols[i] == INT_MAX
+                     ? 1
+                     : (impl->rendered_cols[i] + width - 1) / width;
+      if (rows < 1)
+        rows = 1;
+      span += rows;
+      if (i < impl->rendered_cursor_row)
+        offset += rows;
+    }
+    offset += impl->rendered_cursor_col / width;
+  }
+  if (observed > 0) {
+    int observed_below = height - observed;
+    sl_surface_native_prompt_reflow(
+        impl->output_surface, observed_below - old_below + offset - old_offset);
+    impl->rendered_top_row = observed - 1 - offset;
+  } else {
+    sl_surface_native_prompt_reflow(impl->output_surface,
+                                    span - old_prompt_rows);
+    impl->rendered_top_row = height - span;
+  }
+  if (!height_only &&
+      sl_render_store_reflow(impl, width, height, impl->rendered_top_row, span,
+                             offset) != 0)
+    return -1;
+  impl->rendered_cursor_valid = 0;
+  if (sl_output_surface_reconcile(
+          self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0)
+    return -1;
+  impl->rendered_width = width;
+  impl->rendered_height = height;
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
+      (size.ws_col != width || size.ws_row != height))
+    return 1;
+  return 0;
+}
+
 static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   sl_impl_t *impl;
   int visible;
@@ -3064,58 +3125,11 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   if (sl_surface_is_native(impl->output_surface) && impl->rendered_rows > 0 &&
       (sl_native_resize_pending(impl) || impl->rendered_width != width ||
        impl->rendered_height != height)) {
-    int span = impl->rendered_rows;
-    int height_only = impl->rendered_width == width;
-    int old_prompt_rows = impl->rendered_rows;
-    int old_offset = impl->rendered_cursor_row;
-    int offset = old_offset;
-    int observed =
-        impl->cursor_position_probe == 1 ? sl_query_cursor_row(self) : 0;
-    int old_below = old_prompt_rows - 1 - old_offset;
-    if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
-        (size.ws_col != width || size.ws_row != height))
-      return 1;
-    if (!height_only) {
-      span = 0;
-      offset = 0;
-      for (i = 0; i < old_prompt_rows; i++) {
-        int rows = impl->rendered_cols[i] == INT_MAX
-                       ? 1
-                       : (impl->rendered_cols[i] + width - 1) / width;
-        if (rows < 1)
-          rows = 1;
-        span += rows;
-        if (i < impl->rendered_cursor_row)
-          offset += rows;
-      }
-      offset += impl->rendered_cursor_col / width;
-    }
-    if (observed > 0) {
-      int observed_below = height - observed;
-      sl_surface_native_prompt_reflow(impl->output_surface,
-                                      observed_below - old_below + offset -
-                                          old_offset);
-      impl->rendered_top_row = observed - 1 - offset;
-    } else {
-      sl_surface_native_prompt_reflow(impl->output_surface,
-                                      span - old_prompt_rows);
-      impl->rendered_top_row = height - span;
-    }
-    if (!height_only &&
-        sl_render_store_reflow(impl, width, height, impl->rendered_top_row,
-                               span, offset) != 0)
-      return -1;
-    impl->rendered_cursor_valid = 0;
-    if (sl_output_surface_reconcile(
-            self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0)
-      return -1;
     /* A retry must see acknowledged dimensions, so it cannot apply a resize
      * twice. Height-only changes preserve the terminal's prompt pixels. */
-    impl->rendered_width = width;
-    impl->rendered_height = height;
-    if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
-        (size.ws_col != width || size.ws_row != height))
-      return 1;
+    int result = sl_native_reconcile_rendered_frame(self, width, height);
+    if (result != 0)
+      return result;
   }
   if (!impl->output_stream_active && !impl->output_surface &&
       impl->rendered_rows > 0 &&
@@ -3387,6 +3401,14 @@ static int sl_native_session_close(sl_t *self) {
   sl_impl_t *impl = sl_impl(self);
   int prompt_row = -1;
   int i, row, col;
+  if (impl->rendered_rows > 0) {
+    int result = 1;
+    for (i = 0; i < 3 && result == 1; i++)
+      result = sl_native_reconcile_rendered_frame(
+          self, sl_terminal_columns(impl), sl_terminal_rows(impl));
+    if (result != 0)
+      return -1;
+  }
   if (impl->rendered_rows == 0) {
     if (sl_native_resize_pending(impl)) {
       if (sl_output_surface_reconcile(self, sl_terminal_rows(impl)) != 0)

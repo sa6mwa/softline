@@ -154,6 +154,9 @@ events. The core and Lua libraries do not import libmdf.
   first editor handoff and live width/height transitions with empty terminals
   and 100 prior rows, preserving internal blank rows. Finite output in one-byte
   Unicode chunks ends at the native endpoint before another stream begins.
+  After `readline` returns, shrinking rows and sometimes columns before session
+  close clears the retained input row at its new location and exits at the new
+  bottom row.
 - When GTK3 VTE and `xvfb-run` are installed, a real-engine regression runs the
   chat example in an already filled terminal. It compares physical transcript
   rows across 97↔96 and stepwise 110↔90 column changes with three responses,
