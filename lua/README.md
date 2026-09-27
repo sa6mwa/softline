@@ -74,6 +74,7 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:history_load(filename)` loads history entries into the handle.
 - `sl:set_screen_width(width)` sets ordinary readline wrapping width; `0`
   returns to terminal-width probing. Native chat uses physical terminal width.
+  Without an active readline, this hint does not move or resize native output.
 - `sl:set_live_scroll_region(enabled)` opts an ordinary readline prompt into
   bottom-pinned scroll-region output after it reaches the terminal bottom.
   It is disabled by default; native chat always uses its own scroll region.

@@ -462,7 +462,8 @@ struct sl {
   int (*history_load)(sl_t *self, const char *filename);
   /** Set ordinary readline wrapping width; zero follows the terminal.
    * Native chat always uses physical terminal width. Updates active prompt
-   * wrapping when its effective width changes. */
+   * wrapping when its effective width changes. Without an active readline,
+   * changing this hint does not move or resize a native output session. */
   int (*set_screen_width)(sl_t *self, int width);
   /** Enable or disable bottom-pinned scroll-region output for ordinary
    * readline. The setting applies to subsequent print_above() calls; native
@@ -723,7 +724,8 @@ int sl_history_load(sl_t *self, const char *filename);
 
 /** Set ordinary readline wrapping width; zero follows the terminal.
  * Native chat always uses physical terminal width. Updates active prompt
- * wrapping when its effective width changes. */
+ * wrapping when its effective width changes. Without an active readline,
+ * changing this hint does not move or resize a native output session. */
 int sl_set_screen_width(sl_t *self, int width);
 
 /** Enable or disable bottom-pinned scroll-region output for ordinary readline.

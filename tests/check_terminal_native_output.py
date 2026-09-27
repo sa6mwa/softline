@@ -203,6 +203,8 @@ def case(fixture, build, source, prefilled=False):
                     resize(actual, actual_window, 40, 12)
                     os.write(command_fd, b'r')
                     assert ack() == (40, 12)
+                    os.write(command_fd, b'w')
+                    ack()
                     os.write(command_fd, b'p')
                     ack()
                     assert any(line == 'YY' for line in rows(actual)[0]), (

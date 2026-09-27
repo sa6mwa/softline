@@ -6068,12 +6068,6 @@ static int sl_set_screen_width_method(sl_t *self, int width) {
     sl_set_error(self, "failed to redraw prompt after changing width");
     return SL_ERROR_IO;
   }
-  if (!impl->active_prompt && impl->output_surface &&
-      sl_output_surface_reconcile(
-          self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0) {
-    sl_set_error(self, "failed to resize live output after changing width");
-    return SL_ERROR_IO;
-  }
   return SL_OK;
 }
 

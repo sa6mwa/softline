@@ -129,6 +129,8 @@ one for the prompt.
 Rectangular viewports and bounds configuration are unsupported. Native chat
 always uses the physical terminal width. `sl_set_screen_width()` controls
 ordinary readline wrapping; it cannot rewrap producer output in a chat session.
+Without an active readline, changing the hint leaves native output geometry
+untouched. The next write or session close reconciles any physical resize.
 Softline detects dynamic dimensions through `TIOCGWINSZ` without taking
 ownership of `SIGWINCH`. An application may register its own signal/self-pipe
 or other event source to update its external renderer before feeding more data.
@@ -155,7 +157,8 @@ events. The core and Lua libraries do not import libmdf.
   and 100 prior rows, preserving internal blank rows. Finite output in one-byte
   Unicode chunks ends at the native endpoint before another stream begins.
   Writes after a retained editor frame and repeated terminal growth resume on
-  the producer's last line, with and without prior scrollback.
+  the producer's last line, including a width hint between resize and write,
+  with and without prior scrollback.
   After `readline` returns, shrinking rows and sometimes columns before session
   close clears the retained input row at its new location and exits at the new
   bottom row.

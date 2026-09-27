@@ -512,6 +512,8 @@ static int softline_lua_history_load(lua_State *L) {
       L, sl_history_load(handle->sl, luaL_checkstring(L, 2)));
 }
 
+/** Lua editor:set_screen_width(width): set ordinary readline wrapping width.
+ * With no active readline, this hint leaves native output geometry alone. */
 static int softline_lua_set_screen_width(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
