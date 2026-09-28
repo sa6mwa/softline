@@ -310,7 +310,9 @@ Current build surfaces include:
 - shared-library ABI/SOVERSION policy through `SOFTLINE_ABI_VERSION`, currently
   `0`, decoupled from the project release version. Softline and its sole
   consumer evolve together; current API changes do not establish a new ABI
-  compatibility commitment.
+  compatibility commitment. Both are rebuilt together; older compiled consumers
+  are unsupported, as recorded in the
+  [development ABI exception](softline-mdf-stream-design.md#review-exception-development-abi-0).
 - installed CMake package exports with canonical target `softline::softline`
 - installed pkg-config metadata
 - Lua 5.5 facade packaged as LuaRocks source artifacts

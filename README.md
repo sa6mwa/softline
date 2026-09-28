@@ -428,6 +428,9 @@ Every project-owned C target is compiled as C89 with POSIX terminal APIs.
 Shared builds use `SOFTLINE_ABI_VERSION=0` for SONAME/SOVERSION during current
 development. Softline and its sole consumer change together; API changes in
 this development phase do not establish a new ABI compatibility commitment.
+Both are rebuilt together; older compiled consumers are unsupported. The
+[development ABI exception](docs/softline-mdf-stream-design.md#review-exception-development-abi-0)
+records this explicit decision and its scope.
 
 Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
 builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin

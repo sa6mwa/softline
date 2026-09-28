@@ -154,6 +154,16 @@ Lua reference and adjacent public binding comments. Lua cannot invoke its VM
 from a foreign producer thread; a watched descriptor supplies owner-thread
 events. The core and Lua libraries do not import libmdf.
 
+### Review exception: development ABI 0
+
+The production executive explicitly reaffirmed ABI 0 on 2026-09-28. This is a
+deliberate exception to incrementing the shared-library ABI after an incompatible
+public layout change. Release v0.2.0 already used ABI 0 and v0.7.0 used ABI 1;
+the current public layouts are not binary compatible with those releases.
+Softline and its sole consumer are rebuilt together. Loading this development
+library into an older compiled consumer is unsupported. Reconsider this exception
+before making a binary compatibility commitment to independently built consumers.
+
 ## Verification
 
 - Real VTE PTY responses and tmux compare chunked producer output and the exit
