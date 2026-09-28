@@ -34,6 +34,8 @@ fields are:
 - `clear_prompt_on_exit` (default `false`: clear input rows, keep queue and
   status rows, and return at column zero on the current input row; `true` clears
   the whole prompt area and returns below the transcript)
+- `prompt_handoff_timeout_ms` (default `250`; integer from `0` to `2147483647`;
+  zero permits immediate prompt handoff)
 - `prompt_queue`
 - `prompt_queue_max_entries`
 - `prompt_queue_preview_entries`
@@ -45,6 +47,18 @@ fields are:
 - `status_idle_marker`
 - `history_max_len`
 - `line_max_len`
+
+Native output keeps the hardware cursor with the producer between writes.
+Input is read into the editor immediately; prompt edits, status and queue
+painting wait only for an unfinished ANSI/UTF-8 sequence or the configured
+handoff timeout. Complete text yields immediately; no newline, word or
+grapheme boundary is required.
+The deadline starts at the first pending frame and is not extended by further
+output or input. Producer bytes are never held for this gate. Cancellation,
+submission, stream completion and physical resize are immediate. A forced
+handoff can disrupt native autowrap or a Unicode continuation. The timeout
+bounds waiting for a producer boundary; callbacks and terminal report reads
+still run on the owner thread.
 
 Each handle owns its buffer, cursor, history, prompt state, and diagnostics.
 Call `sl:close()` when done; the Lua finalizer also closes an unclosed handle.
@@ -187,14 +201,22 @@ live scroll regions, status lines, and spinners are off; the theme is
   prompt. Transcript output starts at the existing terminal cursor; the editable
   prompt is anchored at the bottom from its first frame. Producer bytes pass
   through unchanged. Before the first frame, output uses the full terminal and
-  leaves its cursor in place between writes, preserving native autowrap and
-  Unicode clusters. Cursor reports occur at ownership and resize boundaries.
+  leaves its cursor in place between writes. That ownership continues after
+  prompt creation, preserving native autowrap and Unicode continuation until
+  an actual prompt update, resize or completion requires the cursor. Cursor
+  reports occur at ownership and resize boundaries.
+  Height shrink leaves the cursor at the bottom input row; the next producer
+  write resumes its stored output position. Cropped prompt rows are removed
+  within the reserved prompt area so growth cannot restore an old frame.
   With a prompt frame present, complete emissions containing Unicode also
-  observe the producer's actual terminal endpoint. The report request and
-  return to the editor cursor share one output batch; waiting for a reply
-  leaves the cursor at the prompt. Replies use the existing 100 ms timeout,
+  observe the producer's actual terminal endpoint while keeping the hardware
+  cursor with the producer, including while waiting for a reply. Replies use
+  the existing 100 ms timeout,
   preserving concurrent input; an unanswered report disables further probing
-  and retains estimated positions. ASCII emissions add no reports. There is
+  and retains estimated positions. LF/CR, tab and right-edge transitions also
+  observe the cursor before subsequent text. Ordinary ASCII characters add no
+  reports. Bounded transport writes preserve producer bytes and complete
+  ANSI/UTF-8 units. There is
   no grapheme buffering or renderer-specific behavior. Transcript reflow
   belongs to the terminal. The output
   margin follows the actual prompt height, including visible queue entries,

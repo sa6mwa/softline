@@ -199,6 +199,12 @@ static void term_csi(struct terminal *t, char final) {
   case 'J':
     if (a == 2)
       term_clear(t);
+    else if (a == 0) {
+      int row;
+      memset(t->cells[t->row] + t->col, ' ', (size_t)(t->cols - t->col));
+      for (row = t->row + 1; row < t->rows; row++)
+        memset(t->cells[row], ' ', (size_t)t->cols);
+    }
     break;
   case 'K':
     memset(t->cells[t->row] + t->col, ' ', (size_t)(t->cols - t->col));
@@ -1367,7 +1373,16 @@ static void test_chat_piped_input_terminal_output(const char *path) {
 struct frame_producer {
   int input;
   int ack;
+  int pending_ack;
 };
+
+static void frame_idle(sl_t *sl, void *userdata) {
+  struct frame_producer *producer = userdata;
+  (void)sl;
+  if (producer->pending_ack && --producer->pending_ack == 0) {
+    (void)write(producer->ack, "a", 1);
+  }
+}
 
 static int frame_finite_source(sl_t *sl, void *userdata, const char **bytes,
                                size_t *length) {
@@ -1387,6 +1402,15 @@ static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
   (void)event;
   if (read(producer->input, &byte, 1) != 1)
     return SL_ERROR_IO;
+  if (byte == '~') {
+    /* Pause the application while the recorder changes both its simulated
+     * terminal grid and the PTY size. Neither half may answer a cursor query
+     * using the other half's geometry. */
+    if (write(producer->ack, "a", 1) != 1 ||
+        read(producer->input, &byte, 1) != 1)
+      return SL_ERROR_IO;
+    return SL_OK;
+  }
   if (byte >= 1 && byte <= 4) {
     static const char *const queued[] = {"first", "second", "third", "fourth"};
     result = sl_prompt_queue_append(sl, queued[byte - 1]);
@@ -1419,6 +1443,15 @@ static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
     result = sl_output_stream_write(sl, span, sizeof(span) - 1);
   } else
     result = sl_output_stream_write(sl, &byte, 1);
+  if (result != SL_OK)
+    fprintf(stderr, "frame command %d failed: %d: %s\n", (int)byte, result,
+            sl_last_error(sl));
+  if (result == SL_OK && byte == '#') {
+    /* Idle runs before this iteration's outer frame update. Acknowledge on
+     * the following idle iteration, after that update has completed. */
+    producer->pending_ack = 2;
+    return SL_OK;
+  }
   if (result == SL_OK && write(producer->ack, "a", 1) != 1)
     return SL_ERROR_IO;
   return result;
@@ -1439,8 +1472,10 @@ static int frame_exchange(struct terminal *t, int commands, int ack,
     FD_SET(ack, &ready);
     if (select(max_fd + 1, &ready, NULL, NULL, &timeout) <= 0)
       continue;
-    if (FD_ISSET(t->fd, &ready) && term_read(t) < 0)
+    if (FD_ISSET(t->fd, &ready) && term_read(t) < 0) {
+      term_dump(t);
       return -1;
+    }
     if (FD_ISSET(ack, &ready))
       received = read(ack, &byte, 1) == 1;
   }
@@ -1496,12 +1531,15 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
     config.input_fd = config.output_fd = slave;
     config.prompt_theme = theme;
     config.clear_prompt_on_exit = clear;
+    config.prompt_handoff_timeout_ms = 0;
     config.prompt_queue = 1;
     config.statusline = 1;
     sl = sl_create_with_config(&config);
     producer.input = commands[0];
     producer.ack = ack[1];
+    producer.pending_ack = 0;
     if (!sl || sl_set_status_elements(sl, elements, 1) != SL_OK ||
+        sl_set_idle_callback(sl, frame_idle, &producer) != SL_OK ||
         sl_set_status_message(sl, "notice") != SL_OK ||
         sl_prompt_queue_append(sl, "queued") != SL_OK ||
         sl_output_stream_begin(sl) != SL_OK ||
@@ -1511,8 +1549,11 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       _exit(2);
     line = sl_readline(sl, "> ");
     if (!line || strcmp(line, "draft\nmore") != 0 ||
-        (!destroy && sl_output_stream_end(sl) != SL_OK))
+        (!destroy && sl_output_stream_end(sl) != SL_OK)) {
+      fprintf(stderr, "frame readline failed: line=%s error=%s\n",
+              line ? line : "(null)", sl_last_error(sl));
       _exit(3);
+    }
     sl_free_string(sl, line);
     sl_destroy(sl);
     _exit(0);
@@ -1535,9 +1576,12 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
   for (step = 0; step < 3; step++) {
     static const int fitted_widths[] = {38, 36, 40};
     size_t mark = t.raw_len;
+    ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '~') == 0,
+                "fitted frame resize barrier failed");
     ws.ws_col = (unsigned short)fitted_widths[step];
     ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "fitted frame resize failed");
     term_resize(&t, ws.ws_col, ws.ws_row);
+    ASSERT_TRUE(write(commands[1], "~", 1) == 1, "resize resume failed");
     ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0,
                 "fitted frame resize did not finish");
     ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
@@ -1562,8 +1606,11 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
     if (step > 0 && step % (int)(sizeof(source) - 1) == 0) {
       int cycle = step / (int)(sizeof(source) - 1);
       int row, shift, transcript_rows = t.scroll_bottom + 1;
+      int previous_height = t.rows;
       unsigned int scrolls;
       char transcript[MAX_ROWS][MAX_COLS + 1];
+      ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '~') == 0,
+                  "frame resize barrier failed");
       ws.ws_col = cycle % 2 ? 30 : 40;
       ws.ws_row = cycle % 3 == 0 ? 18 : cycle % 3 == 1 ? 28 : 24;
       ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "frame resize failed");
@@ -1575,10 +1622,18 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       /* Layout changes may reflow the prompt; feed guards start after that
        * frame is settled. No transcript replay is allowed during resize. */
       memset(t.guard, 0, sizeof(t.guard));
+      ASSERT_TRUE(write(commands[1], "~", 1) == 1, "resize resume failed");
       ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0,
                   "resize did not finish");
-      ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
-                  "resize displaced the editor cursor");
+      if (!((t.rows < previous_height ? t.row == t.rows - 1 && t.col == 6
+                                      : t.row <= t.scroll_bottom) &&
+            t.cursor_visible && strstr(t.cells[t.rows - 1], "more") != NULL &&
+            strstr(t.cells[t.rows - 2], "> draft") != NULL)) {
+        fprintf(stderr, "frame cycle%d cursor%d,%d bottom%d\n", cycle, t.row,
+                t.col, t.scroll_bottom);
+        term_dump(&t);
+        FAIL("resize displaced producer cursor or bottom prompt cells");
+      }
       shift = (int)(t.region_scrolls - scrolls);
       for (row = 0; row + shift < transcript_rows && row <= t.scroll_bottom;
            row++) {
@@ -1627,19 +1682,46 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
                     strstr(t.raw + mark, "\033[0K") == NULL &&
                     strstr(t.raw + mark, "\033[?25l") == NULL &&
                     strstr(t.raw + mark, "\033[?25h") == NULL &&
-                    strstr(t.raw + mark, "\033[6n") == NULL &&
                     strstr(t.raw + mark, "fixture") == NULL &&
                     strstr(t.raw + mark, "notice") == NULL &&
                     strstr(t.raw + mark, "> draft") == NULL &&
                     strstr(t.raw + mark, "queued") == NULL,
                 "feed erased or repainted an unchanged prompt frame");
+    ASSERT_TRUE(byte == '%' || byte == '@' || byte == '\n' || byte == '\r' ||
+                    t.col >= t.cols - 1 ||
+                    strstr(t.raw + mark, "\033[6n") == NULL,
+                "ordinary ASCII feed requested a cursor report");
     if (t.row == t.rows - 1)
       parked++;
-    ASSERT_TRUE(t.cursor_visible && t.col == 6,
-                "feed did not restore the editor cursor");
+    ASSERT_TRUE(t.cursor_visible && (byte == '%' || t.row <= t.scroll_bottom),
+                "feed moved the cursor away from producer output");
+    if (step == 0) {
+      size_t input_mark = t.raw_len;
+      struct timespec deadline;
+      /* Input edits may erase their own row; the other frame rows remain
+       * guarded throughout, and all feed guards resume after backspace. */
+      t.guard[1] = NULL;
+      ASSERT_TRUE(write(fd, "Z", 1) == 1 && wait_screen(&t, "moreZ", 100) == 0,
+                  "complete producer text delayed typing");
+      ASSERT_TRUE(t.row == t.rows - 1 && t.col == 7 &&
+                      strstr(t.raw + input_mark, "\033[6n") == NULL,
+                  "typing queried or misplaced the input cursor");
+      ASSERT_TRUE(write(fd, "\177", 1) == 1, "backspace input failed");
+      deadline = deadline_after(100);
+      while (strstr(t.cells[t.rows - 1], "moreZ") &&
+             before_deadline(&deadline)) {
+        if (term_read(&t) <= 0)
+          usleep(1000);
+      }
+      ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 &&
+                      strstr(t.cells[t.rows - 1], "moreZ") == NULL &&
+                      !t.frame_failure,
+                  "backspace delayed or changed another prompt row");
+      t.guard[1] = "more";
+    }
   }
-  ASSERT_TRUE(parked == 480 && t.frames > 1000,
-              "producer feeds moved the bottom-anchored prompt");
+  ASSERT_TRUE(parked == 1 && t.frames >= 480,
+              "producer feeds returned to the prompt or lost frame coverage");
   memset(t.guard, 0, sizeof(t.guard));
   {
     char before[MAX_ROWS][MAX_COLS + 1];
@@ -1730,12 +1812,15 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
     sl_config_init(&config);
     config.input_fd = config.output_fd = slave;
     config.prompt_theme = theme;
+    config.prompt_handoff_timeout_ms = 0;
     config.prompt_queue = 1;
     config.statusline = 1;
     sl = sl_create_with_config(&config);
     producer.input = commands[0];
     producer.ack = ack[1];
+    producer.pending_ack = 0;
     if (!sl || sl_set_prompt_queue(sl, 1, 4, 3) != SL_OK ||
+        sl_set_idle_callback(sl, frame_idle, &producer) != SL_OK ||
         sl_set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) !=
             SL_OK ||
         sl_set_status_elements(sl, elements, 1) != SL_OK ||

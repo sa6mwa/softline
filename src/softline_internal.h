@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SL_BUF_INITIAL 256
@@ -79,14 +80,25 @@ typedef struct sl_watch {
   void *userdata;
 } sl_watch_t;
 
+typedef struct sl_prompt_frame {
+  char *bytes;
+  size_t length;
+  size_t capacity;
+  int width, height, cache_saved, error, prompt_clipped;
+} sl_prompt_frame_t;
+
 typedef struct sl_impl {
   int input_fd;
   int output_fd;
   int screen_width;
   int live_scroll_region;
   int clear_prompt_on_exit;
+  int prompt_handoff_timeout_ms;
+  int prompt_handoff_pending;
+  struct timespec prompt_handoff_started;
   int auto_scroll_pinned;
   int output_stream_active;
+  int output_callback_active;
   int output_trailing_newlines;
   int output_ansi_state;
   /* Hold at most ESC [, 128 CSI bytes, and a terminator across writes. */
@@ -128,6 +140,7 @@ typedef struct sl_impl {
   /* Logical cursor is part of the prompt frame; this tracks whether the
    * terminal cursor currently matches it. Output may invalidate only this. */
   int rendered_cursor_valid;
+  sl_prompt_frame_t *prompt_frame;
   int rendered_width;
   int rendered_height;
   int native_prompt_rows;
@@ -136,6 +149,8 @@ typedef struct sl_impl {
   int *rendered_cols;
   int rendered_cap;
   const char *active_prompt;
+  /* Prompt prefix retained for geometry updates between readline calls. */
+  char *retained_prompt;
   int active_readline;
   int request_submit;
   int request_cancel;

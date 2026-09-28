@@ -106,6 +106,22 @@ anchored at the terminal bottom from its first frame. Rectangular viewports
 and bounds configuration are unsupported.
 Softline never implies a retained full transcript.
 
+Native writes retain the producer cursor between chunks. Prompt pixels remain
+visible; unchanged frames issue no cursor return. Input changes the editor
+model immediately. Prompt, status and queue painting waits only for an
+unfinished ANSI/UTF-8 sequence or `prompt_handoff_timeout_ms` (default 250 ms; non-negative; zero
+allows immediate handoff). Complete text yields immediately; no newline, word
+or grapheme boundary is required. The monotonic deadline starts at the first pending
+frame and is not restarted by input or producer activity. Expiry prioritizes
+responsiveness over native pending wrap and Unicode continuation. Cancellation,
+submission, stream completion and physical resize bypass the wait. The gate
+retains no producer bytes or transcript cells. Physical resize uses the cursor
+of its actual owner; if it clips the prompt, ordinary scrolling reserves the
+rows needed to keep input visible.
+Height shrink leaves the cursor at the bottom input row until the next producer
+write resumes its stored position. If the terminal retains cropped prompt rows,
+only the reserved prompt area is erased before rebuilding it.
+
 Ordinary readline width changes reconcile the old prompt's physical rows and
 cursor before updating its layout. Cursor reports locate the frame when the
 terminal supports them; only owned prompt rows are rewritten. The replacement
@@ -233,7 +249,7 @@ the editable prompt is anchored at the bottom from its first frame. Producer
 bytes pass through unchanged in a VT scroll region above the prompt. Native
 transcript text is never cached, padded, rewrapped, cleared, or replayed.
 Prompt updates compare the previous frame and patch only changed cells; output
-feeds preserve unchanged prompt cells and restore the editor cursor. The
+feeds preserve unchanged prompt cells and retain the producer cursor. The
 scroll region ends immediately above the current prompt frame.
 Resize updates prompt cells and output geometry; the terminal owns transcript
 reflow. Ending chat restores the full scroll region and clears input rows
@@ -243,14 +259,16 @@ setting it to one clears the whole prompt area and returns below the transcript.
 Ending a producer session inside an active editor retains the native prompt and
 scroll region for subsequent finite output or another stream; closing the handle
 always restores terminal state. Non-TTY sessions emit no teardown controls.
-Native feeds batch bounded chunks with cursor restoration and retry short
-writes as needed, without cursor visibility toggles or repainting unchanged
-frames. With a prompt frame present, complete bounded emissions containing
-Unicode request the actual producer cursor position before returning to the
-editor cursor in the same output batch. Replies use the existing 100 ms timeout
+Native feeds retry short writes without cursor restoration, visibility
+toggles or repainting unchanged frames. With a prompt frame present, complete
+bounded emissions containing Unicode request the actual producer cursor
+position without moving it,
+including while waiting for a reply. Replies use the existing 100 ms timeout
 and preserve concurrent user input. An unanswered report disables further
-probing and retains estimated positions. ASCII emissions do not request
-additional reports. This observes generic terminal behavior without grapheme
+probing and retains estimated positions. LF/CR, tab and right-edge transitions
+also observe the cursor before subsequent text. Ordinary ASCII characters
+request no report. Bounded transport writes preserve complete ANSI/UTF-8 units
+and every producer byte. This observes generic terminal behavior without grapheme
 buffering, renderer knowledge, or producer wrapping decisions.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
@@ -462,8 +480,8 @@ output starts next to the prompt. Native scrollback cells and spacing remain
 unchanged.
 Positions are tracked relative to the terminal bottom,
 without terminal cursor save/restore. Resize reconciliation queries the live
-input cursor to account for terminal movement and adjusts only owned prompt
-rows whose cells or placement changed. Fitted, unchanged rows are preserved.
+cursor of its actual owner to account for terminal movement and adjusts only
+owned prompt rows whose cells or placement changed. Fitted, unchanged rows are preserved.
 Width changes rebuild prompt layout. The editable prompt stays anchored at the
 bottom.
 

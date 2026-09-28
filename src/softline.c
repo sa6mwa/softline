@@ -204,6 +204,7 @@ static int sl_render_apply(sl_t *self, const char *prompt);
 static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
                                  size_t length);
 static int sl_write_cursor_pos(int fd, int row, int col);
+
 static int sl_wstr(int fd, const char *s);
 static int sl_try_pin_scroll_region(sl_t *self);
 static int sl_query_cursor_row(sl_t *self);
@@ -518,6 +519,35 @@ static int sl_write_all(int fd, const char *buf, size_t len) {
   return 0;
 }
 
+/* Compose only changed prompt cells. Producer writes never use this buffer. */
+static int sl_write_prompt(sl_impl_t *impl, const char *bytes, size_t length) {
+  sl_prompt_frame_t *frame = impl->prompt_frame;
+  size_t need;
+  if (!frame)
+    return sl_write_all(impl->output_fd, bytes, length);
+  if (length > (size_t)-1 - frame->length)
+    return -1;
+  need = frame->length + length;
+  if (need > frame->capacity) {
+    char *next;
+    size_t capacity = need < 1024 ? 1024 : need;
+    next = (char *)realloc(frame->bytes, capacity);
+    if (!next)
+      return -1;
+    frame->bytes = next;
+    frame->capacity = capacity;
+  }
+  if (length > 0)
+    memcpy(frame->bytes + frame->length, bytes, length);
+  frame->length = need;
+  return 0;
+}
+
+static int sl_write_native_controls(void *userdata, const char *bytes,
+                                    size_t length) {
+  return sl_write_prompt((sl_impl_t *)userdata, bytes, length);
+}
+
 static int sl_wstr(int fd, const char *s) {
   if (!s)
     return 0;
@@ -594,8 +624,13 @@ static int sl_write_frame_cursor(sl_impl_t *impl, int height, int row,
                                  int col) {
   char seq[64];
   int count, below;
-  if (!sl_surface_is_native(impl->output_surface))
-    return sl_write_cursor_pos(impl->output_fd, row, col);
+  if (!sl_surface_is_native(impl->output_surface)) {
+    count = snprintf(seq, sizeof(seq), "\033[%d;%dH", row < 0 ? 1 : row + 1,
+                     col < 0 ? 1 : col + 1);
+    return count > 0 && count < (int)sizeof(seq)
+               ? sl_write_prompt(impl, seq, (size_t)count)
+               : -1;
+  }
   sl_surface_native_release_cursor(impl->output_surface);
   below = height - 1 - row;
   count = snprintf(seq, sizeof(seq), "\033[65535;%dH", col + 1);
@@ -603,7 +638,7 @@ static int sl_write_frame_cursor(sl_impl_t *impl, int height, int row,
     count +=
         snprintf(seq + count, sizeof(seq) - (size_t)count, "\033[%dA", below);
   return count > 0 && count < (int)sizeof(seq)
-             ? sl_write_all(impl->output_fd, seq, (size_t)count)
+             ? sl_write_prompt(impl, seq, (size_t)count)
              : -1;
 }
 
@@ -711,7 +746,7 @@ static int sl_prompt_uses_absolute_rows(sl_impl_t *impl) {
 /* Erase with the default background so blank cells do not acquire a full-width
  * extent that the terminal can reflow into extra rows on a later shrink. */
 static int sl_clear_prompt_tail(sl_impl_t *impl) {
-  return sl_wstr(impl->output_fd, "\033[0m\033[0K");
+  return sl_write_prompt(impl, "\033[0m\033[0K", 8);
 }
 
 /* Callers position the cursor at column zero before clearing a whole row. */
@@ -756,29 +791,46 @@ static int sl_native_resize_pending(sl_impl_t *impl) {
 static int sl_native_observe_producer(sl_t *self) {
   sl_impl_t *impl = sl_impl(self);
   int observed;
-  if (!impl || impl->rendered_rows > 0 ||
-      !sl_surface_native_cursor_live(impl->output_surface))
+  struct winsize before, after;
+  if (!impl || !sl_surface_native_cursor_live(impl->output_surface) ||
+      (impl->prompt_frame && impl->prompt_frame->length > 0))
+    return -1;
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &before) != 0)
     return -1;
   observed = sl_query_cursor_row(self);
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &after) != 0 ||
+      before.ws_col != after.ws_col || before.ws_row != after.ws_row)
+    return -1;
   if (observed > 0)
-    sl_surface_native_observe(impl->output_surface, sl_terminal_columns(impl),
-                              sl_terminal_rows(impl), observed - 1,
-                              impl->probed_cursor_col);
+    sl_surface_native_observe(
+        impl->output_surface,
+        before.ws_col > 0 ? before.ws_col : sl_terminal_columns(impl),
+        before.ws_row > 0 ? before.ws_row : sl_terminal_rows(impl),
+        observed - 1, impl->probed_cursor_col);
   return observed;
 }
 
 static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
   sl_impl_t *impl = sl_impl(self);
-  int width;
+  int width, height;
+  struct winsize size;
   if (!impl || !isatty(impl->input_fd) || !isatty(impl->output_fd))
     return 0;
-  width = sl_terminal_columns(impl);
+  if (impl->prompt_frame && impl->prompt_frame->width > 0) {
+    width = impl->prompt_frame->width;
+    height = impl->prompt_frame->height;
+  } else if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0) {
+    width = size.ws_col > 0 ? size.ws_col : sl_terminal_columns(impl);
+    height = size.ws_row > 0 ? size.ws_row : sl_terminal_rows(impl);
+  } else {
+    width = sl_terminal_columns(impl);
+    height = sl_terminal_rows(impl);
+  }
   /* No editor frame exists yet, so reserve no prompt rows. */
   if (!impl->active_prompt && impl->rendered_rows == 0)
-    prompt_top = sl_terminal_rows(impl);
-  if (sl_terminal_rows(impl) < 3 || prompt_top < 2 ||
-      prompt_top > sl_terminal_rows(impl) ||
-      (prompt_top == sl_terminal_rows(impl) &&
+    prompt_top = height;
+  if (height < 3 || prompt_top < 2 || prompt_top > height ||
+      (prompt_top == height &&
        (impl->active_prompt || impl->rendered_rows > 0))) {
     sl_set_error(self, "native output needs two scroll rows above the prompt");
     return -1;
@@ -790,34 +842,41 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
       return -1;
     row = sl_query_cursor_row(self);
     col = row > 0 ? impl->probed_cursor_col : 0;
-    row = row > 0 ? row - 1
-          : impl->native_cursor_valid
-              ? sl_terminal_rows(impl) - 1 - impl->native_cursor_below
-              : 0;
+    row = row > 0                     ? row - 1
+          : impl->native_cursor_valid ? height - 1 - impl->native_cursor_below
+                                      : 0;
     if (row < 0)
       row = 0;
     impl->output_surface = sl_surface_create_native(
         impl->output_fd, width, prompt_top, row, col, sl_codepoint_width);
     if (!impl->output_surface && !was_raw)
       sl_disable_raw(self);
+    sl_surface_set_control_writer(impl->output_surface,
+                                  sl_write_native_controls, impl);
     return impl->output_surface ? 0 : -1;
   }
   /* A readline width hint cannot move a live, full-terminal producer cursor. */
   if (sl_surface_native_cursor_live(impl->output_surface) &&
-      prompt_top == sl_terminal_rows(impl) &&
+      prompt_top == height &&
       sl_surface_matches(impl->output_surface, width, prompt_top))
     return 0;
   {
-    int observed = sl_native_observe_producer(self);
+    int observed = 0;
     int col, row, result;
+    int producer_live = sl_surface_native_cursor_live(impl->output_surface);
+    /* Editor resize reconciliation already observed the producer. A second
+     * report can straddle another resize and mix two geometries. */
+    if (!impl->active_prompt && impl->rendered_rows == 0)
+      observed = sl_native_observe_producer(self);
     sl_surface_native_position(impl->output_surface, NULL, &col);
-    result = sl_surface_resize(impl->output_surface, width, prompt_top);
-    if (result == 0 && observed > 0) {
+    result = sl_surface_resize(
+        impl->output_surface, width, prompt_top,
+        impl->rendered_rows > 0 ? impl->rendered_top_row : height, height);
+    if (result == 0 && (observed > 0 || producer_live)) {
       /* Margin changes home the hardware cursor. Retain the observed column
        * and the producer row after any actual prompt growth. */
       sl_surface_native_position(impl->output_surface, &row, NULL);
-      sl_surface_native_observe(impl->output_surface, width,
-                                sl_terminal_rows(impl), row, col);
+      sl_surface_native_observe(impl->output_surface, width, height, row, col);
     }
     return result;
   }
@@ -1868,9 +1927,51 @@ static void sl_render_free(sl_render_t *render) {
   render->count = 0;
 }
 
+/* Detach the owned prompt rows on the first cache mutation. Until the write
+ * commits, the prior frame remains available for a geometry retry. */
+static int sl_prompt_frame_save_cache(sl_impl_t *impl) {
+  sl_prompt_frame_t *frame = impl->prompt_frame;
+  char **lines;
+  size_t *lens;
+  int *cols;
+  int i, count;
+  if (!frame || frame->cache_saved)
+    return 0;
+  count = impl->rendered_cap > 0 ? impl->rendered_cap : 1;
+  lines = (char **)calloc((size_t)count, sizeof(*lines));
+  lens = (size_t *)calloc((size_t)count, sizeof(*lens));
+  cols = (int *)calloc((size_t)count, sizeof(*cols));
+  if (!lines || !lens || !cols)
+    goto failed;
+  for (i = 0; i < impl->rendered_rows; i++) {
+    lens[i] = impl->rendered_lens[i];
+    cols[i] = impl->rendered_cols[i];
+    if (impl->rendered_lines[i]) {
+      lines[i] = (char *)malloc(lens[i] + 1);
+      if (!lines[i])
+        goto failed;
+      memcpy(lines[i], impl->rendered_lines[i], lens[i] + 1);
+    }
+  }
+  impl->rendered_lines = lines;
+  impl->rendered_lens = lens;
+  impl->rendered_cols = cols;
+  frame->cache_saved = 1;
+  return 0;
+failed:
+  if (lines)
+    for (i = 0; i < count; i++)
+      free(lines[i]);
+  free(lines);
+  free(lens);
+  free(cols);
+  frame->error = 1;
+  return -1;
+}
+
 static void sl_render_store_clear(sl_impl_t *impl) {
   int i;
-  if (!impl)
+  if (!impl || sl_prompt_frame_save_cache(impl) != 0)
     return;
   for (i = 0; i < impl->rendered_rows; i++)
     free(impl->rendered_lines[i]);
@@ -1925,7 +2026,8 @@ static int sl_render_store_update(sl_impl_t *impl, sl_render_t *render,
                                   int first_row, int row_count, int cursor_row,
                                   int cursor_col, int top_row) {
   int i;
-  if (sl_render_store_reserve(impl, row_count) != 0)
+  if (sl_prompt_frame_save_cache(impl) != 0 ||
+      sl_render_store_reserve(impl, row_count) != 0)
     return -1;
   for (i = 0; i < row_count; i++) {
     char *copy;
@@ -1994,6 +2096,8 @@ static int sl_render_store_reflow(sl_impl_t *impl, int width, int height,
     rows = height - (top > 0 ? top : 0);
   if (rows < 0)
     rows = 0;
+  if (sl_prompt_frame_save_cache(impl) != 0)
+    return -1;
   lines = (char **)calloc((size_t)(rows > 0 ? rows : 1), sizeof(*lines));
   lens = (size_t *)calloc((size_t)(rows > 0 ? rows : 1), sizeof(*lens));
   cols = (int *)malloc((size_t)(rows > 0 ? rows : 1) * sizeof(*cols));
@@ -3041,6 +3145,30 @@ static void sl_render_page_editor(sl_render_t *render, int limit) {
   render->count = render->editor_first + rows;
 }
 
+/* The first pending frame owns the deadline; producer activity never restarts
+ * it. Failure to read the clock falls back to an immediate handoff. */
+static int sl_prompt_handoff_remaining(const sl_impl_t *impl) {
+  struct timespec now;
+  time_t seconds;
+  long nanos;
+  int elapsed;
+  if (!impl->prompt_handoff_pending ||
+      clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return 0;
+  seconds = now.tv_sec - impl->prompt_handoff_started.tv_sec;
+  nanos = now.tv_nsec - impl->prompt_handoff_started.tv_nsec;
+  if (nanos < 0) {
+    seconds--;
+    nanos += 1000000000L;
+  }
+  if (seconds > impl->prompt_handoff_timeout_ms / 1000 ||
+      (seconds == impl->prompt_handoff_timeout_ms / 1000 &&
+       nanos / 1000000L >= impl->prompt_handoff_timeout_ms % 1000))
+    return 0;
+  elapsed = (int)seconds * 1000 + (int)(nanos / 1000000L);
+  return impl->prompt_handoff_timeout_ms - elapsed;
+}
+
 /* A retained editor frame still has physical cells after readline returns.
  * Reconcile those cells before either repainting or closing the session. */
 static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
@@ -3049,23 +3177,51 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
   struct winsize size;
   int span, height_only, old_prompt_rows, old_offset, offset, observed;
   int old_below;
+  int producer_live, producer_row;
   if (!sl_surface_is_native(impl->output_surface) || impl->rendered_rows == 0 ||
       (!sl_native_resize_pending(impl) && impl->rendered_width == width &&
        impl->rendered_height == height))
     return 0;
   span = old_prompt_rows = impl->rendered_rows;
+  producer_live = sl_surface_native_cursor_live(impl->output_surface);
+  sl_surface_native_position(impl->output_surface, &producer_row, NULL);
   height_only = impl->rendered_width == width;
   offset = old_offset = impl->rendered_cursor_row;
   observed = impl->cursor_position_probe == 1 ? sl_query_cursor_row(self) : 0;
   /* A retained frame can remain above the new bottom after terminal growth.
    * Its cached top and height identify the physical cursor we last painted. */
   old_below = impl->rendered_height - 1 - (impl->rendered_top_row + old_offset);
-  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
-      (size.ws_col != width || size.ws_row != height))
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 &&
+      size.ws_row > 0 && (size.ws_col != width || size.ws_row != height))
     return 1;
   if (!height_only)
     sl_render_reflow_geometry(impl, width, &span, &offset);
-  if (observed > 0) {
+  if (observed > 0 && producer_live) {
+    /* CPR belongs to the producer, not the editor. Its observed movement
+     * includes native reflow; the prompt follows the end of that output. */
+    int movement = observed - 1 - producer_row;
+    if (height_only) {
+      int delta = height - impl->rendered_height;
+      /* A queued LF can run after resize resets the margins and advance the
+       * producer into the prompt. That advance is not viewport movement:
+       * height-only growth cannot move existing cells by more than delta. */
+      if (delta > 0 && movement > delta)
+        movement = delta;
+      if (delta < 0 && movement < delta)
+        movement = delta;
+      if ((delta > 0 && movement < 0) || (delta < 0 && movement > 0))
+        movement = 0;
+    }
+    impl->rendered_top_row += movement;
+    /* Growing both dimensions cannot crop a frame that was already visible.
+     * Its bottom bounds the viewport shift even if queued output advanced
+     * the independently owned producer cursor during native reflow. */
+    if (width >= impl->rendered_width && height >= impl->rendered_height &&
+        impl->rendered_top_row + span > height)
+      impl->rendered_top_row = height - span;
+    sl_surface_native_observe(impl->output_surface, width, height, observed - 1,
+                              impl->probed_cursor_col);
+  } else if (observed > 0) {
     int observed_below = height - observed;
     sl_surface_native_prompt_reflow(
         impl->output_surface, observed_below - old_below + offset - old_offset);
@@ -3075,23 +3231,60 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
                                     span - old_prompt_rows);
     impl->rendered_top_row = height - span;
   }
-  if (!height_only &&
-      sl_render_store_reflow(impl, width, height, impl->rendered_top_row, span,
+  if (impl->prompt_frame && impl->rendered_top_row + span > height)
+    impl->prompt_frame->prompt_clipped = 1;
+  if (sl_render_store_reflow(impl, width, height, impl->rendered_top_row, span,
                              offset) != 0)
     return -1;
+  if (producer_live && observed > 0 && observed - 1 >= impl->rendered_top_row &&
+      observed - 1 < impl->rendered_top_row + impl->rendered_rows) {
+    /* Queued output can reach an old prompt row after native resize resets
+     * the margins. Its prefix belongs to the producer; erase only the old
+     * prompt suffix at the live cursor before scrolling that row into output.
+     * The replacement prompt must then repaint its invalidated cells. */
+    int col;
+    sl_surface_native_position(impl->output_surface, NULL, &col);
+    if (col < width && sl_clear_prompt_tail(impl) != 0)
+      return -1;
+    impl->prompt_frame->prompt_clipped = 1;
+  }
+  /* Reflow can clip input cells below the terminal while its cursor is
+   * clamped to the bottom. Their old text is then unknown, even if it fit the
+   * new width. Do not append to a cached prefix that may no longer exist. */
+  if (!producer_live && !height_only && observed > 0 &&
+      ((span != old_prompt_rows && observed == height && old_below == 0) ||
+       impl->probed_cursor_col != impl->rendered_cursor_col % width) &&
+      impl->rendered_cursor_row >= 0 &&
+      impl->rendered_cursor_row < impl->rendered_rows) {
+    int input = impl->rendered_cursor_row;
+    free(impl->rendered_lines[input]);
+    impl->rendered_lines[input] = NULL;
+    impl->rendered_lens[input] = 0;
+    impl->rendered_cols[input] = INT_MAX;
+  }
   impl->rendered_cursor_valid = 0;
   if (sl_output_surface_reconcile(
           self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0)
     return -1;
   impl->rendered_width = width;
   impl->rendered_height = height;
-  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
-      (size.ws_col != width || size.ws_row != height))
+  /* A changed geometry can require another frame attempt. DECSTBM homes the
+   * cursor, so restore producer ownership before a retry can query it. */
+  if (producer_live &&
+      sl_surface_native_resume_cursor(impl->output_surface) != 0)
+    return -1;
+  if (!producer_live &&
+      sl_write_frame_cursor(impl, height,
+                            impl->rendered_top_row + impl->rendered_cursor_row,
+                            impl->rendered_cursor_col) != 0)
+    return -1;
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 &&
+      size.ws_row > 0 && (size.ws_col != width || size.ws_row != height))
     return 1;
   return 0;
 }
 
-static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
+static int sl_render_apply_absolute_frame(sl_t *self, sl_render_t *render) {
   sl_impl_t *impl;
   int visible;
   int first;
@@ -3108,9 +3301,16 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   int height;
   int width;
   int transcript_top;
+  int previous_prompt_rows;
+  int prompt_rows;
+  int restore_producer;
+  int park_after_shrink;
+  int producer_col = 0;
+  int producer_live;
   char input_style[32];
   int input_styled;
   struct winsize size;
+  size_t controls_length;
   impl = sl_impl(self);
   if (!impl)
     return -1;
@@ -3127,12 +3327,99 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   }
   if (render->width != width)
     return 1;
+  if (impl->output_surface)
+    sl_surface_native_position(impl->output_surface, NULL, &producer_col);
+  park_after_shrink = sl_surface_is_native(impl->output_surface) &&
+                      impl->rendered_rows > 0 && height < impl->rendered_height;
+  restore_producer =
+      impl->rendered_rows > 0 && sl_surface_is_native(impl->output_surface) &&
+      (impl->rendered_width != width || impl->rendered_height != height ||
+       sl_native_resize_pending(impl)) &&
+      !park_after_shrink && impl->active_readline &&
+      (impl->output_stream_active || impl->output_callback_active) &&
+      !impl->request_cancel && !impl->request_submit &&
+      (sl_surface_native_cursor_live(impl->output_surface) || producer_col > 0);
+  producer_live = sl_surface_native_cursor_live(impl->output_surface);
+  /* Observe a new editor's producer before queued margin changes move it. */
+  if (impl->rendered_rows == 0)
+    (void)sl_native_observe_producer(self);
+  previous_prompt_rows = impl->native_prompt_rows;
   /* Stream creation must page the frame before its surface exists. */
   if (impl->output_stream_active ||
       sl_surface_is_native(impl->output_surface)) {
-    impl->native_prompt_rows = sl_native_prompt_height(impl, render);
-    sl_render_page_editor(render, sl_output_prompt_rows(impl));
+    impl->native_prompt_rows = render->count;
+    if (impl->native_prompt_rows > height - 2)
+      impl->native_prompt_rows = height - 2;
+    if (impl->native_prompt_rows < 1)
+      impl->native_prompt_rows = 1;
+    sl_render_page_editor(render, impl->native_prompt_rows);
   }
+  prompt_rows = impl->native_prompt_rows > 0 ? impl->native_prompt_rows : 1;
+  if (height > 2 && prompt_rows > height - 2)
+    prompt_rows = height - 2;
+  visible = render->count;
+  if ((impl->output_stream_active ||
+       sl_surface_is_native(impl->output_surface)) &&
+      visible > prompt_rows)
+    visible = prompt_rows;
+  if (visible > height)
+    visible = height;
+  if (impl->output_stream_active && height > 1 && visible >= height)
+    visible = height - 1;
+  if (visible < 1)
+    visible = 1;
+  first = render->cursor_row - visible + 1;
+  if (first < 0)
+    first = 0;
+  if (first > render->count - visible)
+    first = render->count - visible;
+  cursor_row = render->cursor_row - first;
+  if (cursor_row < 0)
+    cursor_row = 0;
+  if (cursor_row >= visible)
+    cursor_row = visible - 1;
+  top = height - visible;
+  transcript_top =
+      (impl->output_stream_active || sl_surface_is_native(impl->output_surface))
+          ? height - prompt_rows
+          : top;
+  if (sl_surface_native_cursor_live(impl->output_surface) &&
+      (impl->rendered_width != width || impl->rendered_height != height ||
+       sl_native_resize_pending(impl) ||
+       !sl_render_visible_equal(impl, render, first, visible, cursor_row,
+                                render->cursor_col, top))) {
+    /* A resize changes the terminal's cursor/geometry independently. Handle
+     * it now; edits wait only for an unfinished sequence or their deadline. */
+    int resizing = impl->rendered_width != width ||
+                   impl->rendered_height != height ||
+                   sl_native_resize_pending(impl);
+    if (!resizing && impl->rendered_rows > 0 && impl->active_readline &&
+        (impl->output_stream_active || impl->output_callback_active) &&
+        !impl->request_cancel && !impl->request_submit &&
+        !sl_surface_native_handoff_safe(impl->output_surface)) {
+      if (!impl->prompt_handoff_pending) {
+        impl->prompt_handoff_pending =
+            clock_gettime(CLOCK_MONOTONIC, &impl->prompt_handoff_started) == 0;
+      }
+      if (sl_prompt_handoff_remaining(impl) > 0) {
+        impl->native_prompt_rows = previous_prompt_rows;
+        return 0;
+      }
+    }
+    /* At unchanged geometry the tracker and Unicode endpoint reports already
+     * locate output. Input must not wait for another terminal query. */
+    /* Changing panel height also changes margins. Observe that endpoint
+     * before DECSTBM homes it; ordinary edits still issue no extra report. */
+    if (!resizing && visible != impl->rendered_rows) {
+      (void)sl_native_observe_producer(self);
+      if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 &&
+          size.ws_row > 0 && (size.ws_col != width || size.ws_row != height))
+        return 1;
+    }
+    if (sl_write_prompt(impl, "\033[0m", 4) != 0)
+      return -1;
+  }
+  impl->prompt_handoff_pending = 0;
   if (sl_surface_is_native(impl->output_surface) && impl->rendered_rows > 0 &&
       (sl_native_resize_pending(impl) || impl->rendered_width != width ||
        impl->rendered_height != height)) {
@@ -3162,32 +3449,6 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
     }
     sl_render_store_clear(impl);
   }
-  visible = render->count;
-  if ((impl->output_stream_active ||
-       sl_surface_is_native(impl->output_surface)) &&
-      visible > sl_output_prompt_rows(impl))
-    visible = sl_output_prompt_rows(impl);
-  if (visible > height)
-    visible = height;
-  if (impl->output_stream_active && height > 1 && visible >= height)
-    visible = height - 1;
-  if (visible < 1)
-    visible = 1;
-  first = render->cursor_row - visible + 1;
-  if (first < 0)
-    first = 0;
-  if (first > render->count - visible)
-    first = render->count - visible;
-  cursor_row = render->cursor_row - first;
-  if (cursor_row < 0)
-    cursor_row = 0;
-  if (cursor_row >= visible)
-    cursor_row = visible - 1;
-  top = sl_prompt_top(impl, visible);
-  transcript_top =
-      (impl->output_stream_active || sl_surface_is_native(impl->output_surface))
-          ? sl_prompt_top(impl, sl_output_prompt_rows(impl))
-          : top;
   if ((impl->output_stream_active || impl->output_surface) &&
       (!impl->output_surface ||
        !sl_surface_matches(impl->output_surface, width, transcript_top))) {
@@ -3199,14 +3460,56 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   }
   if (impl->rendered_rows == 0)
     (void)sl_native_observe_producer(self);
+  if (impl->prompt_frame->prompt_clipped) {
+    /* Shrink can retain cropped editor rows below the visible screen. Erase
+     * from the newly reserved prompt boundary to the end of the display so
+     * growing again cannot resurrect that old frame. Transcript rows above
+     * the boundary remain untouched. */
+    if (sl_write_frame_cursor(impl, height, transcript_top, 0) != 0 ||
+        sl_write_prompt(impl, "\033[0m\033[0J", 8) != 0)
+      return -1;
+    for (i = 0; i < impl->rendered_rows; i++) {
+      free(impl->rendered_lines[i]);
+      impl->rendered_lines[i] = NULL;
+      impl->rendered_lens[i] = 0;
+      impl->rendered_cols[i] = INT_MAX;
+    }
+  }
+  /* Layout and cursor offsets must use the same size. Native reflow may run
+   * during a cursor report or margin update; rebuild before touching cells. */
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 &&
+      size.ws_row > 0 && (size.ws_col != width || size.ws_row != height)) {
+    /* DECSTBM homes the cursor. A retry must observe its actual owner, not
+     * mistake that home position for the editor or producer endpoint. */
+    if (producer_live) {
+      if (!sl_surface_native_cursor_live(impl->output_surface) &&
+          sl_surface_native_resume_cursor(impl->output_surface) != 0)
+        return -1;
+    } else if (sl_write_frame_cursor(impl, height, top + cursor_row,
+                                     render->cursor_col) != 0)
+      return -1;
+    return 1;
+  }
   if (sl_render_visible_equal(impl, render, first, visible, cursor_row,
                               render->cursor_col, top)) {
-    if (!impl->rendered_cursor_valid) {
+    if (!impl->rendered_cursor_valid &&
+        (park_after_shrink ||
+         !sl_surface_native_cursor_live(impl->output_surface) ||
+         (!impl->output_stream_active && !impl->output_callback_active) ||
+         !impl->active_readline)) {
+      (void)sl_native_observe_producer(self);
+      if (sl_write_prompt(impl, "\033[0m", 4) != 0)
+        return -1;
       if (sl_write_frame_cursor(impl, height, top + cursor_row,
                                 render->cursor_col) != 0 ||
           sl_show_cursor(impl) != 0)
         return -1;
       impl->rendered_cursor_valid = 1;
+    }
+    if (restore_producer) {
+      if (sl_surface_native_resume_cursor(impl->output_surface) != 0)
+        return -1;
+      impl->rendered_cursor_valid = 0;
     }
     impl->rendered_width = width;
     impl->rendered_height = height;
@@ -3227,6 +3530,7 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
       sl_scroll_region_up(impl, 0, old_top - 1, old_top - top) != 0)
     return -1;
 
+  controls_length = impl->prompt_frame->length;
   for (i = 0; rc == 0 && i < visible; i++) {
     int render_row;
     int old_row;
@@ -3261,8 +3565,8 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
             sl_clear_prompt_row(impl) != 0)
           rc = -1;
         if (rc == 0 && render->rows[render_row].len > 0 &&
-            sl_write_all(impl->output_fd, render->rows[render_row].text,
-                         render->rows[render_row].len) != 0)
+            sl_write_prompt(impl, render->rows[render_row].text,
+                            render->rows[render_row].len) != 0)
           rc = -1;
         current_row = i;
         current_col = render->rows[render_row].cols;
@@ -3272,9 +3576,8 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
             rc = -1;
         }
         if (rc == 0 && prefix_len < render->rows[render_row].len &&
-            sl_write_all(impl->output_fd,
-                         render->rows[render_row].text + prefix_len,
-                         render->rows[render_row].len - prefix_len) != 0)
+            sl_write_prompt(impl, render->rows[render_row].text + prefix_len,
+                            render->rows[render_row].len - prefix_len) != 0)
           rc = -1;
         current_row = i;
         current_col = render->rows[render_row].cols;
@@ -3301,6 +3604,19 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
       sl_write_frame_cursor(impl, height, top + cursor_row,
                             render->cursor_col) != 0)
     rc = -1;
+  if (rc == 0 && ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
+      size.ws_col > 0 && size.ws_row > 0 &&
+      (size.ws_col != width || size.ws_row != height)) {
+    impl->prompt_frame->length = controls_length;
+    if (producer_live) {
+      if (!sl_surface_native_cursor_live(impl->output_surface) &&
+          sl_surface_native_resume_cursor(impl->output_surface) != 0)
+        return -1;
+    } else if (sl_write_frame_cursor(impl, height, top + cursor_row,
+                                     render->cursor_col) != 0)
+      return -1;
+    return 1;
+  }
   if (rc == 0 && sl_show_cursor(impl) != 0)
     rc = -1;
   if (rc == 0 &&
@@ -3309,6 +3625,11 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
     sl_set_error(self, "out of memory while storing terminal render state");
     rc = -1;
   }
+  if (rc == 0 && restore_producer) {
+    if (sl_surface_native_resume_cursor(impl->output_surface) != 0)
+      rc = -1;
+    impl->rendered_cursor_valid = 0;
+  }
   if (rc == 0) {
     impl->rendered_width = width;
     impl->rendered_height = height;
@@ -3316,6 +3637,76 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   if (rc != 0)
     (void)sl_show_cursor(impl);
   return rc;
+}
+
+/* Commit cursor, margins and changed prompt cells together. No producer text
+ * passes through this frame, and unchanged frames remain empty. */
+static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
+  sl_impl_t *impl = sl_impl(self);
+  sl_impl_t previous = *impl;
+  sl_surface_t *surface_previous;
+  sl_prompt_frame_t frame;
+  struct winsize size;
+  int result;
+  surface_previous = sl_surface_checkpoint(impl->output_surface);
+  if (impl->output_surface && !surface_previous)
+    return -1;
+  memset(&frame, 0, sizeof(frame));
+  frame.width = render->width;
+  frame.height = sl_terminal_height(impl);
+  if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 &&
+      size.ws_row > 0) {
+    frame.width = size.ws_col;
+    frame.height = size.ws_row;
+  }
+  impl->prompt_frame = &frame;
+  result = sl_render_apply_absolute_frame(self, render);
+  impl->prompt_frame = NULL;
+  if (frame.error)
+    result = -1;
+  if (result == 0 && ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
+      size.ws_col > 0 && size.ws_row > 0 &&
+      (size.ws_col != frame.width || size.ws_row != frame.height))
+    result = 1;
+  if (result != 0) {
+    if (frame.cache_saved)
+      sl_render_store_clear(impl);
+    impl->rendered_lines = previous.rendered_lines;
+    impl->rendered_lens = previous.rendered_lens;
+    impl->rendered_cols = previous.rendered_cols;
+    impl->rendered_cap = previous.rendered_cap;
+    impl->rendered_rows = previous.rendered_rows;
+    impl->rendered_editor_first = previous.rendered_editor_first;
+    impl->rendered_top_row = previous.rendered_top_row;
+    impl->rendered_cursor_row = previous.rendered_cursor_row;
+    impl->rendered_cursor_col = previous.rendered_cursor_col;
+    impl->rendered_cursor_valid = previous.rendered_cursor_valid;
+    impl->rendered_width = previous.rendered_width;
+    impl->rendered_height = previous.rendered_height;
+    impl->native_prompt_rows = previous.native_prompt_rows;
+    sl_surface_rollback(impl->output_surface, surface_previous);
+  } else {
+    if (frame.length > 0 &&
+        sl_write_all(impl->output_fd, frame.bytes, frame.length) != 0)
+      result = -1;
+    /* A write can still be queued when the next physical resize arrives.
+     * Fence geometry updates before treating their cells as displayed. CPR
+     * does not move the cursor or disturb native pending wrap. */
+    if (result == 0 && frame.length > 0 &&
+        (previous.rendered_width != frame.width ||
+         previous.rendered_height != frame.height)) {
+      (void)sl_query_cursor_row(self);
+      if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 &&
+          size.ws_row > 0 &&
+          (size.ws_col != frame.width || size.ws_row != frame.height))
+        result = 1;
+    }
+    if (frame.cache_saved)
+      sl_render_store_clear(&previous);
+  }
+  sl_surface_discard_checkpoint(surface_previous);
+  free(frame.bytes);
+  return result;
 }
 
 static int sl_render_apply(sl_t *self, const char *prompt) {
@@ -3428,12 +3819,20 @@ retry:
 static int sl_native_session_close(sl_t *self) {
   sl_impl_t *impl = sl_impl(self);
   int prompt_row = -1;
+  int had_editor = impl->rendered_rows > 0;
   int i, row, col;
   if (impl->rendered_rows > 0) {
     int result = 1;
-    for (i = 0; i < 3 && result == 1; i++)
-      result = sl_native_reconcile_rendered_frame(
-          self, sl_terminal_columns(impl), sl_terminal_rows(impl));
+    if (impl->retained_prompt && sl_native_resize_pending(impl)) {
+      const char *active = impl->active_prompt;
+      impl->active_prompt = impl->retained_prompt;
+      result = sl_render_apply(self, impl->retained_prompt);
+      impl->active_prompt = active;
+    } else {
+      for (i = 0; i < 3 && result == 1; i++)
+        result = sl_native_reconcile_rendered_frame(
+            self, sl_terminal_columns(impl), sl_terminal_rows(impl));
+    }
     if (result != 0)
       return -1;
   }
@@ -3444,6 +3843,8 @@ static int sl_native_session_close(sl_t *self) {
     } else {
       (void)sl_native_observe_producer(self);
     }
+    if (!impl->clear_prompt_on_exit && had_editor)
+      prompt_row = sl_terminal_rows(impl) - 1;
   }
   if (!impl->clear_prompt_on_exit && impl->rendered_rows > 0) {
     prompt_row = impl->rendered_top_row + impl->rendered_cursor_row;
@@ -3756,16 +4157,15 @@ static int sl_prepare_native_output(sl_t *self) {
                         &old_terminal_rows);
     if (old_width != sl_terminal_width(impl) ||
         old_terminal_rows != sl_terminal_rows(impl)) {
-      if (impl->rendered_rows > 0) {
-        int attempt, result = 1;
-        for (attempt = 0; attempt < 3 && result == 1; attempt++)
-          result = sl_native_reconcile_rendered_frame(
-              self, sl_terminal_columns(impl), sl_terminal_rows(impl));
-        if (result != 0) {
-          sl_set_error(self,
-                       "failed to reconcile retained prompt after resize");
+      if (impl->rendered_rows > 0 && impl->retained_prompt) {
+        /* The retained editor uses the same MVU renderer when native reflow
+         * clips or moves its cells. Producer bytes are not retained. */
+        int rendered;
+        impl->active_prompt = impl->retained_prompt;
+        rendered = sl_render_apply(self, impl->retained_prompt);
+        impl->active_prompt = NULL;
+        if (rendered != 0)
           return SL_ERROR_IO;
-        }
       } else {
         /* No editor cells exist to reserve below the output cursor. */
         if (sl_output_surface_reconcile(self, sl_terminal_rows(impl)) != 0) {
@@ -3792,6 +4192,7 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
     return result;
   prompt_top = sl_prompt_top(impl, sl_output_prompt_rows(impl));
   result = SL_OK;
+  impl->output_callback_active = 1;
   for (;;) {
     const char *bytes;
     size_t length;
@@ -3824,6 +4225,7 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
       break;
     }
   }
+  impl->output_callback_active = 0;
   if (result == SL_OK && !sl_surface_complete(impl->output_surface)) {
     sl_set_error(self, "output ends in an incomplete ANSI or UTF-8 sequence");
     result = SL_ERROR_INVALID;
@@ -3832,10 +4234,12 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
     sl_surface_reset_partial(impl->output_surface);
     impl->output_pending_len = 0;
   }
+  (void)sl_native_observe_producer(self);
   if (impl->active_prompt && impl->rendered_rows > 0 &&
-      sl_write_frame_cursor(impl, impl->rendered_height,
-                            impl->rendered_top_row + impl->rendered_cursor_row,
-                            impl->rendered_cursor_col) != 0)
+      (sl_write_all(impl->output_fd, "\033[0m", 4) != 0 ||
+       sl_write_frame_cursor(impl, impl->rendered_height,
+                             impl->rendered_top_row + impl->rendered_cursor_row,
+                             impl->rendered_cursor_col) != 0))
     result = SL_ERROR_IO;
   if (!impl->active_prompt)
     (void)sl_native_observe_producer(self);
@@ -4044,49 +4448,39 @@ static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
 
 static int sl_output_flush_redirected(sl_t *self, const char *bytes,
                                       size_t length) {
-  sl_impl_t *impl;
-  impl = sl_impl(self);
+  sl_impl_t *impl = sl_impl(self);
+  int col, observe;
+  size_t i;
   if (length == 0)
     return SL_OK;
   if (sl_surface_is_native(impl->output_surface)) {
-    int row = impl->rendered_rows > 0
-                  ? impl->rendered_top_row + impl->rendered_cursor_row
-                  : -1;
-    struct termios original;
-    int report = 0, temporary = 0, written;
-    size_t i;
-    if (row >= 0 && impl->cursor_position_probe >= 0) {
-      for (i = 0; i < length; i++) {
-        if ((unsigned char)bytes[i] >= 128u) {
-          report = 1;
-          break;
-        }
-      }
-    }
-    if (report) {
-      temporary = sl_cursor_report_begin(self, &original);
-      if (temporary < 0)
-        return SL_ERROR_IO;
-    }
-    /* The terminal reports the producer endpoint, then immediately returns
-     * to the prompt in this same batch. Never wait with its cursor displaced.
-     */
-    written = sl_surface_native_write(impl->output_surface, bytes, length, row,
-                                      impl->rendered_cursor_col, report);
-    if (written == 0 && report) {
-      int observed = sl_read_cursor_report(self, 0);
-      if (observed > 0 &&
-          !sl_surface_native_resize_pending(impl->output_surface))
-        sl_surface_native_observe_write(impl->output_surface, observed - 1,
-                                        impl->probed_cursor_col);
-    }
-    if (report && sl_cursor_report_end(self, &original, temporary) != 0)
+    if (sl_surface_native_resize_pending(impl->output_surface) &&
+        sl_prepare_native_output(self) != SL_OK)
       return SL_ERROR_IO;
-    if (written != 0) {
+    if (sl_surface_native_write(impl->output_surface, bytes, length) != 0) {
       sl_set_error(self, "failed to write native output");
       return SL_ERROR_IO;
     }
-    impl->rendered_cursor_valid = row >= 0;
+    impl->rendered_cursor_valid = 0;
+    /* Fence row transitions before another write can enter prompt cells
+     * under margins reset by native resize. Reports leave the producer
+     * cursor in place; ordinary ASCII characters require no round trip. */
+    sl_surface_native_position(impl->output_surface, NULL, &col);
+    observe = col >= sl_terminal_columns(impl);
+    for (i = 0; !observe && i < length; i++) {
+      if ((unsigned char)bytes[i] >= 128u || bytes[i] == '\n' ||
+          bytes[i] == '\r' || bytes[i] == '\t')
+        observe = 1;
+    }
+    if (impl->rendered_rows > 0 &&
+        (observe || sl_surface_native_resize_pending(impl->output_surface))) {
+      if (sl_surface_native_resize_pending(impl->output_surface)) {
+        if (sl_prepare_native_output(self) != SL_OK)
+          return SL_ERROR_IO;
+      } else {
+        (void)sl_native_observe_producer(self);
+      }
+    }
   } else if (sl_write_all(impl->output_fd, bytes, length) != 0) {
     sl_set_error(self, "failed to write live output");
     return SL_ERROR_IO;
@@ -4100,16 +4494,31 @@ static int sl_output_write_validated(sl_t *self, const char *bytes,
   sl_impl_t *impl;
   int result;
   char ready[4096];
-  size_t ready_len;
+  size_t ready_len, budget = sizeof(ready);
   size_t i;
   impl = sl_impl(self);
   ready_len = 0;
   for (i = 0; i < length; i++) {
     size_t accepted;
-    if (ready_len > sizeof(ready) - sizeof(impl->output_pending)) {
+    if (ready_len >= budget ||
+        ready_len > sizeof(ready) - sizeof(impl->output_pending)) {
       if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
         return SL_ERROR_IO;
       ready_len = 0;
+    }
+    if (ready_len == 0) {
+      budget = sizeof(ready);
+      if (impl->rendered_rows > 0 &&
+          sl_surface_is_native(impl->output_surface)) {
+        int width, col, remaining;
+        sl_surface_geometry(impl->output_surface, &width, NULL, NULL);
+        sl_surface_native_position(impl->output_surface, NULL, &col);
+        remaining = width - col;
+        if (remaining <= 0)
+          remaining = width;
+        if (remaining > 0 && (size_t)remaining < budget)
+          budget = (size_t)remaining;
+      }
     }
 
     result = sl_surface_validate(impl->output_surface, bytes + i, 1, &accepted);
@@ -4117,6 +4526,11 @@ static int sl_output_write_validated(sl_t *self, const char *bytes,
       impl->output_pending_len = 0;
       if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
         return SL_ERROR_IO;
+      if (sl_surface_is_native(impl->output_surface)) {
+        if (sl_write_all(impl->output_fd, "\033[0m", 4) != 0)
+          return SL_ERROR_IO;
+        sl_surface_native_release_cursor(impl->output_surface);
+      }
       sl_set_error(
           self, "live output contains an unsupported or invalid byte sequence");
       return SL_ERROR_INVALID;
@@ -4149,6 +4563,15 @@ static int sl_output_write_validated(sl_t *self, const char *bytes,
         ready_len = 0;
       }
       ready[ready_len++] = bytes[i];
+    }
+    /* Bound queued row transitions within a producer call. This splits only
+     * transport writes: complete ANSI/UTF-8 units and the producer's bytes
+     * remain unchanged, with no inserted wrapping or retained transcript. */
+    if (impl->rendered_rows > 0 && sl_surface_is_native(impl->output_surface) &&
+        (bytes[i] == '\n' || bytes[i] == '\r' || bytes[i] == '\t')) {
+      if (sl_output_flush_redirected(self, ready, ready_len) != SL_OK)
+        return SL_ERROR_IO;
+      ready_len = 0;
     }
   }
   return sl_output_flush_redirected(self, ready, ready_len);
@@ -4637,6 +5060,13 @@ static ssize_t sl_read_input_byte(sl_t *self, char *ch, int timeout_ms) {
        (impl->statusline.enabled && impl->statusline.spinner &&
         impl->statusline.busy)))
     poll_timeout_ms = SL_UI_TICK_CADENCE_MS;
+  /* Wake the outer editor loop at the deadline. A key or UTF-8 sequence
+   * already being decoded keeps its existing bounded continuation wait. */
+  if (timeout_ms < 0 && impl->prompt_handoff_pending) {
+    int remaining = sl_prompt_handoff_remaining(impl);
+    if (poll_timeout_ms < 0 || remaining < poll_timeout_ms)
+      poll_timeout_ms = remaining;
+  }
   if (count == 1)
     return sl_read_terminal_byte(impl, ch, poll_timeout_ms);
   deadline_valid = timeout_ms > 0 && gettimeofday(&deadline_started, NULL) == 0;
@@ -5658,6 +6088,19 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   impl->history_edit = NULL;
   if (!sl_surface_is_native(impl->output_surface))
     sl_render_store_clear(impl);
+  {
+    char *copy = sl_strdup(prompt);
+    if (!copy) {
+      impl->active_readline = 0;
+      sl_disable_bracketed_paste(impl);
+      sl_disable_raw(self);
+      sl_set_error(self, "failed to retain prompt prefix");
+      sl_set_readline_status(self, SL_READLINE_ERROR);
+      return NULL;
+    }
+    free(impl->retained_prompt);
+    impl->retained_prompt = copy;
+  }
   impl->active_prompt = prompt;
   if (sl_render_apply(self, prompt) != 0) {
     impl->active_prompt = NULL;
@@ -6158,6 +6601,7 @@ static void sl_destroy_method(sl_t *self) {
     sl_prompt_queue_clear_raw(&impl->prompt_queue);
     sl_statusline_clear(&impl->statusline);
     free(impl->quoted_prompt_prefix);
+    free(impl->retained_prompt);
     free(impl->status_message);
     free(impl->status_message_prefix);
     sl_render_store_clear(impl);
@@ -6935,6 +7379,7 @@ void sl_config_init(sl_config_t *config) {
   config->status_busy = 0;
   config->status_idle_marker = '+';
   config->clear_prompt_on_exit = 0;
+  config->prompt_handoff_timeout_ms = 250;
 }
 
 static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
@@ -6947,7 +7392,8 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   }
   if (config->history_max_len < 0 || config->screen_width < 0 ||
       config->live_scroll_region < 0 || config->clear_prompt_on_exit < 0 ||
-      config->prompt_queue < 0 || config->prompt_queue_max_entries < 1 ||
+      config->prompt_handoff_timeout_ms < 0 || config->prompt_queue < 0 ||
+      config->prompt_queue_max_entries < 1 ||
       config->prompt_queue_preview_entries < 1 ||
       config->prompt_theme < SL_PROMPT_THEME_PLAIN ||
       config->prompt_theme > SL_PROMPT_THEME_DEFAULT ||
@@ -7035,6 +7481,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   impl->line_max_len = config->line_max_len;
   impl->live_scroll_region = config->live_scroll_region;
   impl->clear_prompt_on_exit = config->clear_prompt_on_exit;
+  impl->prompt_handoff_timeout_ms = config->prompt_handoff_timeout_ms;
   impl->prompt_queue.enabled = config->prompt_queue;
   impl->prompt_queue.max_entries = config->prompt_queue_max_entries;
   impl->prompt_queue.preview_entries = config->prompt_queue_preview_entries;

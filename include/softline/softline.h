@@ -425,6 +425,15 @@ typedef struct sl_config {
    * current input row. Non-zero clears the whole prompt area and returns below
    * the transcript instead. */
   int clear_prompt_on_exit;
+  /** Maximum wait in milliseconds for an unfinished ANSI/UTF-8 sequence before
+   * painting pending input, status and queue edits. Default is 250; zero hands
+   * off immediately. Complete text yields immediately, without a newline, word
+   * or grapheme boundary. Must be non-negative. Producer bytes are never
+   * delayed. Expiry prioritizes input responsiveness over pending wrap/Unicode
+   * continuation. Cancellation, submission, stream completion and physical
+   * resize bypass the wait. Application callbacks retain their own duration;
+   * cursor-report reads retain their existing bounded wait. */
+  int prompt_handoff_timeout_ms;
 } sl_config_t;
 
 /**
@@ -588,14 +597,18 @@ struct sl {
    * prompt. A full-terminal transcript starts at the current cursor and the
    * editable prompt is anchored at the bottom from its first frame. Before that
    * frame, output uses the full terminal and leaves the producer cursor in
-   * place between writes. Native output bytes pass through unchanged; wrapping
-   * and scrollback are preserved. The output margin follows actual prompt
-   * height. At least three terminal rows are required: two output rows and one
-   * prompt row. An unfinished line clipped into scrollback continues at the
-   * first visible output row without replay. A clipped hard line boundary
-   * resumes next to the prompt; existing scrollback cells and spacing are
-   * preserved. With either descriptor off-TTY, output is validated and
-   * forwarded without terminal controls. */
+   * place between writes. The same ownership continues with a prompt frame
+   * present until an actual prompt update or completion needs the cursor.
+   * Native output bytes pass through unchanged; terminal wrapping and
+   * scrollback are preserved until a forced handoff. The output margin follows
+   * actual prompt height. At least three terminal rows are required: two output
+   * rows and one prompt row. An unfinished line clipped into scrollback
+   * continues at the first visible output row without replay. A clipped hard
+   * line boundary resumes next to the prompt; existing scrollback cells and
+   * spacing are preserved. Height shrink leaves the cursor at the bottom input
+   * row until the next producer write resumes its stored position. With either
+   * descriptor off-TTY, output is validated and forwarded without terminal
+   * controls. */
   int (*output_stream_begin)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
@@ -605,10 +618,18 @@ struct sl {
    * also fails. Native LF positioning follows the output TTY's OPOST/ONLCR
    * settings without altering producer bytes or terminal settings. With a
    * prompt frame present, complete Unicode emissions request the producer's
-   * terminal cursor position before returning to the editor cursor in the
-   * same output batch. Reply reads preserve user input and wait up to 100 ms;
-   * unanswered reports disable further probing. ASCII emissions add no
-   * reports. No grapheme buffering or renderer-specific wrapping is used. */
+   * terminal cursor position while leaving the producer cursor in
+   * place. Pending prompt changes wait only for an unfinished ANSI/UTF-8
+   * sequence or the
+   * configured prompt_handoff_timeout_ms, measured from their first request.
+   * Cancellation, submission, stream completion and physical resize bypass
+   * that wait. A forced handoff can disrupt native wrap or Unicode
+   * continuation. Reply reads preserve user input and wait up to 100 ms;
+   * unanswered reports disable further probing. LF/CR, tab and right-edge
+   * transitions also observe the cursor before subsequent text. Ordinary ASCII
+   * characters add no reports. Bounded transport writes preserve every producer
+   * byte and complete ANSI/UTF-8 units. No grapheme buffering or
+   * renderer-specific wrapping is used. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
   /** End the open session without finishing an external renderer document.
    * An active editor keeps its native prompt and scroll region for later
@@ -920,7 +941,9 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
  * row. Native transcript reflow belongs to the terminal; Softline never clears
  * or replays it. An unfinished line clipped into scrollback continues at the
  * first visible output row. A clipped hard line boundary resumes next to the
- * prompt; existing scrollback cells and spacing are preserved.
+ * prompt; existing scrollback cells and spacing are preserved. Height shrink
+ * leaves the cursor at the bottom input row until the next producer write
+ * resumes its stored position.
  * Returns SL_ERROR_INVALID if a session is already open. */
 int sl_output_stream_begin(sl_t *self);
 
@@ -931,11 +954,15 @@ int sl_output_stream_begin(sl_t *self);
  * while a successful write has emitted all complete input units. Native LF
  * positioning follows the output TTY's OPOST/ONLCR settings; producer bytes
  * and terminal settings are unchanged. With a prompt frame present, complete
- * Unicode emissions request the actual producer cursor before returning to
- * the editor cursor in the same output batch. Reply reads preserve concurrent
- * input and wait up to 100 ms; unanswered reports disable further probing.
- * ASCII emissions add no reports. No grapheme buffering or renderer-specific
- * wrapping is used. */
+ * Unicode emissions request the actual producer cursor position while leaving
+ * that cursor in place. Pending prompt changes wait only for an unfinished
+ * ANSI/UTF-8 sequence or prompt_handoff_timeout_ms. Forced handoffs can disrupt
+ * wrap or Unicode continuation. Reply reads preserve concurrent input and wait
+ * up to 100 ms; unanswered reports disable further probing. LF/CR, tab and
+ * right-edge transitions also observe the cursor before subsequent text.
+ * Ordinary ASCII characters add no reports. Bounded transport writes preserve
+ * every producer byte and complete ANSI/UTF-8 units. No grapheme buffering or
+ * renderer-specific wrapping is used. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
 /** End the output session. The caller remains responsible for finishing any

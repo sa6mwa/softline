@@ -144,6 +144,8 @@ static void test_config_init(void) {
   ASSERT_TRUE(cfg.live_scroll_region == 0, "live scroll region default");
   ASSERT_TRUE(cfg.clear_prompt_on_exit == 0,
               "preserve status UI on exit default");
+  ASSERT_TRUE(cfg.prompt_handoff_timeout_ms == 250,
+              "prompt handoff timeout default");
   ASSERT_TRUE(cfg.history_max_len == 100, "history max default");
   ASSERT_TRUE(cfg.line_max_len == 4096, "line max default");
   ASSERT_TRUE(cfg.prompt_queue == 0, "prompt queue default");
@@ -746,6 +748,10 @@ static void test_invalid_config_is_rejected(void) {
   cfg.clear_prompt_on_exit = -1;
   ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
               "negative exit clear option accepted");
+  sl_config_init(&cfg);
+  cfg.prompt_handoff_timeout_ms = -1;
+  ASSERT_TRUE(sl_create_with_config(&cfg) == NULL,
+              "negative prompt handoff timeout accepted");
   sl_config_init(&cfg);
   cfg.prompt_queue = 1;
 
@@ -9689,12 +9695,11 @@ static void test_live_output_reconciles_physical_resize(void) {
               "resized output failed");
   ASSERT_TRUE(read_live_pty_output(master_fd, output, sizeof(output)) > 0,
               "resized output missing");
-  ASSERT_TRUE(contains_bytes(output, " world\033[0m") &&
-                  !contains_bytes(output, "\0337") &&
-                  !contains_bytes(output, "\0338") &&
-                  !contains_bytes(output, "hello") &&
-                  !contains_bytes(output, "\n"),
-              "resized output replayed text or failed to restore its cursor");
+  ASSERT_TRUE(
+      contains_bytes(output, " world") && !contains_bytes(output, "\0337") &&
+          !contains_bytes(output, "\0338") &&
+          !contains_bytes(output, "hello") && !contains_bytes(output, "\n"),
+      "resized output replayed text or altered producer bytes");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
   sl_destroy(sl);
   close(slave_fd);
@@ -9809,8 +9814,8 @@ static void test_live_output_resize_continues_current_row(void) {
                   !contains_bytes(state.after_resize, "SECOND") &&
                   !contains_bytes(state.after_resize, "abcdefghijklmnop"),
               "resize replayed cached transcript text");
-  ASSERT_TRUE(contains_bytes(state.after_write, "s\033[0m") &&
-                  contains_bytes(state.after_expand_write, "t\033[0m") &&
+  ASSERT_TRUE(contains_bytes(state.after_write, "s") &&
+                  contains_bytes(state.after_expand_write, "t") &&
                   !contains_bytes(state.after_expand, "FIRST") &&
                   !contains_bytes(state.after_expand, "SECOND") &&
                   !contains_bytes(state.after_expand, "abcdefghijklmnop") &&
