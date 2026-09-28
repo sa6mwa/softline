@@ -494,7 +494,8 @@ struct sl {
   int (*cancel)(sl_t *self);
   /** Stream callback output above the active prompt. Ordinary readline clears
    * and redraws by default, or uses an enabled live scroll region after
-   * reaching the terminal bottom. Native chat retains its prompt frame.
+   * reaching the terminal bottom. Native chat retains its prompt frame and
+   * reconciles physical resize before writing each callback-produced chunk.
    * Finite output cannot overlap an open live session. Failed native finite
    * output discards partial ANSI/UTF-8 bytes; later calls start cleanly. */
   int (*print_above)(sl_t *self, sl_stream_callback_t callback, void *userdata);
@@ -895,7 +896,8 @@ int sl_cancel(sl_t *self);
 /** Write callback-produced chunks above the active prompt. Ordinary readline
  * clears and redraws by default, or uses an
  * enabled live scroll region once the prompt reaches the terminal bottom.
- * Native chat retains its prompt frame after a live session. Finite output
+ * Native chat retains its prompt frame after a live session and reconciles
+ * physical resize before writing each callback-produced chunk. Finite output
  * cannot overlap an open live session. Failed native finite output discards
  * partial ANSI/UTF-8 bytes; later calls start cleanly. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);

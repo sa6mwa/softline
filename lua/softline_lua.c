@@ -1180,6 +1180,8 @@ static int softline_lua_next_chunk(sl_t *sl, void *userdata, const char **chunk,
   return SL_OK;
 }
 
+/* Delegate finite chunks to the core's native resize reconciliation, including
+ * physical resize while a Lua source function is running. */
 static int softline_lua_print_above(lua_State *L) {
   softline_lua_handle_t *handle;
   softline_lua_stream_t stream;

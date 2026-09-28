@@ -179,6 +179,8 @@ live scroll regions, status lines, and spinners are off; the theme is
   enabled live scroll region after reaching the terminal bottom. `source` may
   be a string, an array-like table of string chunks, or a function that
   receives a 1-based chunk index and returns the next string or `nil`.
+  Native chat reconciles physical resize before each chunk, including resize
+  while a source function is running.
   Failed native finite output discards partial ANSI/UTF-8 bytes so the next
   call starts cleanly.
 - `sl:output_stream_begin()` opens one persistent output session above the

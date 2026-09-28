@@ -86,6 +86,10 @@ first editor handoff, finite-output completion, and session close; they are not
 requested per feed. Moving to an editor or temporary parked cursor releases
 producer ownership, so later writes use the stored output position. Rendering
 a prompt sets its actual margin.
+Finite callbacks and live writes share the same native geometry reconciliation.
+Finite output reconciles the retained prompt before invoking its producer and
+again after each callback returns, including EOF. A resize during a callback
+uses the same observed cursor delta as a live write.
 Updating margins after physical resize
 must not scroll the transcript again; cells clipped off the top are not
 recovered or replayed. When an unfinished line leaves the screen, its next
@@ -161,6 +165,12 @@ events. The core and Lua libraries do not import libmdf.
   Writes after a retained editor frame and repeated terminal growth resume on
   the producer's last line, including a width hint between resize and write,
   with and without prior scrollback.
+  Finite callbacks after ending a live session inside readline continue the
+  producer's last line through repeated width/height changes. Plain text,
+  multiple lines, UTF-8, and ANSI styles run with empty and filled terminals;
+  callbacks pause during a chunk and before EOF so resize cannot be handled
+  by an intervening editor iteration. The full retained transcript, bottom
+  input cursor, absence of stale prompts, and final exit cursor are checked.
   Ignored SIGINT and returning handlers leave the input mode restored before
   more output; subsequent cursor reports remain absent from the transcript and
   session close restores the original input attributes.

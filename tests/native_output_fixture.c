@@ -87,6 +87,7 @@ static int stream_chunks(const char *text, const char *chunk_text,
 }
 
 struct finite_source {
+  const char *prefix;
   const char *source;
   size_t offset;
 };
@@ -94,16 +95,115 @@ struct finite_source {
 static int finite_chunk(sl_t *sl, void *userdata, const char **bytes,
                         size_t *length) {
   struct finite_source *producer = (struct finite_source *)userdata;
+  size_t prefix_length = strlen(producer->prefix);
   (void)sl;
-  if (producer->offset < 3) {
-    *bytes = "F: " + producer->offset;
+  if (producer->offset < prefix_length) {
+    *bytes = producer->prefix + producer->offset;
     *length = 1;
   } else {
-    *bytes = producer->source + producer->offset - 3;
+    *bytes = producer->source + producer->offset - prefix_length;
     *length = **bytes ? 1 : 0;
   }
   producer->offset++;
   return SL_OK;
+}
+
+struct retained_output {
+  int commands, replies, result, started;
+  const char *source;
+};
+
+static int retained_reply(struct retained_output *state) {
+  struct winsize geometry;
+  unsigned short reply[2];
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &geometry) != 0)
+    return SL_ERROR_IO;
+  reply[0] = geometry.ws_col;
+  reply[1] = geometry.ws_row;
+  return write(state->replies, reply, sizeof(reply)) == (ssize_t)sizeof(reply)
+             ? SL_OK
+             : SL_ERROR_IO;
+}
+
+struct paused_finite {
+  struct finite_source source;
+  struct retained_output *state;
+  size_t gate_offset;
+};
+
+static int paused_chunk(sl_t *sl, void *userdata, const char **bytes,
+                        size_t *length) {
+  struct paused_finite *producer = (struct paused_finite *)userdata;
+  if (producer->source.offset == producer->gate_offset) {
+    char command;
+    if (retained_reply(producer->state) != SL_OK ||
+        read(producer->state->commands, &command, 1) != 1 || command != 'g')
+      return SL_ERROR_IO;
+  }
+  return finite_chunk(sl, &producer->source, bytes, length);
+}
+
+static void retained_idle(sl_t *sl, void *userdata) {
+  struct retained_output *state = (struct retained_output *)userdata;
+  if (state->started)
+    return;
+  state->started = 1;
+  state->result =
+      sl_output_stream_write(sl, state->source, strlen(state->source));
+  if (state->result == SL_OK)
+    state->result = sl_output_stream_end(sl);
+  while (state->result == SL_OK) {
+    char command;
+    struct paused_finite producer;
+    /* Stay in the callback while the parent resizes, so another editor
+     * iteration cannot reconcile the geometry before print_above does. */
+    if (retained_reply(state) != SL_OK ||
+        read(state->commands, &command, 1) != 1) {
+      state->result = SL_ERROR_IO;
+      break;
+    }
+    if (command == 'x')
+      break;
+    if (command != 'f' && command != 'm' && command != 'e') {
+      state->result = SL_ERROR_INVALID;
+      break;
+    }
+    producer.source.prefix = "";
+    producer.source.source = "XYZ";
+    producer.source.offset = 0;
+    producer.state = state;
+    producer.gate_offset = command == 'm' ? 1 : 3;
+    state->result = command == 'f'
+                        ? sl_print_above(sl, finite_chunk, &producer.source)
+                        : sl_print_above(sl, paused_chunk, &producer);
+  }
+  (void)sl_cancel(sl);
+}
+
+static int retained(const char *command_path, const char *reply_path,
+                    const char *source) {
+  struct retained_output state;
+  sl_t *sl;
+  char *input;
+  memset(&state, 0, sizeof(state));
+  state.commands = open(command_path, O_RDWR);
+  state.replies = open(reply_path, O_RDWR);
+  state.source = source;
+  if (state.commands < 0 || state.replies < 0)
+    return 2;
+  sl = sl_create();
+  if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+      sl_set_idle_callback(sl, retained_idle, &state) != SL_OK)
+    return 2;
+  input = sl_readline(sl, "> ");
+  if (input || sl_last_readline_status(sl) != SL_READLINE_CANCELLED ||
+      !state.started)
+    state.result = SL_ERROR;
+  sl_free_string(sl, input);
+  sl_destroy(sl);
+  close(state.commands);
+  close(state.replies);
+  return state.result == SL_OK ? 0 : 1;
 }
 
 static int gated(const char *command_path, const char *ack_path,
@@ -131,6 +231,7 @@ static int gated(const char *command_path, const char *ack_path,
       result = sl_set_screen_width(sl, 12);
     } else if (command == 'f') {
       struct finite_source producer;
+      producer.prefix = "F: ";
       producer.source = text;
       producer.offset = 0;
       result = sl_output_stream_end(sl);
@@ -163,6 +264,8 @@ static int gated(const char *command_path, const char *ack_path,
 }
 
 int main(int argc, char **argv) {
+  if (argc == 5 && strcmp(argv[1], "--finite-retained") == 0)
+    return retained(argv[2], argv[3], argv[4]);
   if (argc == 3 && strcmp(argv[1], "--interrupt") == 0)
     return interrupted(strcmp(argv[2], "handler") == 0);
   if (argc == 4 && strcmp(argv[1], "--chunks") == 0)

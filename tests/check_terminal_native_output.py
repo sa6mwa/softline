@@ -242,6 +242,116 @@ def case(fixture, build, source, prefilled=False):
         vt.pump()
 
 
+def finite_retained_case(fixture, build, source, prefilled=False):
+    direct, direct_window = terminal()
+    actual, actual_window = terminal()
+    child = None
+    if prefilled:
+        prior = ''.join(f'existing row {i:03}\r\n' for i in range(100)).encode()
+        for widget in (direct, actual):
+            vt.feed(widget, prior, len(prior))
+        vt.pump()
+    try:
+        with tempfile.TemporaryDirectory(prefix='finite-', dir=build) as work:
+            commands, replies = pathlib.Path(work, 'commands'), pathlib.Path(work, 'replies')
+            os.mkfifo(commands)
+            os.mkfifo(replies)
+            command_fd = os.open(commands, os.O_RDWR | os.O_NONBLOCK)
+            reply_fd = os.open(replies, os.O_RDWR | os.O_NONBLOCK)
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 8, 40, 0, 0))
+            terminal_pty = vt.foreign_pty(master, None, None)
+            assert terminal_pty
+            vt.set_pty(actual, terminal_pty)
+            vt.unref(terminal_pty)
+            child = subprocess.Popen([fixture, '--finite-retained', str(commands), str(replies), source],
+                                     stdin=slave, stdout=slave, stderr=slave)
+            os.close(slave)
+
+            def ack():
+                reply = b''
+                deadline = time.monotonic() + 4
+                while len(reply) < 4:
+                    vt.pump()
+                    assert child.poll() is None, 'finite fixture exited early'
+                    if select.select([reply_fd], [], [], 0)[0]:
+                        reply += os.read(reply_fd, 4 - len(reply))
+                    assert time.monotonic() < deadline, 'finite acknowledgement timed out'
+                vt.pump()
+                return struct.unpack('HH', reply)
+
+            def compare():
+                observed = full_transcript(actual)
+                assert sum(line.startswith('> ') for line in observed) == 1, ('stale finite prompt', observed)
+                assert observed[-1] == '> ', ('finite prompt is not last', observed)
+                observed.pop()
+                while observed and not observed[-1]:
+                    observed.pop()
+                expected = full_transcript(direct)
+                assert observed == expected, ('finite cursor drift', source, prefilled, expected, observed)
+                cursor = rows(actual)[1]
+                visible_row = cursor[0] - int(adjustment_value(get_adjustment(actual)))
+                assert (visible_row, cursor[1]) == (vt.row_count(actual) - 1, 2), ('finite input cursor', cursor)
+
+            try:
+                assert ack() == (40, 8)
+                payload = source.replace('\n', '\r\n').encode()
+                vt.feed(direct, payload, len(payload))
+                vt.pump()
+                compare()
+                # With prior scrollback, the producer is near the bottom and
+                # survives a four-row shrink. Sparse output starts at row zero;
+                # keep it visible so direct continuation is the right oracle.
+                dimensions = ((40, 12), (52, 16),
+                              (32, 12 if prefilled else 16),
+                              (40, 16 if prefilled else 20),
+                              (40, 12 if prefilled else 24))
+                for stage, (width, height) in enumerate(dimensions):
+                    resize(direct, direct_window, width, height)
+                    resize(actual, actual_window, width, height)
+                    command = b'm' if stage == 2 else b'e' if stage == 3 else b'f'
+                    os.write(command_fd, command)
+                    assert ack() == (width, height)
+                    first = b'X' if command == b'm' else b'XYZ'
+                    vt.feed(direct, first, len(first))
+                    vt.pump()
+                    compare()
+                    if command != b'f':
+                        # Resize while the producer callback is blocked, once
+                        # between byte chunks and once before it reports EOF.
+                        width, height = width + 8, height + 4
+                        resize(direct, direct_window, width, height)
+                        resize(actual, actual_window, width, height)
+                        os.write(command_fd, b'g')
+                        assert ack() == (width, height)
+                        if command == b'm':
+                            vt.feed(direct, b'YZ', 2)
+                            vt.pump()
+                        compare()
+                os.write(command_fd, b'x')
+                deadline = time.monotonic() + 4
+                while child.poll() is None:
+                    vt.pump()
+                    assert time.monotonic() < deadline, 'finite teardown timed out'
+                assert child.wait() == 0
+                vt.pump()
+                assert full_transcript(actual) == full_transcript(direct), ('finite teardown transcript', source)
+                cursor = rows(actual)[1]
+                visible_row = cursor[0] - int(adjustment_value(get_adjustment(actual)))
+                assert (visible_row, cursor[1]) == (vt.row_count(actual) - 1, 0), ('finite exit cursor', cursor)
+                print('PASS finite', prefilled, repr(source), flush=True)
+            finally:
+                os.close(command_fd)
+                os.close(reply_fd)
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait()
+        vt.destroy(direct_window)
+        vt.destroy(actual_window)
+        vt.pump()
+
+
 def interrupt_case(fixture, disposition):
     widget, window = terminal()
     child = None
@@ -295,6 +405,9 @@ def main():
             case(fixture, build, source, prefilled)
     for disposition in ('ignore', 'handler'):
         interrupt_case(fixture, disposition)
+    for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m'):
+        for prefilled in (False, True):
+            finite_retained_case(fixture, build, source, prefilled)
     print('Native output preserves bytes, reflow, cursor handoff, and exit.')
 
 

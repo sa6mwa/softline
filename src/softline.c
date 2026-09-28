@@ -3710,20 +3710,61 @@ static int sl_write_scroll_stream(sl_t *self, sl_stream_callback_t callback,
   }
 }
 
+/* Finite callbacks and live writes share native geometry reconciliation. */
+static int sl_prepare_native_output(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl)
+    return SL_ERROR_INVALID;
+  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
+    return SL_ERROR_IO;
+  if (!impl->output_surface) {
+    if (sl_output_surface_reconcile(
+            self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0) {
+      sl_set_error(self, "failed to resize native output surface");
+      return SL_ERROR_IO;
+    }
+  } else if (!impl->active_prompt) {
+    int old_width;
+    int old_terminal_rows;
+    sl_surface_geometry(impl->output_surface, &old_width, NULL,
+                        &old_terminal_rows);
+    if (old_width != sl_terminal_width(impl) ||
+        old_terminal_rows != sl_terminal_rows(impl)) {
+      if (impl->rendered_rows > 0) {
+        int attempt, result = 1;
+        for (attempt = 0; attempt < 3 && result == 1; attempt++)
+          result = sl_native_reconcile_rendered_frame(
+              self, sl_terminal_columns(impl), sl_terminal_rows(impl));
+        if (result != 0) {
+          sl_set_error(self,
+                       "failed to reconcile retained prompt after resize");
+          return SL_ERROR_IO;
+        }
+      } else {
+        /* No editor cells exist to reserve below the output cursor. */
+        if (sl_output_surface_reconcile(self, sl_terminal_rows(impl)) != 0) {
+          sl_set_error(self, "failed to resize native output surface");
+          return SL_ERROR_IO;
+        }
+      }
+    }
+  }
+  return SL_OK;
+}
+
 /* Finite output reuses the native cursor when a session is retained. */
 static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
-                                  void *userdata, int prompt_top) {
+                                  void *userdata) {
   sl_impl_t *impl;
   int result;
+  int prompt_top;
   impl = sl_impl(self);
   if (!impl || !callback)
     return SL_ERROR_INVALID;
-  if (!sl_surface_matches(impl->output_surface, sl_terminal_columns(impl),
-                          prompt_top) &&
-      sl_output_surface_reconcile(self, prompt_top) != 0) {
-    sl_set_error(self, "failed to size output region");
-    return SL_ERROR_IO;
-  }
+  result = sl_prepare_native_output(self);
+  if (result != SL_OK)
+    return result;
+  prompt_top = sl_prompt_top(impl, sl_output_prompt_rows(impl));
   result = SL_OK;
   for (;;) {
     const char *bytes;
@@ -3732,6 +3773,12 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
     bytes = NULL;
     length = 0;
     status = callback(self, userdata, &bytes, &length);
+    /* A producer callback may span another physical resize. */
+    if (sl_prepare_native_output(self) != SL_OK) {
+      result = SL_ERROR_IO;
+      break;
+    }
+    prompt_top = sl_prompt_top(impl, sl_output_prompt_rows(impl));
     if (status != SL_OK) {
       result = status;
       break;
@@ -3797,7 +3844,7 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
     prompt_top = sl_prompt_top(impl, sl_output_prompt_rows(impl));
     if (sl_output_surface_reconcile(self, prompt_top) != 0)
       return SL_ERROR_IO;
-    rc = sl_print_above_surface(self, callback, userdata, prompt_top);
+    rc = sl_print_above_surface(self, callback, userdata);
     if (sl_native_session_close(self) != 0)
       rc = SL_ERROR_IO;
     sl_disable_raw(self);
@@ -3818,7 +3865,7 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
       if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
         return sl_write_stream(self, callback, userdata);
       if (impl->output_surface)
-        return sl_print_above_surface(self, callback, userdata, prompt_top);
+        return sl_print_above_surface(self, callback, userdata);
       if (impl->auto_scroll_pinned && impl->active_prompt &&
           impl->rendered_rows > 0 && impl->rendered_top_row < 0) {
         impl->rendered_top_row = prompt_top;
@@ -4064,39 +4111,10 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
     return SL_OK;
   if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
     return sl_output_write_validated(self, bytes, length);
-  if (impl->active_prompt && sl_render_apply(self, impl->active_prompt) != 0)
-    return SL_ERROR_IO;
-  if (!impl->output_surface) {
-    if (sl_output_surface_reconcile(
-            self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0) {
-      sl_set_error(self, "failed to resize live output surface");
-      return SL_ERROR_IO;
-    }
-  } else if (!impl->active_prompt) {
-    int old_width;
-    int old_terminal_rows;
-    sl_surface_geometry(impl->output_surface, &old_width, NULL,
-                        &old_terminal_rows);
-    if (old_width != sl_terminal_width(impl) ||
-        old_terminal_rows != sl_terminal_rows(impl)) {
-      if (impl->rendered_rows > 0) {
-        int attempt, result = 1;
-        for (attempt = 0; attempt < 3 && result == 1; attempt++)
-          result = sl_native_reconcile_rendered_frame(
-              self, sl_terminal_columns(impl), sl_terminal_rows(impl));
-        if (result != 0) {
-          sl_set_error(self,
-                       "failed to reconcile retained prompt after resize");
-          return SL_ERROR_IO;
-        }
-      } else {
-        /* No editor cells exist to reserve below the output cursor. */
-        if (sl_output_surface_reconcile(self, sl_terminal_rows(impl)) != 0) {
-          sl_set_error(self, "failed to resize live output surface");
-          return SL_ERROR_IO;
-        }
-      }
-    }
+  {
+    int result = sl_prepare_native_output(self);
+    if (result != SL_OK)
+      return result;
   }
   return sl_output_write_validated(self, bytes, length);
 }
