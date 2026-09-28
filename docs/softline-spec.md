@@ -106,6 +106,11 @@ anchored at the terminal bottom from its first frame. Rectangular viewports
 and bounds configuration are unsupported.
 Softline never implies a retained full transcript.
 
+Ordinary readline width changes reconcile the old prompt's physical rows and
+cursor before updating its layout. Cursor reports locate the frame when the
+terminal supports them; only owned prompt rows are rewritten. The replacement
+frame uses normal terminal scrolling when it needs additional space.
+
 
 ### Prompt Queue
 

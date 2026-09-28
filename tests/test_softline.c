@@ -5689,8 +5689,8 @@ static void test_resize_reflows_without_keypress(void) {
               "idle resize did not reflow before input");
   ASSERT_TRUE(vt_contains(&screen, "   sentence"),
               "idle resize continuation was not rendered before input");
-  ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\n"),
-              "idle resize advanced the terminal scrollback");
+  /* LF between existing prompt rows is not a scroll. Assert the resulting
+   * screen and history rather than rejecting the control byte itself. */
   ASSERT_TRUE(screen.history_count == 0 &&
                   strncmp(screen.cells[18], "p> hello world", 14) == 0 &&
                   strncmp(screen.cells[19], "   sentence     ", 16) == 0,
@@ -5715,8 +5715,7 @@ static void test_resize_reflows_without_keypress(void) {
   }
   screen.cols = 40;
   vt_apply(&screen, terminal + resize_offset);
-  ASSERT_TRUE(!contains_bytes(terminal + resize_offset, "\n") &&
-                  screen.history_count == 0 &&
+  ASSERT_TRUE(screen.history_count == 0 &&
                   strncmp(screen.cells[18], "p> hello world sentence", 23) ==
                       0 &&
                   strncmp(screen.cells[19], "                ", 16) == 0,

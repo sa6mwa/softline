@@ -254,6 +254,10 @@ before making a binary compatibility commitment to independently built consumers
   emoji, combining marks, CJK, and hard line breaks, with and without prior
   scrollback. Fully visible flag lines also cover wrapping and exact-width
   endpoints.
+- Ordinary readline checks narrow and widen drafts with the caret at their
+  beginning, middle, and end. They preserve every prior transcript row and
+  compare the resized prompt with a fresh prompt at the same width, including
+  Unicode, multiple prompt rows, and existing scrollback.
 - Sink/write failure and session teardown leave a usable editor and report
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
   Native finite-output regressions reject incomplete ANSI/UTF-8 and callback

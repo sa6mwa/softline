@@ -117,6 +117,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
     set_tests_properties(softline_terminal_native_output PROPERTIES
       LABELS "integration;streaming" TIMEOUT 120)
+    if(TARGET example_simple)
+      add_test(NAME softline_terminal_readline_resize
+        COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_readline_resize.py"
+        "$<TARGET_FILE:example_simple>")
+      set_tests_properties(softline_terminal_readline_resize PROPERTIES
+        LABELS "integration" TIMEOUT 120)
+    endif()
     if(_softline_test_libmdf_supported)
       add_executable(unicode_output_fixture unicode_output_fixture.c)
       target_link_libraries(unicode_output_fixture PRIVATE softline)

@@ -1961,6 +1961,24 @@ static int sl_render_store_update(sl_impl_t *impl, sl_render_t *render,
   return 0;
 }
 
+/* Map the retained prompt and its cursor into the terminal's new width. */
+static void sl_render_reflow_geometry(sl_impl_t *impl, int width, int *span,
+                                      int *offset) {
+  int i;
+  *span = *offset = 0;
+  for (i = 0; i < impl->rendered_rows; i++) {
+    int rows = impl->rendered_cols[i] == INT_MAX
+                   ? 1
+                   : (impl->rendered_cols[i] + width - 1) / width;
+    if (rows < 1)
+      rows = 1;
+    *span += rows;
+    if (i < impl->rendered_cursor_row)
+      *offset += rows;
+  }
+  *offset += impl->rendered_cursor_col / width;
+}
+
 /* Retain unchanged physical prompt rows after native width reflow. Only
  * rows that crossed the new right margin become unknown; fitted rows keep
  * their cached cells so MVU can leave them untouched. */
@@ -3030,7 +3048,7 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
   sl_impl_t *impl = sl_impl(self);
   struct winsize size;
   int span, height_only, old_prompt_rows, old_offset, offset, observed;
-  int old_below, i;
+  int old_below;
   if (!sl_surface_is_native(impl->output_surface) || impl->rendered_rows == 0 ||
       (!sl_native_resize_pending(impl) && impl->rendered_width == width &&
        impl->rendered_height == height))
@@ -3045,21 +3063,8 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
   if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
       (size.ws_col != width || size.ws_row != height))
     return 1;
-  if (!height_only) {
-    span = 0;
-    offset = 0;
-    for (i = 0; i < old_prompt_rows; i++) {
-      int rows = impl->rendered_cols[i] == INT_MAX
-                     ? 1
-                     : (impl->rendered_cols[i] + width - 1) / width;
-      if (rows < 1)
-        rows = 1;
-      span += rows;
-      if (i < impl->rendered_cursor_row)
-        offset += rows;
-    }
-    offset += impl->rendered_cursor_col / width;
-  }
+  if (!height_only)
+    sl_render_reflow_geometry(impl, width, &span, &offset);
   if (observed > 0) {
     int observed_below = height - observed;
     sl_surface_native_prompt_reflow(
@@ -3343,6 +3348,28 @@ retry:
   }
   width = sl_terminal_width(impl);
   resizing_width = impl->rendered_rows > 0 && impl->rendered_width != width;
+  if (resizing_width) {
+    int columns = sl_terminal_columns(impl);
+    int height = sl_terminal_height(impl);
+    int span, offset, observed, top;
+    /* Locate the old frame after terminal reflow. The new layout's row count
+     * says nothing about which old row contains the hardware cursor. */
+    sl_render_reflow_geometry(impl, columns, &span, &offset);
+    observed = sl_query_cursor_row(self);
+    /* A cursor just beyond the text can be clamped to the final cell rather
+     * than reflowed onto another row. Use the physical report in that case. */
+    if (observed > 0 && impl->rendered_cursor_col > 0 &&
+        impl->rendered_cursor_col % columns == 0 &&
+        impl->probed_cursor_col == columns - 1)
+      offset--;
+    top = observed > 0 ? observed - 1 - offset : 0;
+    if (sl_render_store_reflow(impl, columns, height, top, span, offset) != 0) {
+      sl_render_free(&render);
+      sl_set_error(self, "failed to reconcile readline prompt after resize");
+      return -1;
+    }
+    impl->rendered_top_row = -1;
+  }
   if (sl_render_visible_equal(impl, &render, 0, render.count, render.cursor_row,
                               render.cursor_col, -1)) {
     impl->rendered_width = width;
@@ -3352,14 +3379,10 @@ retry:
   fd = impl->output_fd;
   rc = 0;
   old_rows = impl->rendered_rows;
-  /* A terminal may already reflow the old prompt on width change. Make room
-   * above its cursor and step through rows without advancing scrollback. */
-  if (old_rows > 0 &&
-      (sl_wchar(fd, '\r') != 0 ||
-       sl_write_cursor_up(fd, impl->rendered_cursor_row +
-                                  (resizing_width && render.count > old_rows
-                                       ? render.count - old_rows
-                                       : 0)) != 0))
+  /* Return to the first owned prompt row, then let terminal scrolling make
+   * room only when the replacement frame reaches the bottom. */
+  if (old_rows > 0 && (sl_wchar(fd, '\r') != 0 ||
+                       sl_write_cursor_up(fd, impl->rendered_cursor_row) != 0))
     rc = -1;
   max_rows = old_rows > render.count ? old_rows : render.count;
   for (i = 0; rc == 0 && i < max_rows; i++) {
@@ -3378,8 +3401,7 @@ retry:
         rc = -1;
     }
     if (rc == 0 && i + 1 < max_rows) {
-      if ((resizing_width ? sl_write_cursor_down(fd, 1)
-                          : sl_write_line_break(impl)) != 0)
+      if (sl_write_line_break(impl) != 0)
         rc = -1;
     }
   }
