@@ -71,16 +71,13 @@ ends immediately above the current prompt frame. Native producer bytes
 are written unchanged, with only bounded partial ANSI/UTF-8 parser state and
 an output cursor retained. Softline never rewraps, pads, clears, or replays
 native transcript text. Positions are distances from the terminal bottom.
-Resize reconciliation queries the live cursor and distinguishes producer
-ownership from editor ownership. An observed producer endpoint translates
-the prompt along with native output movement; prompt reflow uses only the
-known layout of its previous frame. Unchanged prompt rows that
+Resize reconciliation queries the live input cursor and combines its observed
+movement with the known layout of the old prompt. Unchanged prompt rows that
 fit the new width keep their cached cells. Width resize rebuilds only prompt
 layout; transcript reflow remains owned by the terminal. The
 producer tracks display cells since its last hard line boundary so growth can
 restore the column of a previously wrapped line without storing its text.
-Between emissions, the live cursor belongs to the producer even when a
-prompt frame is visible.
+When no prompt frame has been rendered, the live cursor belongs to the producer.
 Writes leave that cursor in place, preserving native pending wrap and Unicode
 clusters across chunks. No editor rows are reserved until a frame exists.
 A full-height region follows terminal resize without another margin command.
@@ -88,105 +85,39 @@ Cursor reports refresh the producer's bottom-relative row and column at resize,
 first editor handoff, finite-output completion, and session close. At unchanged
 geometry, the handoff corrects the logical column used by later width changes
 as well as the current cursor position. A physical resize's viewport movement
-is not counted as emitted text. When an editor frame exists, bounded Unicode
-emissions request a report after the bytes while leaving the cursor with the
-producer. Reading that report corrects codepoint-width estimates from the
-terminal's actual endpoint without a cursor return. LF/CR, tab and right-edge
-transitions also fence queued row movement before another emission. Complete
-producer calls are split into bounded transport writes at those transitions;
-ANSI/UTF-8 units and producer bytes stay intact. Ordinary ASCII characters
-request no report. The existing 100 ms timeout and
+is not counted as emitted text. When an editor frame exists, bounded emissions
+containing Unicode request a report
+after the producer bytes and before returning to the editor cursor, in the
+same output batch. Reading that report leaves the cursor at the prompt and
+corrects codepoint-width estimates from the terminal's actual endpoint. ASCII
+emissions do not request additional reports. The existing 100 ms timeout and
 concurrent-input preservation apply; an unanswered report disables further
 probing and retains estimated positions. This is generic VT cursor observation,
 with no renderer-specific logic, grapheme buffering, or replay.
 Moving to an editor or temporary parked cursor releases
 producer ownership, so later writes use the stored output position. Rendering
 a prompt sets its actual margin.
-The original prompt prefix is retained for geometry updates between readline
-calls. Those updates use the same prompt renderer and editor model. If native
-reflow may have clipped input cells, their cached prefix is invalidated so a
-patch cannot append to text that is no longer there.
 Finite callbacks and live writes share the same native geometry reconciliation.
 Finite output reconciles the retained prompt before invoking its producer and
 again after each callback returns, including EOF. A resize during a callback
 uses the same observed cursor delta as a live write.
-Updating margins after physical resize preserves native transcript movement.
-A resize patches only the prompt. Height shrink leaves the caret at the bottom
-input row, and the next producer write resumes its stored output position.
-Other resize updates can resume producer ownership while output is ongoing.
-Geometry retries also restore the prior cursor owner after a
-margin command, before another cursor report. Otherwise a homed cursor would
-be mistaken for either the old prompt or the producer endpoint. At a right-edge
-endpoint, an addressed cursor is one physical cell before the logical next
-cell; its reports retain that offset until output continues. Safe, idle prompt
-frames keep their input caret.
-If the producer caret caused resize to clip the prompt, ordinary scrolling
-reserves only its actual rows before painting; cells clipped off the top are not
+Updating margins after physical resize
+must not scroll the transcript again; cells clipped off the top are not
 recovered or replayed. When an unfinished line leaves the screen, its next
 fragment resumes at the first visible output row. If the clipped position was
 at a hard line boundary, new output starts next to the prompt. Neither case
 changes cells or blank rows already in scrollback.
 A cached previous prompt frame allows
 patches of only changed cells; native feeds preserve unchanged prompt cells
-and retain the producer cursor between emissions. Erasing an owned prompt row
-uses the default background and erase-to-end from column zero. This avoids leaving a full-width
+and restore the editor cursor. Erasing an owned prompt row uses the default
+background and erase-to-end from column zero. This avoids leaving a full-width
 blank row that native terminal reflow can split when the width shrinks.
 The output margin follows the current rendered
 prompt height, with no empty queue slots or absent status-message rows. Growth
 scrolls existing output cells only enough to fit; shrink returns freed rows
 without moving transcript cells. The editor pages only at physical capacity.
-Native feeds retry short writes without cursor restoration, hiding the
-cursor, or repainting unchanged frames. Changed prompt cells are composed
-with their margin/cursor commands into one output write, using one geometry
-snapshot. If geometry changes before emission, the cached prompt and bounded
-cursor metadata roll back together and the frame is rebuilt. This prompt-only
-transaction does not buffer producer bytes. Height-only resize clips the cached frame
-to the same visible rows as width resize; clipped input is repainted instead
-of reused as a known prefix. When shrinking crops editor rows below the screen,
-erase-to-end-of-display starts at the newly reserved prompt boundary so those
-rows cannot reappear on growth. It does not erase any transcript row above the
-boundary. A cursor report fences emitted geometry updates before another
-resize can reuse their cached cells.
-Queued LF/CR and tab transitions are fenced before more producer text is sent.
-Transport writes also stop at the estimated right edge, without adding or
-changing any wrapping bytes. Cursor movement caused by queued producer line feeds is kept separate from
-viewport movement: a height-only resize bounds the viewport delta by its row
-change, and simultaneous growth cannot move a previously visible prompt past
-the new bottom. A height shrink leaves the cursor at the bottom input row;
-the next producer write resumes its stored output position.
-
-### Pending prompt updates
-
-Input is processed into the editor model immediately. Painting a changed
-prompt, status or queue frame while the producer owns the cursor waits for an
-unfinished ANSI/UTF-8 sequence to finish, or for `prompt_handoff_timeout_ms`. Its default is 250 ms; zero permits an immediate
-handoff and negative values fail configuration. Complete text yields
-immediately; no newline, word or grapheme boundary is required. The monotonic
-deadline belongs
-to the first pending frame; more input or producer activity never restarts it.
-The input loop includes that deadline when polling even with no ready watches.
-A key or UTF-8 input sequence already being decoded keeps its existing bounded
-continuation wait.
-Only input/editor state is retained; producer bytes still reach the terminal
-before the write returns. No grapheme segmentation or renderer rules are added.
-Cancellation, submission, stream completion and physical resize bypass this
-wait. The timeout bounds waiting for a producer boundary, not execution time
-of application callbacks or bounded terminal cursor-report reads.
-
-#### Review policy: forced cursor handoff
-
-On 2026-09-28 the production executive chose responsiveness over possible
-Unicode damage when a safe boundary has not arrived within the configurable
-250 ms default. Native wrap and Unicode continuation are preserved across
-uninterrupted writes. Actual prompt interaction can turn pending
-soft wrapping into a hard boundary or lose/overwrite part of a Unicode cluster.
-Completing a codepoint permits prompt interaction even if later output extends
-its Unicode cluster. This is scoped to actual prompt interaction and lifecycle/
-geometry transitions; it does not authorize per-emission cursor returns,
-producer buffering, transcript replay, save/restore or producer-specific logic.
-Reconsider if a portable mechanism can preserve continuation during an arbitrary
-cursor handoff within these constraints. The older limitation of recovering
-Unicode row counts after scrolling from a clamped cursor report is separate.
+Native feeds batch bounded chunks with cursor restoration, retrying short
+writes as needed, without hiding the cursor or repainting unchanged frames.
 Ending chat restores the full scroll
 region and clears only input rows, preserving queue and status rows. The cursor
 stays at column zero on the current input row without a newline or scroll.
@@ -246,19 +177,6 @@ before making a binary compatibility commitment to independently built consumers
 
 ## Verification
 
-- A paused one-byte producer verifies immediate emission and unchanged prompt
-  pixels while the hardware cursor stays in output. ASCII, combining marks,
-  split flags and joined emoji continue natively with empty and filled history.
-  Pending input, status and queue edits render immediately for complete text; timeout
-  cases cover the 250 ms default, custom values and zero, with incomplete
-  sequences unable to postpone the deadline. Cancellation/submission, stream end,
-  shrink/grow and both exit policies preserve input and restore termios. Forced
-  Unicode handoffs may disrupt the cluster but preserve earlier ASCII and
-  subsequent plain text. Resize checks await completed application frames as
-  well as their bottom prompt pixels. Queued line-feed cases deliberately
-  resize the terminal before it consumes producer bytes, with and without
-  history, and reject duplicated prompt/status rows on growth.
-
 - Real VTE PTY responses and tmux compare chunked producer output and the exit
   cursor with direct terminal bytes. Cases cover exact-width ASCII, combining
   marks, flags, joined emoji, variation selectors, and keycaps. VTE also checks
@@ -289,14 +207,6 @@ before making a binary compatibility commitment to independently built consumers
   changing both width and height, with an editable draft and existing
   scrollback, under plain and Gruvbox prompts. It verifies complete paragraphs
   remain in order and the draft remains visible.
-  The handoff regression additionally runs four response turns through rapid
-  height-only and simultaneous width/height round trips without waiting for
-  the prompt to settle between sizes. It verifies every heading and paragraph
-  from all preceding turns as well as immediate character-by-character input.
-  Paused-producer cases resize with a queued newline before the terminal reads
-  it, then append short text, complete rows, tabs, and several lines. One-byte
-  writes and whole producer chunks run with and without prior scrollback;
-  producer rows, status text, and the bottom prompt must appear exactly once.
 - A PTY test writes `Hello`, pauses, and observes it above an editable prompt
   before EOF. Later writes of ` world` continue the same line. Typing and
   queue edits remain responsive between writes.
@@ -327,17 +237,17 @@ before making a binary compatibility commitment to independently built consumers
 - The tmux live-example check spaces resize commands so each PTY notification
   settles. [tmux queues notifications for 250 ms](https://github.com/tmux/tmux/blob/3.6/server-client.c#L2647-L2713)
   while changing its grid immediately. Faster successive resizes can leave the
-  visible grid and reported PTY geometry different while output is emitted.
-  A separate `--queued-resize` regression in `tests/check_terminal_resize.py`
-  omits those delays and checks the draft, complete response, cursor visibility
-  and exit behavior. Both run in the standard test suite. There is no
-  tmux-specific production workaround or transcript replay.
+  visible grid and reported PTY geometry different while output is emitted;
+  that case can still corrupt output. The `--queued-resize` diagnostic in
+  `tests/check_terminal_resize.py` retains this reproducer. The standard paced
+  test does not prove that diagnostic passes. There is no tmux-specific
+  production workaround or transcript replay.
 - The Unicode output matrix compares actual raw and libmdf sink emissions
   through direct PTYs and active native prompts. It checks complete producer
   byte equality, fragmented UTF-8, style transitions, width growth, pre-existing
   scrollback, and input restoration after Ctrl-C. A private endpoint test also
-  checks the actual producer endpoint without a return to the prompt and that
-  a previous line's observed movement cannot shift a new line's column.
+  checks that reports precede the return to the prompt in the output batch and
+  that a previous line's observed movement cannot shift a new line's column.
 - First-handoff checks submit an empty prompt after producer-owned output,
   repeatedly shrink and grow width and height, and append output at each size.
   They compare against direct terminal bytes for ASCII, styled flags, joined

@@ -56,8 +56,6 @@ get_row = bind(vte, "vte_terminal_get_text_range", PTR,
 free = bind(glib, "g_free", None, [PTR])
 unref = bind(ctypes.CDLL("libgobject-2.0.so.0"), "g_object_unref", None, [PTR])
 iteration = bind(glib, "g_main_context_iteration", INT, [PTR, INT])
-get_adjustment = bind(gtk, "gtk_scrollable_get_vadjustment", PTR, [PTR])
-adjustment_value = bind(gtk, "gtk_adjustment_get_value", ctypes.c_double, [PTR])
 
 
 def pump():
@@ -69,14 +67,13 @@ def pump():
 
 
 def physical_rows(terminal):
-    # The producer cursor may be above the prompt. Include the whole visible
-    # screen and history, independently of that cursor's current owner.
-    last = int(adjustment_value(get_adjustment(terminal))) + row_count(terminal)
+    col, row = LONG(), LONG()
+    cursor(terminal, ctypes.byref(col), ctypes.byref(row))
     result = []
     # Query one physical row at a time: a whole-buffer text export joins soft
     # wraps, hiding exactly the extra blank rows this regression must observe.
-    for index in range(last):
-        value = get_row(terminal, index, 0, index, columns(terminal),
+    for index in range(row.value + 1):
+        value = get_row(terminal, index, 0, index, columns(terminal) - 1,
                         None, None, None)
         try:
             result.append(ctypes.string_at(value).decode("utf-8"))
@@ -172,10 +169,7 @@ def case(example, build, theme, height, streaming=False):
                     deadline = time.monotonic() + 0.15
                     while time.monotonic() < deadline:
                         pump()
-                # The producer may emit hard wraps at any intermediate width.
-                # Check its text across rows and its actual completion status.
-                frame = wait(lambda frame: "".join(ending.split()) in
-                             "".join("".join(row.split()) for row in frame) and
+                frame = wait(lambda frame: ending in frame and
                              not any("Thinking" in row or "Reasoning" in row
                                      for row in frame))
                 actual = "".join("".join(row.split()) for row in frame)

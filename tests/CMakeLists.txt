@@ -3,10 +3,6 @@ target_link_libraries(test_softline PRIVATE softline)
 softline_apply_warnings(test_softline)
 softline_local_runtime(test_softline)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  add_executable(prompt_handoff_fixture prompt_handoff_fixture.c)
-  target_link_libraries(prompt_handoff_fixture PRIVATE softline)
-  softline_apply_warnings(prompt_handoff_fixture)
-  softline_local_runtime(prompt_handoff_fixture)
   target_link_libraries(test_softline PRIVATE util)
 endif()
 add_test(NAME softline_unit COMMAND test_softline)
@@ -115,18 +111,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     NO_CMAKE_FIND_ROOT_PATH)
   if(SOFTLINE_TEST_XVFB_RUN AND SOFTLINE_TEST_VTE)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    add_test(NAME softline_terminal_chat_handoff_resize
-      COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_handoff_resize.py"
-      "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
-    set_tests_properties(softline_terminal_chat_handoff_resize PROPERTIES
-      LABELS "integration;streaming" TIMEOUT 90)
-    add_test(NAME softline_terminal_prompt_handoff
-      COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_prompt_handoff.py"
-      "$<TARGET_FILE:prompt_handoff_fixture>" "${PROJECT_BINARY_DIR}")
-    set_tests_properties(softline_terminal_prompt_handoff PROPERTIES
-      LABELS "integration;streaming" TIMEOUT 120)
     add_test(NAME softline_terminal_native_output
       COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_native_output.py"
@@ -221,13 +205,5 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       LABELS "integration;streaming" TIMEOUT 30)
     set_tests_properties(softline_terminal_resize PROPERTIES
       LABELS "integration;streaming" TIMEOUT 90)
-    add_test(NAME softline_terminal_queued_resize
-      COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
-      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>"
-      "${PROJECT_BINARY_DIR}" "$<TARGET_FILE:terminal_resize_fixture>"
-      --queued-resize)
-    set_tests_properties(softline_terminal_queued_resize PROPERTIES
-      LABELS "integration;streaming" TIMEOUT 30)
   endif()
 endif()

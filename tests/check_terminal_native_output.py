@@ -364,7 +364,7 @@ def finite_retained_case(fixture, build, source, prefilled=False):
                 vt.pump()
                 return struct.unpack('HH', reply)
 
-            def compare(completed=True):
+            def compare():
                 observed = full_transcript(actual)
                 assert sum(line.startswith('> ') for line in observed) == 1, ('stale finite prompt', observed)
                 assert observed[-1] == '> ', ('finite prompt is not last', observed)
@@ -375,16 +375,7 @@ def finite_retained_case(fixture, build, source, prefilled=False):
                 assert observed == expected, ('finite cursor drift', source, prefilled, expected, observed)
                 cursor = rows(actual)[1]
                 visible_row = cursor[0] - int(adjustment_value(get_adjustment(actual)))
-                bottom = int(adjustment_value(get_adjustment(actual))) + vt.row_count(actual) - 1
-                value = vt.get_row(actual, bottom, 0, bottom, vt.columns(actual), None, None, None)
-                try:
-                    assert ctypes.string_at(value).decode('utf-8') == '> ', 'finite prompt left the bottom'
-                finally:
-                    vt.free(value)
-                if completed:
-                    assert (visible_row, cursor[1]) == (vt.row_count(actual) - 1, 2), ('finite input cursor', cursor)
-                else:
-                    assert 0 <= visible_row < vt.row_count(actual) - 1, ('paused producer cursor', cursor)
+                assert (visible_row, cursor[1]) == (vt.row_count(actual) - 1, 2), ('finite input cursor', cursor)
 
             try:
                 assert ack() == (40, 8)
@@ -408,7 +399,7 @@ def finite_retained_case(fixture, build, source, prefilled=False):
                     first = b'X' if command == b'm' else b'XYZ'
                     vt.feed(direct, first, len(first))
                     vt.pump()
-                    compare(completed=command == b'f')
+                    compare()
                     if command != b'f':
                         # Resize while the producer callback is blocked, once
                         # between byte chunks and once before it reports EOF.

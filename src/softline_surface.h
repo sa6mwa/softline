@@ -9,34 +9,17 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
                                        int col,
                                        int (*cell_width)(unsigned long));
 int sl_surface_is_native(const sl_surface_t *surface);
-/* Bounded cursor/parser metadata for a prompt transaction; no transcript. */
-sl_surface_t *sl_surface_checkpoint(const sl_surface_t *surface);
-void sl_surface_rollback(sl_surface_t *surface, sl_surface_t *checkpoint);
-void sl_surface_discard_checkpoint(sl_surface_t *checkpoint);
-/* Route cursor/margin commands into the owner's prompt frame. Producer bytes
- * continue to use the terminal fd directly. */
-void sl_surface_set_control_writer(sl_surface_t *surface,
-                                   int (*writer)(void *, const char *, size_t),
-                                   void *userdata);
 /* Apply the observed cursor delta to the producer; exclude prompt reflow
  * when the observed cursor belongs to an editor frame. */
 void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows);
 void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col);
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length);
-/* Only unfinished ANSI/UTF-8 sequences defer input. Complete text yields
- * immediately; this is not a grapheme or wrapping decision. */
-int sl_surface_native_handoff_safe(const sl_surface_t *surface);
-/* Resume producer ownership after a resize-only prompt update. Addressing
- * cannot restore pending wrap; retain that distinction until continuation. */
-int sl_surface_native_resume_cursor(sl_surface_t *surface);
+                            size_t length, int prompt_row, int prompt_col,
+                            int report_cursor);
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row);
 void sl_surface_destroy(sl_surface_t *surface);
-/* previous_prompt_top is the first physical editor row after native resize,
- * or the terminal height when no editor cells exist. Scroll only above it. */
-int sl_surface_resize(sl_surface_t *surface, int width, int height,
-                      int previous_prompt_top, int terminal_rows);
+int sl_surface_resize(sl_surface_t *surface, int width, int height);
 void sl_surface_geometry(const sl_surface_t *surface, int *width, int *height,
                          int *terminal_rows);
 int sl_surface_native_resize_pending(const sl_surface_t *surface);
@@ -53,7 +36,7 @@ int sl_surface_matches(const sl_surface_t *surface, int width, int height);
 int sl_surface_native_cursor_live(const sl_surface_t *surface);
 void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
                                int row, int col);
-/* Correct the predicted endpoint after an observed write using its CPR. */
+/* Correct the predicted endpoint after a Unicode write using its CPR. */
 void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col);
 void sl_surface_native_release_cursor(sl_surface_t *surface);
 #endif

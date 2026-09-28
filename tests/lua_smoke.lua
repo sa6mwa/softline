@@ -54,15 +54,6 @@ end
 local ok, message = pcall(softline.new, { [1] = true })
 assert(not ok and message:find("configuration field names must be strings", 1, true))
 
-for _, timeout in ipairs({ 0, 80, 250, 2147483647 }) do
-  local configured = assert(softline.new({ prompt_handoff_timeout_ms = timeout }))
-  configured:close()
-end
-for _, timeout in ipairs({ -1, 2147483648, 0.5, "invalid" }) do
-  assert(not pcall(softline.new, { prompt_handoff_timeout_ms = timeout }),
-         "invalid handoff timeout accepted")
-end
-
 local sl = assert(softline.new({ line_max_len = 32 }))
 assert_eq(sl:last_readline_status(), softline.READLINE_NONE, "initial status")
 assert(sl:history_add("history entry"))

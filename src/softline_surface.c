@@ -12,22 +12,14 @@
 #define SL_ROW(surface)                                                        \
   ((surface)->terminal_rows - 1 - (surface)->producer_below)
 
-enum sl_native_cursor {
-  SL_CURSOR_RELEASED,
-  SL_CURSOR_NATIVE,
-  SL_CURSOR_ADDRESSED
-};
-
 struct sl_surface {
   int fd;
-  int (*control_writer)(void *, const char *, size_t);
-  void *control_userdata;
   int width;
   int height;
   int terminal_rows;
   int terminal_columns;
   int native_stream;
-  enum sl_native_cursor producer_cursor;
+  int producer_cursor_live;
   int producer_below;
   int tracking;
   int write_line_control;
@@ -67,41 +59,6 @@ static int sl_surface_write_all(int fd, const char *bytes, size_t length) {
     length -= (size_t)written;
   }
   return 0;
-}
-
-static int sl_surface_write_controls(sl_surface_t *surface, const char *bytes,
-                                     size_t length) {
-  if (surface->control_writer)
-    return surface->control_writer(surface->control_userdata, bytes, length);
-  return sl_surface_write_all(surface->fd, bytes, length);
-}
-
-void sl_surface_set_control_writer(sl_surface_t *surface,
-                                   int (*writer)(void *, const char *, size_t),
-                                   void *userdata) {
-  if (surface) {
-    surface->control_writer = writer;
-    surface->control_userdata = userdata;
-  }
-}
-
-sl_surface_t *sl_surface_checkpoint(const sl_surface_t *surface) {
-  sl_surface_t *copy;
-  if (!surface)
-    return NULL;
-  copy = (sl_surface_t *)malloc(sizeof(*copy));
-  if (copy)
-    *copy = *surface;
-  return copy;
-}
-
-void sl_surface_rollback(sl_surface_t *surface, sl_surface_t *checkpoint) {
-  if (surface && checkpoint)
-    *surface = *checkpoint;
-}
-
-void sl_surface_discard_checkpoint(sl_surface_t *checkpoint) {
-  free(checkpoint);
 }
 
 static int sl_surface_put(sl_surface_t *surface, unsigned long codepoint) {
@@ -333,7 +290,7 @@ static int sl_surface_native_region(sl_surface_t *surface) {
     return -1;
   count = snprintf(seq, sizeof(seq), "\033[1;%dr", surface->height);
   return count > 0 && count < (int)sizeof(seq)
-             ? sl_surface_write_controls(surface, seq, (size_t)count)
+             ? sl_surface_write_all(surface->fd, seq, (size_t)count)
              : -1;
 }
 
@@ -404,7 +361,7 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
       sl_surface_write_all(fd, "\033[0m", 4) != 0)
     goto fail;
   surface->line_cells = (size_t)col;
-  surface->producer_cursor = SL_CURSOR_NATIVE;
+  surface->producer_cursor_live = 1;
   return surface;
 fail:
   surface->native_stream = 0;
@@ -444,45 +401,13 @@ static int sl_surface_continues_row(const char *bytes, size_t length) {
   return 0;
 }
 
-static void sl_surface_native_clip(sl_surface_t *surface) {
-  if (SL_ROW(surface) < 0 && !surface->producer_cursor) {
-    /* A clipped unfinished line continues at the first visible output row;
-     * a clipped hard boundary starts next to the prompt. No replay. */
-    surface->producer_below = surface->line_cells > 0
-                                  ? surface->terminal_rows - 1
-                                  : surface->terminal_rows - surface->height;
-    surface->col = 0;
-    surface->line_cells = 0;
-  }
-}
-
-int sl_surface_native_resume_cursor(sl_surface_t *surface) {
-  char seq[192];
-  int count, style;
-  if (!sl_surface_is_native(surface))
-    return -1;
-  sl_surface_native_clip(surface);
-  count = sl_surface_cursor(seq, sizeof(seq), surface->producer_below,
-                            surface->col < surface->width ? surface->col
-                                                          : surface->width - 1);
-  if (count < 0)
-    return -1;
-  style = sl_surface_style(surface, seq + count, sizeof(seq) - (size_t)count);
-  if (style < 0 ||
-      sl_surface_write_controls(surface, seq, (size_t)(count + style)) != 0)
-    return -1;
-  surface->producer_cursor =
-      surface->col == surface->width ? SL_CURSOR_ADDRESSED : SL_CURSOR_NATIVE;
-  return 0;
-}
-
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length) {
-  struct iovec parts[2];
+                            size_t length, int prompt_row, int prompt_col,
+                            int report_cursor) {
+  struct iovec parts[3];
   sl_surface_t next;
-  char prefix[192];
-  int count, style_count, first, newline_returns;
-  int addressed, continues;
+  char prefix[192], suffix[64];
+  int count, style_count, suffix_count, first, newline_returns;
   struct termios attributes;
   size_t i;
   if (!sl_surface_is_native(surface))
@@ -492,31 +417,51 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   /* Track the line discipline without changing the producer's bytes. */
   newline_returns =
       (attributes.c_oflag & OPOST) && (attributes.c_oflag & ONLCR);
-  sl_surface_native_clip(surface);
-  addressed = surface->producer_cursor != SL_CURSOR_NATIVE;
-  continues = sl_surface_continues_row(bytes, length);
+  if (SL_ROW(surface) < 0 && !surface->producer_cursor_live) {
+    /* Continue a clipped, unfinished line at the first visible output row.
+     * At a hard line boundary there is no text to continue: start new output
+     * next to the prompt. Existing scrollback remains untouched. */
+    surface->producer_below = surface->line_cells > 0
+                                  ? surface->terminal_rows - 1
+                                  : surface->terminal_rows - surface->height;
+    surface->col = 0;
+    surface->line_cells = 0;
+  }
   count = 0;
-  if (!surface->producer_cursor) {
+  if (!surface->producer_cursor_live || prompt_row >= 0) {
     count = sl_surface_cursor(
         prefix, sizeof(prefix), surface->producer_below,
         surface->col < surface->width ? surface->col : surface->width - 1);
     if (count < 0)
       return -1;
+    /* Cursor addressing cancels pending wrap. Resume on the following row when
+     * a printable continuation follows a completely filled row. */
+    if (surface->col == surface->width &&
+        sl_surface_continues_row(bytes, length)) {
+      memcpy(prefix + count, "\r\033D", 3);
+      count += 3;
+      surface->line_cells = 0;
+    }
   }
-  /* A forced handoff loses pending wrap. Recover only when printable output
-   * actually continues, including a cursor addressed during resize. */
-  if (addressed && surface->col == surface->width && continues) {
-    memcpy(prefix + count, "\r\033D", 3);
-    count += 3;
-    surface->line_cells = 0;
-  }
-  style_count = surface->producer_cursor
-                    ? 0
-                    : sl_surface_style(surface, prefix + count,
-                                       sizeof(prefix) - (size_t)count);
+  style_count =
+      sl_surface_style(surface, prefix + count, sizeof(prefix) - (size_t)count);
   if (style_count < 0)
     return -1;
   count += style_count;
+  memcpy(suffix, "\033[0m", 4);
+  suffix_count = 4;
+  if (report_cursor && prompt_row >= 0) {
+    memcpy(suffix + suffix_count, "\033[6n", 4);
+    suffix_count += 4;
+  }
+  if (prompt_row >= 0) {
+    int position = sl_surface_cursor(
+        suffix + suffix_count, sizeof(suffix) - (size_t)suffix_count,
+        surface->terminal_rows - 1 - prompt_row, prompt_col);
+    if (position < 0)
+      return -1;
+    suffix_count += position;
+  }
   next = *surface;
   next.write_line_control = 0;
   sl_surface_reset_partial(&next);
@@ -529,29 +474,27 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   parts[0].iov_len = (size_t)count;
   parts[1].iov_base = (void *)bytes;
   parts[1].iov_len = length;
+  parts[2].iov_base = suffix;
+  parts[2].iov_len = (size_t)suffix_count;
   first = 0;
-  while (first < 2) {
-    ssize_t written = writev(surface->fd, parts + first, 2 - first);
+  while (first < 3) {
+    ssize_t written = writev(surface->fd, parts + first, 3 - first);
     if (written < 0 && errno == EINTR)
       continue;
     if (written <= 0) {
-      surface->producer_cursor = SL_CURSOR_RELEASED;
+      surface->producer_cursor_live = 0;
       return -1;
     }
-    while (first < 2 && (size_t)written >= parts[first].iov_len) {
+    while (first < 3 && (size_t)written >= parts[first].iov_len) {
       written -= (ssize_t)parts[first].iov_len;
       first++;
     }
-    if (first < 2) {
+    if (first < 3) {
       parts[first].iov_base = (char *)parts[first].iov_base + written;
       parts[first].iov_len -= (size_t)written;
     }
   }
-  surface->producer_cursor = addressed && !continues &&
-                                     !next.write_line_control &&
-                                     next.col == next.width
-                                 ? SL_CURSOR_ADDRESSED
-                                 : SL_CURSOR_NATIVE;
+  surface->producer_cursor_live = prompt_row < 0;
   surface->producer_below = next.producer_below;
   surface->col = next.col;
   surface->line_cells = next.line_cells;
@@ -560,10 +503,6 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   memcpy(surface->foreground, next.foreground, sizeof(next.foreground));
   memcpy(surface->background, next.background, sizeof(next.background));
   return 0;
-}
-
-int sl_surface_native_handoff_safe(const sl_surface_t *surface) {
-  return sl_surface_is_native(surface) && sl_surface_complete(surface);
 }
 
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row) {
@@ -585,7 +524,7 @@ int sl_surface_native_finish(sl_surface_t *surface, int prompt_row) {
     seq[count++] = '\n';
   memcpy(seq + count, "\033[?25h", 6);
   count += 6;
-  if (sl_surface_write_controls(surface, seq, (size_t)count) != 0)
+  if (sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
     return -1;
   surface->native_stream = 0;
   return 0;
@@ -628,25 +567,26 @@ int sl_surface_native_resize_pending(const sl_surface_t *surface) {
           (int)terminal.ws_row != surface->terminal_rows);
 }
 
-int sl_surface_resize(sl_surface_t *surface, int width, int height,
-                      int previous_prompt_top, int terminal_rows) {
+int sl_surface_resize(sl_surface_t *surface, int width, int height) {
+  struct winsize terminal;
   char seq[64];
   int shift, count, previous_height, retain_cursor;
   if (!sl_surface_is_native(surface) || width < 1 || height < 2 ||
-      terminal_rows < height)
+      sl_surface_terminal_size(surface->fd, &terminal) != 0)
     return -1;
   /* A full-height region follows native terminal resize. Keep its live
    * producer cursor and pending wrap; no margin command is necessary. */
-  retain_cursor = surface->producer_cursor &&
+  retain_cursor = surface->producer_cursor_live &&
                   surface->height == surface->terminal_rows &&
-                  height == terminal_rows;
-  previous_height = previous_prompt_top;
+                  height == (int)terminal.ws_row;
+  previous_height =
+      surface->height + (int)terminal.ws_row - surface->terminal_rows;
   if (previous_height < 2)
     previous_height = 2;
-  if (previous_height > terminal_rows)
-    previous_height = terminal_rows;
-  surface->terminal_rows = terminal_rows;
-  surface->terminal_columns = width;
+  if (previous_height > (int)terminal.ws_row)
+    previous_height = terminal.ws_row;
+  surface->terminal_rows = terminal.ws_row;
+  surface->terminal_columns = terminal.ws_col;
   if (surface->width != width && surface->line_cells > 0) {
     surface->col = (int)(surface->line_cells % (size_t)width);
     /* Keep an exact right-edge endpoint distinct from an empty row. Cursor
@@ -657,17 +597,13 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height,
   }
   shift = SL_ROW(surface) >= height ? SL_ROW(surface) - height + 1 : 0;
   if (shift > 0) {
-    /* A queued line feed may have crossed the old margin during native
-     * resize. Include its actual row so emitted text is scrolled with it. */
-    if (previous_height < SL_ROW(surface) + 1)
-      previous_height = SL_ROW(surface) + 1;
-    /* The previous frame's actual physical boundary protects its visible
-     * cells. If resize clipped it, this can be the new terminal bottom. */
+    /* Only actual prompt growth reserves additional cells. The physical
+     * resize has already moved the terminal's transcript. */
     if (height < previous_height) {
       count = snprintf(seq, sizeof(seq), "\033[1;%dr\033[%dS", previous_height,
                        shift);
       if (count <= 0 || count >= (int)sizeof(seq) ||
-          sl_surface_write_controls(surface, seq, (size_t)count) != 0)
+          sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
         return -1;
     }
     surface->producer_below += shift;
@@ -676,7 +612,7 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height,
   surface->height = height;
   if (retain_cursor)
     return 0;
-  surface->producer_cursor = SL_CURSOR_RELEASED;
+  surface->producer_cursor_live = 0;
   return sl_surface_native_region(surface);
 }
 
@@ -712,7 +648,7 @@ void sl_surface_reset_partial(sl_surface_t *surface) {
 }
 
 int sl_surface_native_cursor_live(const sl_surface_t *surface) {
-  return sl_surface_is_native(surface) && surface->producer_cursor;
+  return sl_surface_is_native(surface) && surface->producer_cursor_live;
 }
 void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
                                int row, int col) {
@@ -726,10 +662,6 @@ void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
     return;
   }
   surface->producer_below = rows - 1 - row;
-  /* An addressed right-edge caret sits one cell before the logical endpoint.
-   * Native reflow moves that physical cell; preserve the logical next cell. */
-  if (surface->producer_cursor == SL_CURSOR_ADDRESSED)
-    col++;
   /* CPR cannot distinguish a known pending wrap from the final physical cell.
    */
   if (!(surface->width == width && surface->col == width && col == width - 1))
@@ -742,12 +674,9 @@ void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col) {
   if (!sl_surface_is_native(surface) || row < 0 ||
       row >= surface->terminal_rows || col < 0 || col >= surface->width)
     return;
-  if (surface->producer_cursor == SL_CURSOR_ADDRESSED)
-    col++;
   /* CPR reports the final physical cell for a known pending wrap. Preserve
    * that logical column while still correcting any observed row difference. */
-  pending_wrap = surface->col == surface->width &&
-                 (col == surface->width - 1 || col == surface->width);
+  pending_wrap = surface->col == surface->width && col == surface->width - 1;
   predicted = (size_t)surface->col;
   observed = (size_t)(pending_wrap ? surface->width : col);
   /* After a line control, correct only the trailing line's column. */
@@ -769,5 +698,5 @@ void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col) {
 
 void sl_surface_native_release_cursor(sl_surface_t *surface) {
   if (sl_surface_is_native(surface))
-    surface->producer_cursor = SL_CURSOR_RELEASED;
+    surface->producer_cursor_live = 0;
 }

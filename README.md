@@ -159,42 +159,36 @@ bytes, including libmdf styles and wrapping, pass through unchanged. Softline ke
 parser state and the output cursor; it does not cache, pad, rewrap, clear, or
 replay the native transcript.
 
-Before a prompt frame exists, output uses the full terminal. Writes keep the
-producer cursor in place even after a prompt frame has been painted. Native
-autowrap and Unicode clusters survive chunk boundaries. Full-height output
-follows terminal resize without another margin command. Cursor reports refresh
-the producer position at
+Before a prompt frame exists, output uses the full terminal and keeps the
+producer cursor in place between writes. Native autowrap and Unicode clusters
+survive chunk boundaries. Full-height output follows terminal resize without
+another margin command. Cursor reports refresh the producer position at
 resize and cursor handoffs. With a prompt frame present, complete emissions
 containing Unicode also request the producer's actual terminal endpoint.
-LF/CR, tab and right-edge transitions also request a report before more bytes
-can enter prompt cells after resize. Ordinary ASCII characters need no report. Queries leave the hardware cursor
-with the producer; an actual prompt update, resize or completion can move it.
-Replies use the existing 100 ms timeout and preserve concurrent user input.
-No grapheme or transcript buffering is introduced.
+ASCII emissions keep their existing cursor path. The report request and return
+to the editor cursor share one output batch; waiting for the reply leaves the
+cursor at the prompt. Replies use the existing 100 ms timeout and preserve
+concurrent user input. No grapheme or transcript buffering is introduced.
 
 Softline retains the previous prompt frame and patches only changed cells.
-Feeding output leaves unchanged prompt cells intact and keeps the hardware
-cursor with the producer between writes. The output region follows the current
-frame height: only visible queue entries, nonempty status messages, status
-lines, and editor rows occupy
+Feeding output leaves unchanged prompt cells intact and restores the editor
+cursor. The output region follows the current frame height: only visible
+queue entries, nonempty status messages, status lines, and editor rows occupy
 prompt space. Growth scrolls existing output cells only enough to fit when
 needed; shrink returns freed rows to output without moving transcript cells.
 The editor pages only when the frame exceeds the terminal's available height.
-Resize leaves transcript cells to the terminal. Softline queries the live
-cursor when reconciling changed geometry and distinguishes producer ownership
-from editor ownership when applying its movement. Cursor positions are stored
-as distances from the bottom; no terminal cursor save/restore sequences are
-used. Unchanged prompt
+Resize leaves transcript cells to the terminal. Softline queries the live input
+cursor once when reconciling changed geometry and applies its movement to the
+tracked output position. Cursor positions are stored as distances from the
+bottom; no terminal cursor save/restore sequences are used. Unchanged prompt
 rows that still fit are preserved. Width changes rebuild only prompt layout;
 transcript reflow belongs to the terminal.
 A bounded cell counter tracks the open output line so width growth restores its
 reflowed column rather than overwriting the last physical row. No transcript
 bytes are retained for this calculation.
-Updating the output margin after a physical resize preserves native movement.
-If native resize clips the prompt while the producer owns the cursor, normal
-scrolling reserves only the rows needed to keep the prompt visible. Softline
-does not recover or replay output that leaves the visible screen. An unfinished
-line that moves into scrollback continues at the
+Updating the output margin after a physical resize does not scroll the
+transcript again. Softline does not recover or replay output that leaves the
+visible screen. An unfinished line that moves into scrollback continues at the
 first visible output row. If the clipped position was at a hard line boundary,
 new output starts next to the prompt. Existing scrollback, including native
 blank rows, stays intact. Ending chat restores the full scroll region, clears
@@ -204,24 +198,9 @@ at column zero on the current input row, with no final newline or scroll. Set
 below the transcript instead. Ending a stream inside an active editor keeps
 the prompt and scroll region for later finite output or another stream;
 destroying the handle always closes native chat. Native feeds do not toggle
-cursor visibility or return to an unchanged prompt.
-Unicode emissions observe the producer endpoint without moving the cursor;
-LF/CR, tab and right-edge transitions also observe the cursor before subsequent
-text. Ordinary ASCII characters add no reports. Short writes are retried.
-
-Input updates the editor model immediately. Actual prompt changes, including
-status and queue painting, wait only for an unfinished ANSI/UTF-8 sequence or
-`sl_config_t.prompt_handoff_timeout_ms` (default `250`, non-negative; `0` means
-immediate handoff). Complete text yields immediately, without waiting for a
-newline, word or grapheme boundary. The monotonic deadline starts with the first pending frame
-and further input/output cannot restart it. Producer bytes are never delayed
-by this gate. On timeout, responsiveness takes priority over native pending
-wrap or Unicode continuation. Cancellation, submission, stream completion and
-physical resize bypass the wait. A height shrink leaves the cursor at the
-bottom prompt; the next producer write resumes its stored output position.
-Other resize updates can resume an ongoing producer directly.
-The timeout bounds boundary waiting; owner-thread callbacks and terminal
-report reads retain their own duration.
+cursor visibility or wait for cursor-position replies on unchanged frames;
+bounded chunks are batched with cursor restoration, retrying short writes as
+needed.
 
 Chat uses the full terminal width and needs at least three rows: two for the
 VT100 scroll region and one for the prompt. Rectangular viewports are unsupported.

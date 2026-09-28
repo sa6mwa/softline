@@ -194,9 +194,8 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
             while True:
                 cursor = run("display-message", "-p", "-t", "fixture:0.0",
                              "#{cursor_y},#{pane_height},#{cursor_flag}").split(",")
-                frame = physical_rows()
-                if (0 <= int(cursor[0]) < int(cursor[1]) and cursor[2] == "1" and
-                        len(frame) == int(cursor[1]) and frame[-1].endswith(draft_tail)):
+                if (int(cursor[0]) == int(cursor[1]) - 1 and cursor[2] == "1" and
+                        capture().endswith(draft_tail)):
                     break
                 if time.monotonic() >= deadline:
                     raise AssertionError(f"{name}: prompt displaced after {command}: {cursor}")
@@ -298,11 +297,15 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
             if quoted:
                 exchange("h")
             if static_resize:
+                original_marker_row = None
+                marker_copies = 1
                 if grow_both:
                     exchange("u")
                     exchange("p")
                 if height_roundtrip:
                     exchange("p")
+                    initial = subprocess.check_output([tmux, "-S", socket, "capture-pane", "-p", "-t", "fixture:0.0"], text=True).splitlines()
+                    original_marker_row = next(i for i, row in enumerate(initial) if "AFTER RESIZE" in row)
                 sizes = [(80, 8), (80, 24), (80, 6), (80, 24)] if height_roundtrip else [(30, 18), (80, 28), (16, 8), (45, 24)]
                 if grow_both:
                     sizes = [(80, 28), (120, 36)]
@@ -343,13 +346,6 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                         retained = min(retained, next((i for i, row in enumerate(actual) if row.startswith(("+ fixture", "Q 1."))), height))
                         live_row = next((i for i in range(len(native) - 1, -1, -1) if "AFTER RESIZE" in native[i]), -1)
                         shifted = max(0, live_row - retained + 1)
-                    if height_roundtrip and not paged:
-                        # With producer cursor ownership, native shrink can
-                        # clip the entire prompt. Reserve only the rows needed
-                        # below the live output, using normal terminal scroll.
-                        live_row = next((i for i in range(len(native) - 1, -1, -1)
-                                         if "AFTER RESIZE" in native[i]), -1)
-                        shifted = max(0, live_row - retained + 1)
                     assert actual[:retained] == native[shifted:retained + shifted], f"{name}: application moved static transcript at {width}x{height}\nNative: {native}\nActual: {actual}"
                     time.sleep(0.03)
                     controls = recording.read_bytes()[mark:]
@@ -361,8 +357,7 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                     scrolls = re.findall(rb"\x1b\[([0-9]*)S", controls)
                     assert sum(int(count or b"1") for count in scrolls) == shifted, f"{name}: resize scrolled beyond prompt growth at {width}x{height}: {scrolls}, expected {shifted}\nNative: {native}\nActual: {actual}"
                     assert not re.search(rb"\x1b\[[0-?]*[ -/]*[TLM]", controls), name + ": resize inserted or deleted transcript cells"
-                    if (height_roundtrip and not paged and owned == actual_owned
-                            and native[owned:] == actual[actual_owned:]):
+                    if height_roundtrip and not paged:
                         assert not re.search(rb"\x1b\[[0-?]*[ -/]*K", controls), name + ": height-only resize erased prompt cells"
                         assert b"> draft" not in controls and b"+ fixture" not in controls, name + ": height-only resize repainted prompt"
                     if grow_both:
@@ -373,14 +368,19 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                         assert continued == previous[:marker_end] + "AFTER RESIZE" + previous[marker_end:], f"{name}: combined growth overwrote existing output\nBefore: {previous}\nAfter: {continued}"
                     if height_roundtrip and (height == 24 or paged):
                         previous = physical_rows()
-                        marker_row = next((i for i in range(len(previous) - 1, -1, -1) if "AFTER RESIZE" in previous[i]), None)
+                        if paged:
+                            marker_row = next((i for i in range(len(previous) - 1, -1, -1) if "AFTER RESIZE" in previous[i]), None)
                         exchange("p")
                         continued = physical_rows()
                         for row in range(retained):
                             if previous[row].strip():
                                 assert continued[row].startswith(previous[row]), f"{name}: continued output overwrote row {row} after restoring height\nBefore: {previous}\nAfter: {continued}"
-                        assert marker_row is not None, f"{name}: live producer disappeared after restoring height"
-                        assert continued[marker_row] == previous[marker_row] + "AFTER RESIZE", f"{name}: height resize lost the live producer position\nBefore: {previous}\nAfter: {continued}"
+                        marker_copies += 1
+                        if paged:
+                            if marker_row is not None:
+                                assert continued[marker_row] == previous[marker_row] + "AFTER RESIZE", f"{name}: height resize lost the live producer position\nBefore: {previous}\nAfter: {continued}"
+                        else:
+                            assert continued[original_marker_row] == "AFTER RESIZE" * marker_copies, f"{name}: height roundtrip lost the original producer position\n{continued}"
                 print(name + ": static transcript matches terminal-native resize")
                 # Earlier output may naturally have left the viewport. The
                 # comparisons above assert the surviving cells exactly.
@@ -565,8 +565,9 @@ def main():
                     producer_only_case(tmux, fixture, build, document, sizes, prefilled)
         return
     if sys.argv[5:] == ["--queued-resize"]:
-        # Exercise tmux's grid/PTY size mismatch during its 250 ms notification
-        # throttle without adding a delay before each resize request.
+        # Diagnostic for tmux's grid/PTY size mismatch during its 250 ms
+        # notification throttle. Retain the reproducer rather than implying
+        # that the paced regression proves this case is fixed.
         example_case(tmux, example, build, paced=False)
         return
     if sys.argv[5:] == ["--quoted"]:

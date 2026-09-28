@@ -1,7 +1,6 @@
 #include "softline/softline.h"
 
 #include <lauxlib.h>
-#include <limits.h>
 #include <lua.h>
 #include <lualib.h>
 
@@ -262,8 +261,7 @@ static const char *const softline_lua_config_fields[] = {
     "status_busy",
     "status_idle_marker",
     "history_max_len",
-    "line_max_len",
-    "prompt_handoff_timeout_ms"};
+    "line_max_len"};
 
 static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   const char *idle_marker;
@@ -310,14 +308,6 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
   lua_getfield(L, index, "live_scroll_region");
   if (!lua_isnil(L, -1))
     config->live_scroll_region = lua_toboolean(L, -1);
-  lua_pop(L, 1);
-  lua_getfield(L, index, "prompt_handoff_timeout_ms");
-  if (!lua_isnil(L, -1)) {
-    lua_Integer timeout = luaL_checkinteger(L, -1);
-    luaL_argcheck(L, timeout >= 0 && timeout <= INT_MAX, index,
-                  "prompt_handoff_timeout_ms must be between 0 and INT_MAX");
-    config->prompt_handoff_timeout_ms = (int)timeout;
-  }
   lua_pop(L, 1);
   lua_getfield(L, index, "clear_prompt_on_exit");
   if (!lua_isnil(L, -1))
@@ -1235,17 +1225,10 @@ static int softline_lua_output_stream_begin(lua_State *L) {
  * Printable UTF-8, LF/CR/Tab and ANSI SGR are accepted. Partial ANSI/UTF-8 is
  * bounded and retained across writes; complete bytes are emitted before return.
  * With a prompt frame present, complete Unicode emissions request the actual
- * producer cursor without returning it to the editor. Prompt edits/status
- * wait only for unfinished ANSI/UTF-8 or prompt_handoff_timeout_ms (default
- * 250), while complete text yields immediately, without a newline or grapheme
- * wait. The timeout starts with the first pending frame. Expiry, cancellation,
- * submission, completion and physical resize can interrupt native wrap/Unicode
- * state. Reply reads preserve concurrent input and wait up to 100 ms;
- * unanswered reports disable further probing. LF/CR, tab and right-edge
- * transitions also observe the cursor before subsequent text. Ordinary ASCII
- * characters add no reports. Bounded transport writes preserve producer bytes
- * and complete ANSI/UTF-8 units.
- * There is no grapheme buffering or renderer-specific wrapping.
+ * producer cursor before returning to the editor cursor in the same batch.
+ * Reply reads preserve concurrent input and wait up to 100 ms; unanswered
+ * reports disable further probing. ASCII emissions add no reports. There is
+ * no grapheme buffering or renderer-specific wrapping.
  */
 static int softline_lua_output_stream_write(lua_State *L) {
   softline_lua_handle_t *handle;
