@@ -301,7 +301,7 @@ static int unicode_width(unsigned long codepoint) {
   return codepoint >= 128 ? 2 : 1;
 }
 
-static int observed_unicode_case(int newline) {
+static int observed_unicode_case(int newline, int handoff) {
   static const char flag[] = "\360\237\207\270\360\237\207\252";
   struct winsize size;
   sl_surface_t *surface;
@@ -313,26 +313,36 @@ static int observed_unicode_case(int newline) {
   if (openpty(&master, &slave, NULL, NULL, &size) != 0)
     return 1;
   (void)fcntl(master, F_SETFL, O_NONBLOCK);
-  surface = sl_surface_create_native(slave, 40, 10, 0, 0, unicode_width);
+  surface = sl_surface_create_native(slave, 40, handoff ? 12 : 10, 0, 0,
+                                     unicode_width);
   if (!surface)
     return 1;
   (void)drain(master, bytes, sizeof(bytes));
-  failed =
-      sl_surface_native_write(surface, flag, sizeof(flag) - 1, 11, 2, 1) != 0;
+  failed = sl_surface_native_write(surface, flag, sizeof(flag) - 1,
+                                   handoff ? -1 : 11, 2, !handoff) != 0;
   (void)drain(master, bytes, sizeof(bytes));
-  failed |= strstr(bytes, "\033[6n\033[65535;3H") == NULL;
-  sl_surface_native_observe_write(surface, 0, 2);
+  if (handoff) {
+    failed |= strstr(bytes, "\033[6n") != NULL;
+    sl_surface_native_observe(surface, 40, 12, 0, 2);
+  } else {
+    failed |= strstr(bytes, "\033[6n\033[65535;3H") == NULL;
+    sl_surface_native_observe_write(surface, 0, 2);
+  }
   sl_surface_native_position(surface, &row, &col);
   failed |= row != 0 || col != 2;
   if (newline) {
-    failed |= sl_surface_native_write(surface, "\nX", 2, 11, 2, 1) != 0;
+    failed |= sl_surface_native_write(surface, "\nX", 2, handoff ? -1 : 11, 2,
+                                      !handoff) != 0;
     /* A previous line's width can change its observed row, but must not
      * become part of this new line's column after growth. */
-    sl_surface_native_observe_write(surface, 2, 1);
+    if (handoff)
+      sl_surface_native_observe(surface, 40, 12, 2, 1);
+    else
+      sl_surface_native_observe_write(surface, 2, 1);
   }
   size.ws_col = 60;
   failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
-            sl_surface_resize(surface, 60, 10) != 0;
+            sl_surface_resize(surface, 60, handoff ? 12 : 10) != 0;
   sl_surface_native_position(surface, &row, &col);
   failed |= row != (newline ? 2 : 0) || col != (newline ? 1 : 2);
   sl_surface_destroy(surface);
@@ -340,6 +350,75 @@ static int observed_unicode_case(int newline) {
   close(master);
   if (failed)
     fprintf(stderr, "observed Unicode endpoint drifted after growth\n");
+  return failed;
+}
+
+static int observed_geometry_case(void) {
+  struct winsize size;
+  sl_surface_t *surface;
+  int master, slave, failed, row, col;
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 40;
+  size.ws_row = 12;
+  if (openpty(&master, &slave, NULL, NULL, &size) != 0)
+    return 1;
+  surface = sl_surface_create_native(slave, 40, 12, 0, 0, unicode_width);
+  if (!surface)
+    return 1;
+  failed = sl_surface_native_write(surface, "ABC", 3, -1, 0, 0) != 0;
+  /* The terminal may move the viewport during physical height growth. That
+   * observed row change must not add six rows to the logical text width. */
+  sl_surface_native_observe(surface, 40, 18, 6, 3);
+  size.ws_col = 60;
+  size.ws_row = 18;
+  failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+            sl_surface_resize(surface, 60, 18) != 0;
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != 6 || col != 3;
+  sl_surface_destroy(surface);
+  close(slave);
+  close(master);
+  if (failed)
+    fprintf(stderr, "observed physical resize changed the logical column\n");
+  return failed;
+}
+
+static int observed_pending_wrap_case(int handoff) {
+  static const char flag[] = "\360\237\207\270\360\237\207\252";
+  char source[20 * (sizeof(flag) - 1)];
+  struct winsize size;
+  sl_surface_t *surface;
+  int master, slave, failed, row, col;
+  size_t i;
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 40;
+  size.ws_row = 12;
+  for (i = 0; i < 20; i++)
+    memcpy(source + i * (sizeof(flag) - 1), flag, sizeof(flag) - 1);
+  if (openpty(&master, &slave, NULL, NULL, &size) != 0)
+    return 1;
+  surface = sl_surface_create_native(slave, 40, handoff ? 12 : 10, 0, 0,
+                                     unicode_width);
+  if (!surface)
+    return 1;
+  failed = sl_surface_native_write(surface, source, sizeof(source),
+                                   handoff ? -1 : 11, 2, !handoff) != 0;
+  if (handoff)
+    sl_surface_native_observe(surface, 40, 12, 0, 39);
+  else
+    sl_surface_native_observe_write(surface, 0, 39);
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != 0 || col != 40;
+  size.ws_col = 80;
+  failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+            sl_surface_resize(surface, 80, handoff ? 12 : 10) != 0;
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != 0 || col != 40;
+  sl_surface_destroy(surface);
+  close(slave);
+  close(master);
+  if (failed)
+    fprintf(stderr, "observed pending wrap kept an uncorrected row count\n");
   return failed;
 }
 
@@ -363,8 +442,13 @@ int main(void) {
   failed |= clipped_tab_case(0);
   failed |= clipped_tab_case(1);
   failed |= owned_cursor_resize_case();
-  failed |= observed_unicode_case(0);
-  failed |= observed_unicode_case(1);
+  failed |= observed_unicode_case(0, 0);
+  failed |= observed_unicode_case(1, 0);
+  failed |= observed_unicode_case(0, 1);
+  failed |= observed_unicode_case(1, 1);
+  failed |= observed_geometry_case();
+  failed |= observed_pending_wrap_case(0);
+  failed |= observed_pending_wrap_case(1);
   if (!failed)
     puts("21 physical resize cases preserve cells; prompt growth still "
          "scrolls.");

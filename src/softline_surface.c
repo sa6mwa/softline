@@ -654,6 +654,13 @@ void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
                                int row, int col) {
   if (!sl_surface_is_native(surface))
     return;
+  if (surface->width == width && surface->terminal_rows == rows) {
+    /* The initial producer handoff needs the same logical-column correction
+     * as an observed write. A physical resize has already moved the viewport,
+     * so its row delta must not be counted as emitted text. */
+    sl_surface_native_observe_write(surface, row, col);
+    return;
+  }
   surface->producer_below = rows - 1 - row;
   /* CPR cannot distinguish a known pending wrap from the final physical cell.
    */
@@ -663,15 +670,15 @@ void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
 
 void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col) {
   size_t predicted, observed;
+  int pending_wrap;
   if (!sl_surface_is_native(surface) || row < 0 ||
       row >= surface->terminal_rows || col < 0 || col >= surface->width)
     return;
-  if (surface->col == surface->width && col == surface->width - 1) {
-    surface->producer_below = surface->terminal_rows - 1 - row;
-    return;
-  }
+  /* CPR reports the final physical cell for a known pending wrap. Preserve
+   * that logical column while still correcting any observed row difference. */
+  pending_wrap = surface->col == surface->width && col == surface->width - 1;
   predicted = (size_t)surface->col;
-  observed = (size_t)col;
+  observed = (size_t)(pending_wrap ? surface->width : col);
   /* After a line control, correct only the trailing line's column. */
   if (!surface->write_line_control && SL_ROW(surface) >= 0) {
     predicted += (size_t)SL_ROW(surface) * (size_t)surface->width;
@@ -686,7 +693,7 @@ void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col) {
     surface->line_cells += observed - predicted;
   }
   surface->producer_below = surface->terminal_rows - 1 - row;
-  surface->col = col;
+  surface->col = pending_wrap ? surface->width : col;
 }
 
 void sl_surface_native_release_cursor(sl_surface_t *surface) {

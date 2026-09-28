@@ -82,8 +82,11 @@ Writes leave that cursor in place, preserving native pending wrap and Unicode
 clusters across chunks. No editor rows are reserved until a frame exists.
 A full-height region follows terminal resize without another margin command.
 Cursor reports refresh the producer's bottom-relative row and column at resize,
-first editor handoff, finite-output completion, and session close. When an
-editor frame exists, bounded emissions containing Unicode request a report
+first editor handoff, finite-output completion, and session close. At unchanged
+geometry, the handoff corrects the logical column used by later width changes
+as well as the current cursor position. A physical resize's viewport movement
+is not counted as emitted text. When an editor frame exists, bounded emissions
+containing Unicode request a report
 after the producer bytes and before returning to the editor cursor, in the
 same output batch. Reading that report leaves the cursor at the prompt and
 corrects codepoint-width estimates from the terminal's actual endpoint. ASCII
@@ -245,6 +248,12 @@ before making a binary compatibility commitment to independently built consumers
   scrollback, and input restoration after Ctrl-C. A private endpoint test also
   checks that reports precede the return to the prompt in the output batch and
   that a previous line's observed movement cannot shift a new line's column.
+- First-handoff checks submit an empty prompt after producer-owned output,
+  repeatedly shrink and grow width and height, and append output at each size.
+  They compare against direct terminal bytes for ASCII, styled flags, joined
+  emoji, combining marks, CJK, and hard line breaks, with and without prior
+  scrollback. Fully visible flag lines also cover wrapping and exact-width
+  endpoints.
 - Sink/write failure and session teardown leave a usable editor and report
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
   Native finite-output regressions reject incomplete ANSI/UTF-8 and callback

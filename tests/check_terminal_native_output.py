@@ -242,6 +242,90 @@ def case(fixture, build, source, prefilled=False):
         vt.pump()
 
 
+def handoff_resize_case(fixture, build, source, prefilled=False):
+    direct, direct_window = terminal()
+    actual, actual_window = terminal()
+    child = None
+    if prefilled:
+        prior = ''.join(f'existing row {i:03}\r\n' for i in range(100)).encode()
+        for widget in (direct, actual):
+            vt.feed(widget, prior, len(prior))
+        vt.pump()
+    try:
+        with tempfile.TemporaryDirectory(prefix='handoff-', dir=build) as work:
+            commands, replies = pathlib.Path(work, 'commands'), pathlib.Path(work, 'replies')
+            os.mkfifo(commands)
+            os.mkfifo(replies)
+            command_fd = os.open(commands, os.O_RDWR | os.O_NONBLOCK)
+            reply_fd = os.open(replies, os.O_RDWR | os.O_NONBLOCK)
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 8, 40, 0, 0))
+            terminal_pty = vt.foreign_pty(master, None, None)
+            assert terminal_pty
+            vt.set_pty(actual, terminal_pty)
+            vt.unref(terminal_pty)
+            child = subprocess.Popen([fixture, '--gated', str(commands), str(replies), source],
+                                     stdin=slave, stdout=slave, stderr=slave)
+            os.close(slave)
+
+            def ack():
+                reply = b''
+                deadline = time.monotonic() + 4
+                while len(reply) < 4:
+                    vt.pump()
+                    assert child.poll() is None, 'handoff fixture exited early'
+                    if select.select([reply_fd], [], [], 0)[0]:
+                        reply += os.read(reply_fd, 4 - len(reply))
+                    assert time.monotonic() < deadline, 'handoff acknowledgement timed out'
+                vt.pump()
+                return struct.unpack('HH', reply)
+
+            try:
+                ack()
+                os.write(command_fd, b's')
+                ack()
+                payload = source.replace('\n', '\r\n').encode()
+                vt.feed(direct, payload, len(payload))
+                os.write(command_fd, b'i')
+                deadline = time.monotonic() + 4
+                while not any(line.startswith('> ') for line in full_transcript(actual)):
+                    vt.pump()
+                    assert child.poll() is None and time.monotonic() < deadline, 'handoff timed out'
+                vt.send(actual, b'\r', 1)
+                ack()
+                for width, height in ((80, 12), (30, 8), (80, 8), (40, 12)):
+                    resize(direct, direct_window, width, height)
+                    resize(actual, actual_window, width, height)
+                    os.write(command_fd, b'p')
+                    assert ack() == (width, height)
+                    vt.feed(direct, b'Y', 1)
+                    vt.pump()
+                    observed = full_transcript(actual)
+                    assert observed.pop() == '> ', ('retained input lost', source, observed)
+                    while observed and not observed[-1]:
+                        observed.pop()
+                    assert observed == full_transcript(direct), (
+                        'first handoff cursor drift', source, prefilled, width, height,
+                        full_transcript(direct), observed)
+                os.write(command_fd, b'x')
+                deadline = time.monotonic() + 4
+                while child.poll() is None:
+                    vt.pump()
+                    assert time.monotonic() < deadline, 'handoff teardown timed out'
+                assert child.wait() == 0
+                print('PASS handoff resize', prefilled, repr(source), flush=True)
+            finally:
+                os.close(command_fd)
+                os.close(reply_fd)
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait()
+        vt.destroy(direct_window)
+        vt.destroy(actual_window)
+        vt.pump()
+
+
 def finite_retained_case(fixture, build, source, prefilled=False):
     direct, direct_window = terminal()
     actual, actual_window = terminal()
@@ -405,6 +489,12 @@ def main():
             case(fixture, build, source, prefilled)
     for disposition in ('ignore', 'handler'):
         interrupt_case(fixture, disposition)
+    for source in ('ABC', 'a' * 39 + 'X', '🇸🇪', '\x1b[1m🇸🇪\x1b[0mX',
+                   '👩‍💻X', 'é 中文', '🇸🇪\nnext'):
+        for prefilled in (False, True):
+            handoff_resize_case(fixture, build, source, prefilled)
+    for flags in (20, 22):
+        handoff_resize_case(fixture, build, '🇸🇪' * flags)
     for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m',
                    '🇸🇪', '\x1b[1m🇸🇪\x1b[0m', '👩‍💻', 'é 中文'):
         for prefilled in (False, True):

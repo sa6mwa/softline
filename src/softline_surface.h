@@ -31,6 +31,7 @@ void sl_surface_reset_partial(sl_surface_t *surface);
 int sl_surface_matches(const sl_surface_t *surface, int width, int height);
 /* While the hardware cursor belongs to the producer, writes need no cursor
  * command. Observe its position before moving away; frame commands release it.
+ * At unchanged geometry, reconcile the logical column as well as the endpoint.
  */
 int sl_surface_native_cursor_live(const sl_surface_t *surface);
 void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
