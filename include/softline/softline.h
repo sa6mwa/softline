@@ -603,7 +603,12 @@ struct sl {
    * length is zero. Input must be printable UTF-8, LF/CR/Tab, or ANSI SGR;
    * unsupported terminal controls fail with SL_ERROR_INVALID. Malformed UTF-8
    * also fails. Native LF positioning follows the output TTY's OPOST/ONLCR
-   * settings without altering producer bytes or terminal settings. */
+   * settings without altering producer bytes or terminal settings. With a
+   * prompt frame present, complete Unicode emissions request the producer's
+   * terminal cursor position before returning to the editor cursor in the
+   * same output batch. Reply reads preserve user input and wait up to 100 ms;
+   * unanswered reports disable further probing. ASCII emissions add no
+   * reports. No grapheme buffering or renderer-specific wrapping is used. */
   int (*output_stream_write)(sl_t *self, const char *bytes, size_t length);
   /** End the open session without finishing an external renderer document.
    * An active editor keeps its native prompt and scroll region for later
@@ -925,7 +930,12 @@ int sl_output_stream_begin(sl_t *self);
  * sequences report SL_ERROR_INVALID. A failed write may have emitted a prefix,
  * while a successful write has emitted all complete input units. Native LF
  * positioning follows the output TTY's OPOST/ONLCR settings; producer bytes
- * and terminal settings are unchanged. */
+ * and terminal settings are unchanged. With a prompt frame present, complete
+ * Unicode emissions request the actual producer cursor before returning to
+ * the editor cursor in the same output batch. Reply reads preserve concurrent
+ * input and wait up to 100 ms; unanswered reports disable further probing.
+ * ASCII emissions add no reports. No grapheme buffering or renderer-specific
+ * wrapping is used. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
 /** End the output session. The caller remains responsible for finishing any

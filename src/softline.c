@@ -207,6 +207,10 @@ static int sl_write_cursor_pos(int fd, int row, int col);
 static int sl_wstr(int fd, const char *s);
 static int sl_try_pin_scroll_region(sl_t *self);
 static int sl_query_cursor_row(sl_t *self);
+static int sl_read_cursor_report(sl_t *self, int request);
+static int sl_cursor_report_begin(sl_t *self, struct termios *original);
+static int sl_cursor_report_end(sl_t *self, const struct termios *original,
+                                int temporary);
 static int sl_enable_raw(sl_t *self);
 static void sl_disable_raw(sl_t *self);
 static int sl_codepoint_width(unsigned long cp);
@@ -4026,8 +4030,37 @@ static int sl_output_flush_redirected(sl_t *self, const char *bytes,
     int row = impl->rendered_rows > 0
                   ? impl->rendered_top_row + impl->rendered_cursor_row
                   : -1;
-    if (sl_surface_native_write(impl->output_surface, bytes, length, row,
-                                impl->rendered_cursor_col) != 0) {
+    struct termios original;
+    int report = 0, temporary = 0, written;
+    size_t i;
+    if (row >= 0 && impl->cursor_position_probe >= 0) {
+      for (i = 0; i < length; i++) {
+        if ((unsigned char)bytes[i] >= 128u) {
+          report = 1;
+          break;
+        }
+      }
+    }
+    if (report) {
+      temporary = sl_cursor_report_begin(self, &original);
+      if (temporary < 0)
+        return SL_ERROR_IO;
+    }
+    /* The terminal reports the producer endpoint, then immediately returns
+     * to the prompt in this same batch. Never wait with its cursor displaced.
+     */
+    written = sl_surface_native_write(impl->output_surface, bytes, length, row,
+                                      impl->rendered_cursor_col, report);
+    if (written == 0 && report) {
+      int observed = sl_read_cursor_report(self, 0);
+      if (observed > 0 &&
+          !sl_surface_native_resize_pending(impl->output_surface))
+        sl_surface_native_observe_write(impl->output_surface, observed - 1,
+                                        impl->probed_cursor_col);
+    }
+    if (report && sl_cursor_report_end(self, &original, temporary) != 0)
+      return SL_ERROR_IO;
+    if (written != 0) {
       sl_set_error(self, "failed to write native output");
       return SL_ERROR_IO;
     }
@@ -4727,7 +4760,7 @@ static int sl_decimal_append_int(int *value, char ch) {
 /* Read a Device Status Report cursor-position reply while preserving any user
  * input that happens to arrive first. A terminal that does not support DSR is
  * simply left on the ordinary readline rendering path. */
-static int sl_read_cursor_report(sl_t *self) {
+static int sl_read_cursor_report(sl_t *self, int request) {
   sl_impl_t *impl;
   char candidate[SL_PENDING_INPUT_MAX];
   size_t candidate_len;
@@ -4740,7 +4773,7 @@ static int sl_read_cursor_report(sl_t *self) {
   if (!impl || impl->cursor_position_probe < 0 || !isatty(impl->input_fd) ||
       !isatty(impl->output_fd))
     return -1;
-  if (sl_wstr(impl->output_fd, "\033[6n") != 0) {
+  if (request && sl_wstr(impl->output_fd, "\033[6n") != 0) {
     impl->cursor_position_probe = -1;
     return -1;
   }
@@ -4858,36 +4891,52 @@ preserve_failed:
 
 /* A returning signal handler leaves the session's input restored. Cursor
  * reports must still be read without echo or canonical line buffering. */
+static int sl_cursor_report_begin(sl_t *self, struct termios *original) {
+  sl_impl_t *impl = sl_impl(self);
+  struct termios query;
+  if (impl->raw_active)
+    return 0;
+  if (tcgetattr(impl->input_fd, original) != 0) {
+    sl_set_error(self, "failed to read input attributes for cursor report");
+    return -1;
+  }
+  query = *original;
+  query.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+  query.c_cflag |= CS8;
+  query.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+  query.c_cc[VMIN] = 0;
+  query.c_cc[VTIME] = 1;
+  /* Preserve queued user input while changing the report-reading mode. */
+  if (tcsetattr(impl->input_fd, TCSANOW, &query) != 0) {
+    sl_set_error(self, "failed to acquire input for cursor report");
+    return -1;
+  }
+  return 1;
+}
+
+static int sl_cursor_report_end(sl_t *self, const struct termios *original,
+                                int temporary) {
+  sl_impl_t *impl = sl_impl(self);
+  if (temporary && tcsetattr(impl->input_fd, TCSANOW, original) != 0) {
+    sl_set_error(self, "failed to restore input after cursor report");
+    return -1;
+  }
+  return 0;
+}
+
 static int sl_query_cursor_row(sl_t *self) {
   sl_impl_t *impl = sl_impl(self);
-  struct termios original, query;
+  struct termios original;
   int temporary, result;
   if (!impl || impl->cursor_position_probe < 0 || !isatty(impl->input_fd) ||
       !isatty(impl->output_fd))
     return -1;
-  temporary = !impl->raw_active;
-  if (temporary) {
-    if (tcgetattr(impl->input_fd, &original) != 0) {
-      sl_set_error(self, "failed to read input attributes for cursor report");
-      return -1;
-    }
-    query = original;
-    query.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-    query.c_cflag |= CS8;
-    query.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-    query.c_cc[VMIN] = 0;
-    query.c_cc[VTIME] = 1;
-    /* Preserve queued user input while changing the report-reading mode. */
-    if (tcsetattr(impl->input_fd, TCSANOW, &query) != 0) {
-      sl_set_error(self, "failed to acquire input for cursor report");
-      return -1;
-    }
-  }
-  result = sl_read_cursor_report(self);
-  if (temporary && tcsetattr(impl->input_fd, TCSANOW, &original) != 0) {
-    sl_set_error(self, "failed to restore input after cursor report");
+  temporary = sl_cursor_report_begin(self, &original);
+  if (temporary < 0)
     return -1;
-  }
+  result = sl_read_cursor_report(self, 1);
+  if (sl_cursor_report_end(self, &original, temporary) != 0)
+    return -1;
   return result;
 }
 

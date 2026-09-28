@@ -188,8 +188,15 @@ live scroll regions, status lines, and spinners are off; the theme is
   prompt is anchored at the bottom from its first frame. Producer bytes pass
   through unchanged. Before the first frame, output uses the full terminal and
   leaves its cursor in place between writes, preserving native autowrap and
-  Unicode clusters. Cursor reports occur at ownership and resize boundaries,
-  rather than per feed. Transcript reflow belongs to the terminal. The output
+  Unicode clusters. Cursor reports occur at ownership and resize boundaries.
+  With a prompt frame present, complete emissions containing Unicode also
+  observe the producer's actual terminal endpoint. The report request and
+  return to the editor cursor share one output batch; waiting for a reply
+  leaves the cursor at the prompt. Replies use the existing 100 ms timeout,
+  preserving concurrent input; an unanswered report disables further probing
+  and retains estimated positions. ASCII emissions add no reports. There is
+  no grapheme buffering or renderer-specific behavior. Transcript reflow
+  belongs to the terminal. The output
   margin follows the actual prompt height, including visible queue entries,
   nonempty status messages, status lines, and editor rows. Unused preview slots
   occupy no space. At physical capacity the editor pages, leaving at least two

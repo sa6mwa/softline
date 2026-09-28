@@ -82,8 +82,16 @@ Writes leave that cursor in place, preserving native pending wrap and Unicode
 clusters across chunks. No editor rows are reserved until a frame exists.
 A full-height region follows terminal resize without another margin command.
 Cursor reports refresh the producer's bottom-relative row and column at resize,
-first editor handoff, finite-output completion, and session close; they are not
-requested per feed. Moving to an editor or temporary parked cursor releases
+first editor handoff, finite-output completion, and session close. When an
+editor frame exists, bounded emissions containing Unicode request a report
+after the producer bytes and before returning to the editor cursor, in the
+same output batch. Reading that report leaves the cursor at the prompt and
+corrects codepoint-width estimates from the terminal's actual endpoint. ASCII
+emissions do not request additional reports. The existing 100 ms timeout and
+concurrent-input preservation apply; an unanswered report disables further
+probing and retains estimated positions. This is generic VT cursor observation,
+with no renderer-specific logic, grapheme buffering, or replay.
+Moving to an editor or temporary parked cursor releases
 producer ownership, so later writes use the stored output position. Rendering
 a prompt sets its actual margin.
 Finite callbacks and live writes share the same native geometry reconciliation.
@@ -106,8 +114,8 @@ prompt height, with no empty queue slots or absent status-message rows. Growth
 scrolls existing output cells only enough to fit; shrink returns freed rows
 without moving transcript cells. The editor pages only at physical capacity.
 Native feeds batch bounded chunks with cursor restoration, retrying short
-writes as needed, without hiding the cursor or probing its position on
-unchanged frames. Ending chat restores the full scroll
+writes as needed, without hiding the cursor or repainting unchanged frames.
+Ending chat restores the full scroll
 region and clears only input rows, preserving queue and status rows. The cursor
 stays at column zero on the current input row without a newline or scroll.
 
@@ -231,6 +239,12 @@ before making a binary compatibility commitment to independently built consumers
   `tests/check_terminal_resize.py` retains this reproducer. The standard paced
   test does not prove that diagnostic passes. There is no tmux-specific
   production workaround or transcript replay.
+- The Unicode output matrix compares actual raw and libmdf sink emissions
+  through direct PTYs and active native prompts. It checks complete producer
+  byte equality, fragmented UTF-8, style transitions, width growth, pre-existing
+  scrollback, and input restoration after Ctrl-C. A private endpoint test also
+  checks that reports precede the return to the prompt in the output batch and
+  that a previous line's observed movement cannot shift a new line's column.
 - Sink/write failure and session teardown leave a usable editor and report
   an actionable diagnostic. Repeated begin/end and invalid calls are tested.
   Native finite-output regressions reject incomplete ANSI/UTF-8 and callback

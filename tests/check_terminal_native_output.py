@@ -405,7 +405,8 @@ def main():
             case(fixture, build, source, prefilled)
     for disposition in ('ignore', 'handler'):
         interrupt_case(fixture, disposition)
-    for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m'):
+    for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m',
+                   '🇸🇪', '\x1b[1m🇸🇪\x1b[0m', '👩‍💻', 'é 中文'):
         for prefilled in (False, True):
             finite_retained_case(fixture, build, source, prefilled)
     print('Native output preserves bytes, reflow, cursor handoff, and exit.')

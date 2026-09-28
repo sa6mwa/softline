@@ -15,7 +15,8 @@ void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows);
 void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col);
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length, int prompt_row, int prompt_col);
+                            size_t length, int prompt_row, int prompt_col,
+                            int report_cursor);
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row);
 void sl_surface_destroy(sl_surface_t *surface);
 int sl_surface_resize(sl_surface_t *surface, int width, int height);
@@ -34,5 +35,7 @@ int sl_surface_matches(const sl_surface_t *surface, int width, int height);
 int sl_surface_native_cursor_live(const sl_surface_t *surface);
 void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
                                int row, int col);
+/* Correct the predicted endpoint after a Unicode write using its CPR. */
+void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col);
 void sl_surface_native_release_cursor(sl_surface_t *surface);
 #endif

@@ -22,6 +22,7 @@ struct sl_surface {
   int producer_cursor_live;
   int producer_below;
   int tracking;
+  int write_line_control;
   unsigned int attributes;
   int foreground[4];
   int background[4];
@@ -225,6 +226,7 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
   }
   if (byte == '\n') {
     if (surface->tracking) {
+      surface->write_line_control = 1;
       if (newline_returns)
         surface->col = 0;
       else if (surface->col >= surface->width)
@@ -237,6 +239,7 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
   }
   if (byte == '\r') {
     if (surface->tracking) {
+      surface->write_line_control = 1;
       surface->col = 0;
       surface->line_cells = 0;
     }
@@ -399,7 +402,8 @@ static int sl_surface_continues_row(const char *bytes, size_t length) {
 }
 
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length, int prompt_row, int prompt_col) {
+                            size_t length, int prompt_row, int prompt_col,
+                            int report_cursor) {
   struct iovec parts[3];
   sl_surface_t next;
   char prefix[192], suffix[64];
@@ -446,15 +450,20 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   count += style_count;
   memcpy(suffix, "\033[0m", 4);
   suffix_count = 4;
+  if (report_cursor && prompt_row >= 0) {
+    memcpy(suffix + suffix_count, "\033[6n", 4);
+    suffix_count += 4;
+  }
   if (prompt_row >= 0) {
-    int position =
-        sl_surface_cursor(suffix + 4, sizeof(suffix) - 4,
-                          surface->terminal_rows - 1 - prompt_row, prompt_col);
+    int position = sl_surface_cursor(
+        suffix + suffix_count, sizeof(suffix) - (size_t)suffix_count,
+        surface->terminal_rows - 1 - prompt_row, prompt_col);
     if (position < 0)
       return -1;
     suffix_count += position;
   }
   next = *surface;
+  next.write_line_control = 0;
   sl_surface_reset_partial(&next);
   next.tracking = 1;
   for (i = 0; i < length; i++) {
@@ -489,6 +498,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   surface->producer_below = next.producer_below;
   surface->col = next.col;
   surface->line_cells = next.line_cells;
+  surface->write_line_control = next.write_line_control;
   surface->attributes = next.attributes;
   memcpy(surface->foreground, next.foreground, sizeof(next.foreground));
   memcpy(surface->background, next.background, sizeof(next.background));
@@ -649,6 +659,34 @@ void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
    */
   if (!(surface->width == width && surface->col == width && col == width - 1))
     surface->col = col;
+}
+
+void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col) {
+  size_t predicted, observed;
+  if (!sl_surface_is_native(surface) || row < 0 ||
+      row >= surface->terminal_rows || col < 0 || col >= surface->width)
+    return;
+  if (surface->col == surface->width && col == surface->width - 1) {
+    surface->producer_below = surface->terminal_rows - 1 - row;
+    return;
+  }
+  predicted = (size_t)surface->col;
+  observed = (size_t)col;
+  /* After a line control, correct only the trailing line's column. */
+  if (!surface->write_line_control && SL_ROW(surface) >= 0) {
+    predicted += (size_t)SL_ROW(surface) * (size_t)surface->width;
+    observed += (size_t)row * (size_t)surface->width;
+  }
+  if (observed < predicted) {
+    size_t removed = predicted - observed;
+    surface->line_cells = surface->line_cells >= removed
+                              ? surface->line_cells - removed
+                              : (size_t)col;
+  } else {
+    surface->line_cells += observed - predicted;
+  }
+  surface->producer_below = surface->terminal_rows - 1 - row;
+  surface->col = col;
 }
 
 void sl_surface_native_release_cursor(sl_surface_t *surface) {

@@ -163,7 +163,12 @@ Before a prompt frame exists, output uses the full terminal and keeps the
 producer cursor in place between writes. Native autowrap and Unicode clusters
 survive chunk boundaries. Full-height output follows terminal resize without
 another margin command. Cursor reports refresh the producer position at
-resize and cursor handoffs, rather than per feed.
+resize and cursor handoffs. With a prompt frame present, complete emissions
+containing Unicode also request the producer's actual terminal endpoint.
+ASCII emissions keep their existing cursor path. The report request and return
+to the editor cursor share one output batch; waiting for the reply leaves the
+cursor at the prompt. Replies use the existing 100 ms timeout and preserve
+concurrent user input. No grapheme or transcript buffering is introduced.
 
 Softline retains the previous prompt frame and patches only changed cells.
 Feeding output leaves unchanged prompt cells intact and restores the editor

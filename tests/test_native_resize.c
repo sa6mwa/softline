@@ -121,7 +121,7 @@ static int exact_width_case(void) {
   surface = sl_surface_create_native(slave, 40, 10, 9, 0, cell_width);
   if (!surface)
     return 1;
-  failed = sl_surface_native_write(surface, "abcdefghijkl", 12, 11, 2) != 0;
+  failed = sl_surface_native_write(surface, "abcdefghijkl", 12, 11, 2, 0) != 0;
   (void)drain(master, bytes, sizeof(bytes));
   size.ws_col = 12;
   failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
@@ -130,7 +130,7 @@ static int exact_width_case(void) {
   /* A filled row and a fresh empty row have different continuation behavior. */
   failed |= col != 12;
   (void)drain(master, bytes, sizeof(bytes));
-  failed |= sl_surface_native_write(surface, "m", 1, 11, 2) != 0;
+  failed |= sl_surface_native_write(surface, "m", 1, 11, 2, 0) != 0;
   sl_surface_native_position(surface, NULL, &col);
   failed |= col != 1;
   (void)drain(master, bytes, sizeof(bytes));
@@ -158,7 +158,7 @@ static int clipped_tail_case(int line_open) {
   if (!surface)
     return 1;
   failed = sl_surface_native_write(surface, line_open ? "prefix" : "prefix\n",
-                                   line_open ? 6 : 7, 11, 2) != 0;
+                                   line_open ? 6 : 7, 11, 2, 0) != 0;
   (void)drain(master, bytes, sizeof(bytes));
   size.ws_col = 16;
   size.ws_row = 5;
@@ -167,7 +167,8 @@ static int clipped_tail_case(int line_open) {
   sl_surface_native_position(surface, &row, NULL);
   failed |= row >= 0;
   (void)drain(master, bytes, sizeof(bytes));
-  failed |= sl_surface_native_write(surface, tail, sizeof(tail) - 1, 4, 2) != 0;
+  failed |=
+      sl_surface_native_write(surface, tail, sizeof(tail) - 1, 4, 2, 0) != 0;
   sl_surface_native_position(surface, &row, &col);
   (void)drain(master, bytes, sizeof(bytes));
   failed |= row != (line_open ? 0 : 2) || col != 4 || has_scroll(bytes) ||
@@ -206,12 +207,12 @@ static int newline_case(int mode) {
   if (!surface)
     return 1;
   (void)drain(master, bytes, sizeof(bytes));
-  failed = sl_surface_native_write(surface, "a\nb", 3, 7, 0) != 0;
+  failed = sl_surface_native_write(surface, "a\nb", 3, 7, 0, 0) != 0;
   sl_surface_native_position(surface, &row, &col);
   failed |= row != 1 || col != (mode == 0 ? 1 : 2);
   (void)drain(master, bytes, sizeof(bytes));
   failed |= strstr(bytes, mode == 0 ? "a\r\nb" : "a\nb") == NULL;
-  failed |= sl_surface_native_write(surface, "c", 1, 7, 0) != 0;
+  failed |= sl_surface_native_write(surface, "c", 1, 7, 0, 0) != 0;
   sl_surface_native_position(surface, &row, &col);
   failed |= row != 1 || col != (mode == 0 ? 2 : 3);
   (void)drain(master, bytes, sizeof(bytes));
@@ -242,13 +243,13 @@ static int clipped_tab_case(int full_row) {
   failed = sl_surface_native_write(surface,
                                    full_row ? "abcdefghijklmnopqrst\t"
                                             : "abcdefghijklmnopqr\tX",
-                                   full_row ? 21 : 20, 7, 0) != 0;
+                                   full_row ? 21 : 20, 7, 0, 0) != 0;
   (void)drain(master, bytes, sizeof(bytes));
   size.ws_col = 40;
   failed |= ioctl(master, TIOCSWINSZ, &size) != 0;
   failed |= sl_surface_resize(surface, 40, 7) != 0;
   (void)drain(master, bytes, sizeof(bytes));
-  failed |= sl_surface_native_write(surface, "Y", 1, 7, 0) != 0;
+  failed |= sl_surface_native_write(surface, "Y", 1, 7, 0, 0) != 0;
   sl_surface_native_position(surface, &row, &col);
   failed |= row != 0 || col != (full_row ? 20 : 21);
   (void)drain(master, bytes, sizeof(bytes));
@@ -277,7 +278,7 @@ static int owned_cursor_resize_case(void) {
   if (!surface)
     return 1;
   (void)drain(master, bytes, sizeof(bytes));
-  failed = sl_surface_native_write(surface, "hello", 5, -1, 0) != 0;
+  failed = sl_surface_native_write(surface, "hello", 5, -1, 0, 0) != 0;
   (void)drain(master, bytes, sizeof(bytes));
   /* A cursor report may be unavailable. The terminal still retains the
    * physical producer cursor even when the stored bottom delta is clipped. */
@@ -285,7 +286,7 @@ static int owned_cursor_resize_case(void) {
   failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
             sl_surface_resize(surface, 40, 6) != 0;
   failed |= drain(master, bytes, sizeof(bytes)) != 0;
-  failed |= sl_surface_native_write(surface, "X", 1, -1, 0) != 0;
+  failed |= sl_surface_native_write(surface, "X", 1, -1, 0, 0) != 0;
   (void)drain(master, bytes, sizeof(bytes));
   failed |= strcmp(bytes, "\033[0mX\033[0m") != 0;
   sl_surface_destroy(surface);
@@ -293,6 +294,52 @@ static int owned_cursor_resize_case(void) {
   close(master);
   if (failed)
     fprintf(stderr, "prompt-free shrink moved the live producer cursor\n");
+  return failed;
+}
+
+static int unicode_width(unsigned long codepoint) {
+  return codepoint >= 128 ? 2 : 1;
+}
+
+static int observed_unicode_case(int newline) {
+  static const char flag[] = "\360\237\207\270\360\237\207\252";
+  struct winsize size;
+  sl_surface_t *surface;
+  int master, slave, failed, row, col;
+  char bytes[1024];
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 40;
+  size.ws_row = 12;
+  if (openpty(&master, &slave, NULL, NULL, &size) != 0)
+    return 1;
+  (void)fcntl(master, F_SETFL, O_NONBLOCK);
+  surface = sl_surface_create_native(slave, 40, 10, 0, 0, unicode_width);
+  if (!surface)
+    return 1;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed =
+      sl_surface_native_write(surface, flag, sizeof(flag) - 1, 11, 2, 1) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= strstr(bytes, "\033[6n\033[65535;3H") == NULL;
+  sl_surface_native_observe_write(surface, 0, 2);
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != 0 || col != 2;
+  if (newline) {
+    failed |= sl_surface_native_write(surface, "\nX", 2, 11, 2, 1) != 0;
+    /* A previous line's width can change its observed row, but must not
+     * become part of this new line's column after growth. */
+    sl_surface_native_observe_write(surface, 2, 1);
+  }
+  size.ws_col = 60;
+  failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+            sl_surface_resize(surface, 60, 10) != 0;
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != (newline ? 2 : 0) || col != (newline ? 1 : 2);
+  sl_surface_destroy(surface);
+  close(slave);
+  close(master);
+  if (failed)
+    fprintf(stderr, "observed Unicode endpoint drifted after growth\n");
   return failed;
 }
 
@@ -316,6 +363,8 @@ int main(void) {
   failed |= clipped_tab_case(0);
   failed |= clipped_tab_case(1);
   failed |= owned_cursor_resize_case();
+  failed |= observed_unicode_case(0);
+  failed |= observed_unicode_case(1);
   if (!failed)
     puts("21 physical resize cases preserve cells; prompt growth still "
          "scrolls.");

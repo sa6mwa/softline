@@ -117,6 +117,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
     set_tests_properties(softline_terminal_native_output PROPERTIES
       LABELS "integration;streaming" TIMEOUT 120)
+    if(_softline_test_libmdf_supported)
+      add_executable(unicode_output_fixture unicode_output_fixture.c)
+      target_link_libraries(unicode_output_fixture PRIVATE softline)
+      softline_enable_dev_libmdf(unicode_output_fixture)
+      softline_apply_warnings(unicode_output_fixture)
+      softline_local_runtime(unicode_output_fixture)
+      add_test(NAME softline_terminal_unicode_output
+        COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_unicode_output.py"
+        "$<TARGET_FILE:unicode_output_fixture>" "${PROJECT_BINARY_DIR}")
+      set_tests_properties(softline_terminal_unicode_output PROPERTIES
+        LABELS "integration;streaming;libmdf" TIMEOUT 120)
+    endif()
     add_test(NAME softline_terminal_blank_reflow
       COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_blank_reflow.py"

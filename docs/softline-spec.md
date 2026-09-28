@@ -239,8 +239,14 @@ Ending a producer session inside an active editor retains the native prompt and
 scroll region for subsequent finite output or another stream; closing the handle
 always restores terminal state. Non-TTY sessions emit no teardown controls.
 Native feeds batch bounded chunks with cursor restoration and retry short
-writes as needed, without cursor visibility toggles or cursor-position probes
-on unchanged frames.
+writes as needed, without cursor visibility toggles or repainting unchanged
+frames. With a prompt frame present, complete bounded emissions containing
+Unicode request the actual producer cursor position before returning to the
+editor cursor in the same output batch. Replies use the existing 100 ms timeout
+and preserve concurrent user input. An unanswered report disables further
+probing and retains estimated positions. ASCII emissions do not request
+additional reports. This observes generic terminal behavior without grapheme
+buffering, renderer knowledge, or producer wrapping decisions.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
 only cursor geometry and bounded partial ANSI/UTF-8 state.
