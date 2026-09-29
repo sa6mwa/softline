@@ -1358,7 +1358,7 @@ static int sl_codepoint_width(unsigned long cp) {
     return 0;
   if (cp < 0x300UL)
     return 1;
-  if (sl_codepoint_is_combining(cp))
+  if (cp == 0x200dUL || sl_codepoint_is_combining(cp))
     return 0;
   /* Terminals advance one cell per indicator and two per completed flag. */
   if (sl_codepoint_is_regional_indicator(cp))

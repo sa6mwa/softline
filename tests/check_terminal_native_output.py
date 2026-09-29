@@ -576,6 +576,9 @@ def main():
     # Cursor reports clamp after scrolling; the logical width must still
     # follow the terminal's one-cell regional indicators.
     handoff_resize_case(fixture, build, '🇸🇪' * 181 + 'X')
+    # U+200D is zero-width even when the joined emoji span scrolls before
+    # the first prompt handoff; later resizes must retain the endpoint.
+    handoff_resize_case(fixture, build, '👩‍💻' * 81 + 'X')
     for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m',
                    '🇸🇪', '\x1b[1m🇸🇪\x1b[0m', '👩‍💻', 'é 中文'):
         for prefilled in (False, True):
