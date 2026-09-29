@@ -171,6 +171,11 @@ ASCII emissions keep their existing cursor path. The report request and return
 to the editor cursor share one output batch; waiting for the reply leaves the
 cursor at the prompt. Replies use the existing 100 ms timeout and preserve
 concurrent user input. No grapheme or transcript buffering is introduced.
+At an active prompt's exact right edge, a later printable chunk uses a hard
+row advance after the cursor handoff. This avoids overwriting the last cell,
+but that row may not join on width growth and a Unicode cluster split there
+may lose its attachment. See the scoped
+[review exception](docs/softline-mdf-stream-design.md#review-exception-active-prompt-right-edge-continuation).
 
 Softline retains the previous prompt frame and patches only changed cells.
 Feeding output leaves unchanged prompt cells intact and restores the editor
@@ -233,7 +238,7 @@ fresh row if the previous session ended mid-row. Finite `print_above()` output
 between sessions continues in ordinary terminal scrollback.
 
 Each write is visible before it returns, including while `next_prompt()` is
-active. Chunk boundaries add no content or document semantics; ANSI SGR and
+active. Chunk boundaries add no content or document separators; ANSI SGR and
 UTF-8 sequences may cross calls. End rejects an incomplete sequence. Softline
 does not automatically append submitted editor text to the transcript;
 applications render it explicitly. Use

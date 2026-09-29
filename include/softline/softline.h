@@ -939,7 +939,10 @@ int sl_output_stream_begin(sl_t *self);
  * the editor cursor in the same output batch. Reply reads preserve concurrent
  * input and wait up to 100 ms; unanswered reports disable further probing.
  * ASCII emissions add no reports. No grapheme buffering or renderer-specific
- * wrapping is used. */
+ * wrapping is used. At an active prompt's right edge, a later printable
+ * continuation uses CR and IND after the cursor handoff. This hard row boundary
+ * can remain split after width growth, and a Unicode cluster split there may
+ * lose its attachment. */
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
 
 /** End the output session. The caller remains responsible for finishing any

@@ -197,11 +197,13 @@ live scroll regions, status lines, and spinners are off; the theme is
   preserving concurrent input; an unanswered report disables further probing
   and retains estimated positions. ASCII emissions add no reports. There is
   no grapheme buffering or renderer-specific behavior. Transcript reflow
-  belongs to the terminal. The output
-  margin follows the actual prompt height, including visible queue entries,
-  nonempty status messages, status lines, and editor rows. Unused preview slots
-  occupy no space. At physical capacity the editor pages, leaving at least two
-  output rows. Native chat needs at least three terminal rows, uses physical
+  belongs to the terminal. With an active prompt, an exact-right-edge chunk
+  continuation advances a hard row after the cursor handoff. That row may not
+  rejoin on width growth, and a split Unicode cluster can lose its attachment.
+  The output margin follows the actual prompt height, including visible queue
+  entries, nonempty status messages, status lines, and editor rows. Unused
+  preview slots occupy no space. At physical capacity the editor pages, leaving
+  at least two output rows. Native chat needs at least three terminal rows, uses physical
   terminal width, and supports no rectangular viewport.
   An unfinished line clipped into scrollback continues at the first visible
   output row without replay. If the clipped position was at a hard line

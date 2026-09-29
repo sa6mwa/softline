@@ -39,13 +39,14 @@ interpret Markdown, own the transport, or run a worker. A sink write is visible
 before the corresponding Softline write returns; no finish/EOF or next prompt
 is needed to make an already-decided fragment appear.
 
-Chunk boundaries have no display semantics. In particular, Softline inserts
-no newline, response separator, or space in producer content at a write
-boundary. Terminal cursor and style controls surround native writes to isolate
-the editor. Output position and producer style are tracked by Softline rather
-than by terminal cursor save/restore sequences. Native LF positioning follows
-the output TTY's OPOST/ONLCR settings; producer bytes and terminal settings
-are unchanged. A failed native session startup restores raw mode only when
+Softline adds no content bytes, response separator, or space at chunk
+boundaries. With an active prompt, a write that ends exactly at the terminal's
+right edge can change how the next write wraps; the scoped exception below
+describes this case. Terminal cursor and style controls surround native writes
+to isolate the editor. Output position and producer style are tracked by
+Softline rather than by terminal cursor save/restore sequences. Native LF
+positioning follows the output TTY's OPOST/ONLCR settings; producer bytes and
+terminal settings are unchanged. A failed native session startup restores raw mode only when
 that startup acquired it, preserving raw mode already owned by the editor.
 Ending a session does not finish a Markdown document. The application calls its
 renderer’s document lifecycle itself. Each successful write accepts its entire
@@ -99,6 +100,11 @@ with no renderer-specific logic, grapheme buffering, or replay.
 Moving to an editor or temporary parked cursor releases
 producer ownership, so later writes use the stored output position. Rendering
 a prompt sets its actual margin.
+At an active prompt's exact right edge, returning to the editor clears the
+terminal's pending-wrap state. A later printable continuation uses CR and IND
+to reach the next row without overwriting the last cell. This is a hard row
+boundary in terminals that distinguish hard and soft wraps. Producer-emitted
+LF is handled normally; no extra row advance is needed when LF comes next.
 Finite callbacks and live writes share the same native geometry reconciliation.
 Finite output reconciles the retained prompt before invoking its producer and
 again after each callback returns, including EOF. A resize during a callback
@@ -181,6 +187,26 @@ the current public layouts are not binary compatible with those releases.
 Softline and its sole consumer are rebuilt together. Loading this development
 library into an older compiled consumer is unsupported. Reconsider this exception
 before making a binary compatibility commitment to independently built consumers.
+
+### Review exception: active-prompt right-edge continuation
+
+The production executive accepted this tradeoff on 2026-09-29 for generic
+native output with an active prompt. If one write ends exactly at the terminal's
+right edge and a later write continues the same line, Softline uses CR and IND
+because returning to the prompt has cleared the terminal's pending wrap. The
+continuation stays visible without overwriting the last cell, but the row is
+hard-wrapped: widening the terminal may not join it with the previous row.
+If a Unicode grapheme crosses that same boundary, a combining mark or joiner
+may fail to attach to the preceding character. Softline does not buffer or
+replay producer text to repair the cluster. This exception does not apply while
+the producer owns the terminal cursor before the first prompt frame, or when
+the producer emits LF before continuing. The chat example gives libmdf its
+current geometry and forwards its sink emissions; libmdf's explicit line wraps
+avoid the seam in the tested ordinary paragraphs, but sink writes have no
+general line-boundary guarantee. Reconsider this exception if lossless
+arbitrary-chunk Unicode output with an active prompt becomes a requirement or
+if a portable solution preserves pending wrap without reintroducing the
+rejected cursor-ownership, replay, or buffering behavior.
 
 ## Verification
 

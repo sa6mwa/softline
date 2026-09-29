@@ -261,6 +261,12 @@ sink emission directly while editing and queueing continue. Softline stores
 only cursor geometry and bounded partial ANSI/UTF-8 state.
 SGR and UTF-8 sequences can cross writes; ending with an incomplete sequence
 fails and keeps the session open.
+With an active prompt, a printable continuation after a write ending exactly
+at the terminal's right edge uses CR and IND after the cursor handoff. The
+resulting hard row boundary can remain split after width growth, and a Unicode
+cluster divided there may lose its attachment. The accepted scope and rationale
+are recorded in `softline-mdf-stream-design.md` under the active-prompt
+right-edge review exception.
 
 For finite `print_above()` output on an ordinary readline prompt, rendering uses
 normal clear-and-redraw scrollback by default. Set `live_scroll_region = 1` in
