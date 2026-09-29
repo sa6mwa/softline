@@ -563,10 +563,16 @@ def main():
             handoff_resize_case(fixture, build, source, prefilled)
     for flags in (20, 22):
         handoff_resize_case(fixture, build, '🇸🇪' * flags)
+    # Cursor reports clamp after scrolling; the logical width must still
+    # follow the terminal's one-cell regional indicators.
+    handoff_resize_case(fixture, build, '🇸🇪' * 181 + 'X')
     for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m',
                    '🇸🇪', '\x1b[1m🇸🇪\x1b[0m', '👩‍💻', 'é 中文'):
         for prefilled in (False, True):
             finite_retained_case(fixture, build, source, prefilled)
+    # A hard line control before Unicode must not distort the width used to
+    # continue that rendered line after width growth.
+    finite_retained_case(fixture, build, '\n' + '🇸🇪' * 22 + 'X')
     print('Native output preserves bytes, reflow, cursor handoff, and exit.')
 
 

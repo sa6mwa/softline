@@ -1347,6 +1347,10 @@ static int sl_codepoint_is_wide(unsigned long cp) {
          (cp >= 0x1fa70UL && cp <= 0x1faffUL);
 }
 
+static int sl_codepoint_is_regional_indicator(unsigned long cp) {
+  return cp >= 0x1f1e6UL && cp <= 0x1f1ffUL;
+}
+
 static int sl_codepoint_width(unsigned long cp) {
   if (cp == 0)
     return 0;
@@ -1356,16 +1360,15 @@ static int sl_codepoint_width(unsigned long cp) {
     return 1;
   if (sl_codepoint_is_combining(cp))
     return 0;
+  /* Terminals advance one cell per indicator and two per completed flag. */
+  if (sl_codepoint_is_regional_indicator(cp))
+    return 1;
   return sl_codepoint_is_wide(cp) ? 2 : 1;
 }
 
 static int sl_codepoint_is_variation(unsigned long cp) {
   return (cp >= 0xfe00UL && cp <= 0xfe0fUL) ||
          (cp >= 0xe0100UL && cp <= 0xe01efUL);
-}
-
-static int sl_codepoint_is_regional_indicator(unsigned long cp) {
-  return cp >= 0x1f1e6UL && cp <= 0x1f1ffUL;
 }
 
 static int sl_codepoint_accepts_emoji_modifier(unsigned long cp) {
