@@ -246,7 +246,7 @@ def case(fixture, build, source, prefilled=False):
         vt.pump()
 
 
-def handoff_resize_case(fixture, build, source, prefilled=False):
+def handoff_resize_case(fixture, build, source, prefilled=False, draft=''):
     direct, direct_window = terminal()
     actual, actual_window = terminal()
     child = None
@@ -295,7 +295,18 @@ def handoff_resize_case(fixture, build, source, prefilled=False):
                 while not any(line.startswith('> ') for line in full_transcript(actual)):
                     vt.pump()
                     assert child.poll() is None and time.monotonic() < deadline, 'handoff timed out'
-                vt.send(actual, b'\r', 1)
+                if draft:
+                    payload = draft.encode()
+                    vt.send(actual, payload, len(payload))
+                    for _ in range(10):
+                        vt.pump()
+                    resize(actual, actual_window, 13, 8)
+                    resize(direct, direct_window, 13, 8)
+                    for _ in range(10):
+                        vt.pump()
+                    vt.send(actual, b'\x15\r', 2)
+                else:
+                    vt.send(actual, b'\r', 1)
                 ack()
                 for width, height in ((80, 12), (30, 8), (80, 8), (40, 12)):
                     resize(direct, direct_window, width, height)
@@ -583,6 +594,7 @@ def main():
     # right edge; a simple cell-count remainder points into existing text.
     for source in ('a' * 29 + '中', 'a' * 23 + '\t\t中'):
         handoff_resize_case(fixture, build, source)
+    handoff_resize_case(fixture, build, 'MARKER', True, '中' * 18)
     for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m',
                    '🇸🇪', '\x1b[1m🇸🇪\x1b[0m', '👩‍💻', 'é 中文'):
         for prefilled in (False, True):

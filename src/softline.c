@@ -1975,21 +1975,57 @@ static int sl_render_store_update(sl_impl_t *impl, sl_render_t *render,
 }
 
 /* Map the retained prompt and its cursor into the terminal's new width. */
+static size_t sl_ansi_sequence_len(const char *text, size_t len, size_t pos);
+
+/* Count physical rows from the rendered clusters: a wide cluster moves as a
+ * whole when it meets the new right margin. */
+static int sl_render_reflow_row(const char *text, size_t len, int width,
+                                int cursor_col, int *cursor_row) {
+  size_t pos = 0;
+  int rows = 1, col = 0, cells_seen = 0;
+  if (cursor_row)
+    *cursor_row = 0;
+  while (pos < len) {
+    size_t step = sl_ansi_sequence_len(text, len, pos);
+    int cells;
+    if (step > 0) {
+      pos += step;
+      continue;
+    }
+    step = sl_utf8_cluster_len_width(text, len, pos, &cells);
+    if (step == 0)
+      break;
+    if (cells > 0 && col + cells > width) {
+      rows++;
+      col = 0;
+    }
+    col += cells;
+    cells_seen += cells;
+    if (cursor_row && cells_seen == cursor_col)
+      *cursor_row = rows - 1 + (col == width);
+    pos += step;
+  }
+  return rows;
+}
+
 static void sl_render_reflow_geometry(sl_impl_t *impl, int width, int *span,
                                       int *offset) {
   int i;
   *span = *offset = 0;
   for (i = 0; i < impl->rendered_rows; i++) {
+    int cursor_row = 0;
     int rows = impl->rendered_cols[i] == INT_MAX
                    ? 1
-                   : (impl->rendered_cols[i] + width - 1) / width;
-    if (rows < 1)
-      rows = 1;
+                   : sl_render_reflow_row(
+                         impl->rendered_lines[i], impl->rendered_lens[i], width,
+                         impl->rendered_cursor_col,
+                         i == impl->rendered_cursor_row ? &cursor_row : NULL);
     *span += rows;
     if (i < impl->rendered_cursor_row)
       *offset += rows;
+    if (i == impl->rendered_cursor_row)
+      *offset += cursor_row;
   }
-  *offset += impl->rendered_cursor_col / width;
 }
 
 /* Retain unchanged physical prompt rows after native width reflow. Only
@@ -2019,9 +2055,11 @@ static int sl_render_store_reflow(sl_impl_t *impl, int width, int height,
   for (i = 0; i < rows; i++)
     cols[i] = INT_MAX; /* Unknown cells inside an owned prompt row. */
   for (i = 0; i < impl->rendered_rows; i++) {
-    int count = impl->rendered_cols[i] == INT_MAX
-                    ? 1
-                    : (impl->rendered_cols[i] + width - 1) / width;
+    int count =
+        impl->rendered_cols[i] == INT_MAX
+            ? 1
+            : sl_render_reflow_row(impl->rendered_lines[i],
+                                   impl->rendered_lens[i], width, 0, NULL);
     int target = offset - start;
     if (count < 1)
       count = 1;
