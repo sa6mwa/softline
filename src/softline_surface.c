@@ -240,8 +240,12 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
   if (byte == '\r') {
     if (surface->tracking) {
       surface->write_line_control = 1;
+      /* CR returns to the start of the current physical row. Earlier soft
+       * wraps still belong to this logical line after terminal reflow. */
+      surface->line_cells = surface->line_cells >= (size_t)surface->col
+                                ? surface->line_cells - (size_t)surface->col
+                                : 0;
       surface->col = 0;
-      surface->line_cells = 0;
     }
     return 0;
   }

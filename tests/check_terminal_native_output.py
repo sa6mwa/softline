@@ -558,7 +558,7 @@ def main():
     clamped_native_prompt_case(fixture, build)
     clamped_native_prompt_case(fixture, build, first_frame_resize=True)
     for source in ('ABC', 'a' * 39 + 'X', '🇸🇪', '\x1b[1m🇸🇪\x1b[0mX',
-                   '👩‍💻X', 'é 中文', '🇸🇪\nnext'):
+                   '👩‍💻X', 'é 中文', '🇸🇪\nnext', 'a' * 45 + '\rQ'):
         for prefilled in (False, True):
             handoff_resize_case(fixture, build, source, prefilled)
     for flags in (20, 22):
