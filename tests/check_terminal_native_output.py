@@ -469,6 +469,71 @@ def interrupt_case(fixture, disposition):
         vt.pump()
 
 
+def clamped_native_prompt_case(fixture, build):
+    widget, window = terminal()
+    child = None
+    with tempfile.TemporaryDirectory(prefix='clamped-prompt-', dir=build) as work:
+        commands, replies = pathlib.Path(work, 'commands'), pathlib.Path(work, 'replies')
+        os.mkfifo(commands)
+        os.mkfifo(replies)
+        command_fd = os.open(commands, os.O_RDWR | os.O_NONBLOCK)
+        reply_fd = os.open(replies, os.O_RDWR | os.O_NONBLOCK)
+        try:
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 8, 40, 0, 0))
+            terminal_pty = vt.foreign_pty(master, None, None)
+            assert terminal_pty
+            vt.set_pty(widget, terminal_pty)
+            vt.unref(terminal_pty)
+            child = subprocess.Popen([fixture, '--gated', str(commands), str(replies), ''],
+                                     stdin=slave, stdout=slave, stderr=slave)
+            os.close(slave)
+
+            def ack():
+                reply = b''
+                deadline = time.monotonic() + 4
+                while len(reply) < 4:
+                    vt.pump()
+                    if select.select([reply_fd], [], [], 0)[0]:
+                        reply += os.read(reply_fd, 4 - len(reply))
+                    assert child.poll() is None and time.monotonic() < deadline
+
+            ack()
+            os.write(command_fd, b'i')
+            deadline = time.monotonic() + 4
+            while '> ' not in full_transcript(widget):
+                vt.pump()
+                assert child.poll() is None and time.monotonic() < deadline
+            draft = b'a' * 18
+            vt.send(widget, draft, len(draft))
+            deadline = time.monotonic() + 4
+            while ('> ' + draft.decode()) not in full_transcript(widget):
+                vt.pump()
+                assert child.poll() is None and time.monotonic() < deadline
+            resize(widget, window, 20, 8)
+            for _ in range(15):
+                vt.pump()
+            transcript = full_transcript(widget)
+            assert transcript.count('> ' + draft.decode()) == 1, (
+                'clamped cursor duplicated native prompt', transcript)
+            vt.send(widget, b'\x15\r', 2)
+            ack()
+            os.write(command_fd, b'x')
+            deadline = time.monotonic() + 4
+            while child.poll() is None:
+                vt.pump()
+                assert time.monotonic() < deadline
+            assert child.wait() == 0
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.wait()
+            os.close(command_fd)
+            os.close(reply_fd)
+            vt.destroy(window)
+            vt.pump()
+
+
 def main():
     assert len(sys.argv) == 3, 'usage: check_terminal_native_output.py FIXTURE BUILD'
     fixture, build = sys.argv[1:]
@@ -488,6 +553,7 @@ def main():
             case(fixture, build, source, prefilled)
     for disposition in ('ignore', 'handler'):
         interrupt_case(fixture, disposition)
+    clamped_native_prompt_case(fixture, build)
     for source in ('ABC', 'a' * 39 + 'X', '🇸🇪', '\x1b[1m🇸🇪\x1b[0mX',
                    '👩‍💻X', 'é 中文', '🇸🇪\nnext'):
         for prefilled in (False, True):

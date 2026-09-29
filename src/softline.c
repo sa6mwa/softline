@@ -3075,6 +3075,12 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
     return 1;
   if (!height_only)
     sl_render_reflow_geometry(impl, width, &span, &offset);
+  /* A terminal may clamp a cursor at the old right edge to the last cell.
+   * Honor the observed position rather than the predicted reflow row. */
+  if (!height_only && observed > 0 && impl->rendered_cursor_col > 0 &&
+      impl->rendered_cursor_col % width == 0 &&
+      impl->probed_cursor_col == width - 1)
+    offset--;
   if (observed > 0) {
     int observed_below = height - observed;
     sl_surface_native_prompt_reflow(
