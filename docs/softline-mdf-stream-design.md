@@ -70,16 +70,17 @@ full-terminal transcript begins at the existing terminal cursor. The editable
 prompt starts at the bottom. An unchanged frame follows the terminal's native
 resize position, including space exposed below it; only changed prompt layout
 updates cells. The VT scroll region ends immediately above the current prompt
-frame. Native producer bytes
-are written unchanged, with only bounded partial ANSI/UTF-8 parser state and
-an output cursor retained. Softline never rewraps, pads, clears, or replays
-native transcript text. Positions are distances from the terminal bottom.
+frame. Native producer bytes are written unchanged. Softline retains bounded
+partial ANSI/UTF-8 parser state, an output cursor, and wide-cell/tab extents
+for the unfinished line. It never rewraps, pads, clears, or replays native
+transcript text. Positions are distances from the terminal bottom.
 Resize reconciliation queries the live input cursor and combines its observed
 movement with the known layout of the old prompt. Unchanged prompt rows that
 fit the new width keep their cached cells. Width resize rebuilds only prompt
-layout; transcript reflow remains owned by the terminal. The
-producer tracks display cells since its last hard line boundary so growth can
-restore the column of a previously wrapped line without storing its text.
+layout; transcript reflow remains owned by the terminal. Softline tracks
+display cells and sparse wide-cell/tab extents since the last hard line
+boundary so width changes can restore the column of a previously wrapped line
+without storing its text.
 When no prompt frame has been rendered, the live cursor belongs to the producer.
 Writes leave that cursor in place, preserving native pending wrap and Unicode
 clusters across chunks. No editor rows are reserved until a frame exists.
@@ -165,8 +166,9 @@ Softline detects dynamic dimensions through `TIOCGWINSZ` without taking
 ownership of `SIGWINCH`. An application may register its own signal/self-pipe
 or other event source to update its external renderer before feeding more data.
 Input bytes, editor cursor position, queue contents and pending parser state
-survive resize. Memory use is independent of transcript length. The stream
-accepts one-byte fragments indefinitely.
+survive resize. Memory use is independent of completed transcript length;
+wide-cell/tab metadata capacity grows with the largest unfinished output line
+encountered. The stream accepts one-byte fragments indefinitely.
 
 ## Compatibility and public surfaces
 

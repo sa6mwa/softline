@@ -12,6 +12,11 @@
 #define SL_ROW(surface)                                                        \
   ((surface)->terminal_rows - 1 - (surface)->producer_below)
 
+typedef struct {
+  size_t start, end;
+  unsigned char cells;
+} sl_reflow_event_t;
+
 struct sl_surface {
   int fd;
   int width;
@@ -28,6 +33,8 @@ struct sl_surface {
   int background[4];
   int col;
   size_t line_cells;
+  sl_reflow_event_t *reflow_events;
+  size_t reflow_count, reflow_capacity;
   int (*cell_width)(unsigned long);
   int parser; /* 0 text, 1 ESC, 2 CSI */
   char csi[128];
@@ -68,6 +75,15 @@ static int sl_surface_put(sl_surface_t *surface, unsigned long codepoint) {
   cells = surface->cell_width(codepoint);
   if (cells < 0)
     cells = 1;
+  if (cells > 1 && surface->native_stream) {
+    sl_reflow_event_t *event;
+    if (surface->reflow_count >= surface->reflow_capacity)
+      return -1;
+    event = &surface->reflow_events[surface->reflow_count++];
+    event->start = surface->line_cells;
+    event->end = surface->line_cells + (size_t)cells;
+    event->cells = (unsigned char)cells;
+  }
   if (surface->col + cells > surface->width) {
     surface->col = 0;
     if (SL_ROW(surface) + 1 < surface->height)
@@ -232,6 +248,7 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
       else if (surface->col >= surface->width)
         surface->col = surface->width - 1;
       surface->line_cells = (size_t)surface->col;
+      surface->reflow_count = 0;
       if (SL_ROW(surface) + 1 < surface->height)
         surface->producer_below--;
     }
@@ -245,6 +262,10 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
       surface->line_cells = surface->line_cells >= (size_t)surface->col
                                 ? surface->line_cells - (size_t)surface->col
                                 : 0;
+      while (surface->reflow_count > 0 &&
+             surface->reflow_events[surface->reflow_count - 1].start >=
+                 surface->line_cells)
+        surface->reflow_count--;
       surface->col = 0;
     }
     return 0;
@@ -252,8 +273,18 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
   if (byte == '\t') {
     if (surface->tracking) {
       int next = surface->col + 8 - (surface->col % 8);
+      int old_col = surface->col;
       if (next >= surface->width)
         next = surface->width - 1;
+      if (surface->native_stream && next > old_col) {
+        sl_reflow_event_t *event;
+        if (surface->reflow_count >= surface->reflow_capacity)
+          return -1;
+        event = &surface->reflow_events[surface->reflow_count++];
+        event->start = surface->line_cells;
+        event->end = surface->line_cells + (size_t)(next - old_col);
+        event->cells = (unsigned char)(next - old_col);
+      }
       /* HT cancels pending wrap, so a full-row endpoint can move back one. */
       surface->line_cells =
           surface->line_cells - (size_t)surface->col + (size_t)next;
@@ -435,6 +466,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
                                   : surface->terminal_rows - surface->height;
     surface->col = 0;
     surface->line_cells = 0;
+    surface->reflow_count = 0;
   }
   count = 0;
   if (!surface->producer_cursor_live || prompt_row >= 0) {
@@ -456,6 +488,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
       memcpy(prefix + count, "\r\033D", 3);
       count += 3;
       surface->line_cells = 0;
+      surface->reflow_count = 0;
     }
   }
   style_count =
@@ -478,6 +511,36 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
     suffix_count += position;
   }
   next = *surface;
+  {
+    size_t candidates = surface->utf8_need != 0;
+    size_t needed, capacity;
+    sl_reflow_event_t *events;
+    for (i = 0; i < length; i++) {
+      unsigned char byte = (unsigned char)bytes[i];
+      if (byte == '\t' || byte >= 0xc0u)
+        candidates++;
+    }
+    if (candidates > (size_t)-1 - surface->reflow_count)
+      return -1;
+    needed = surface->reflow_count + candidates;
+    if (needed > surface->reflow_capacity) {
+      capacity = surface->reflow_capacity ? surface->reflow_capacity : 8;
+      while (capacity < needed) {
+        if (capacity > (size_t)-1 / 2)
+          return -1;
+        capacity *= 2;
+      }
+      if (capacity > (size_t)-1 / sizeof(*events))
+        return -1;
+      events = realloc(surface->reflow_events, capacity * sizeof(*events));
+      if (!events)
+        return -1;
+      surface->reflow_events = events;
+      surface->reflow_capacity = capacity;
+      next.reflow_events = events;
+      next.reflow_capacity = capacity;
+    }
+  }
   next.write_line_control = 0;
   sl_surface_reset_partial(&next);
   next.tracking = 1;
@@ -513,6 +576,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   surface->producer_below = next.producer_below;
   surface->col = next.col;
   surface->line_cells = next.line_cells;
+  surface->reflow_count = next.reflow_count;
   surface->write_line_control = next.write_line_control;
   surface->attributes = next.attributes;
   memcpy(surface->foreground, next.foreground, sizeof(next.foreground));
@@ -550,6 +614,7 @@ void sl_surface_destroy(sl_surface_t *surface) {
     return;
   if (surface->native_stream)
     (void)sl_surface_native_finish(surface, -1);
+  free(surface->reflow_events);
   free(surface);
 }
 
@@ -582,6 +647,50 @@ int sl_surface_native_resize_pending(const sl_surface_t *surface) {
           (int)terminal.ws_row != surface->terminal_rows);
 }
 
+static int sl_surface_reflow_ones(int col, size_t count, int width) {
+  size_t remaining;
+  if (count == 0)
+    return col;
+  remaining = (size_t)(width - col);
+  if (count <= remaining)
+    return col + (int)count;
+  count -= remaining;
+  return (int)((count - 1) % (size_t)width) + 1;
+}
+
+/* Retain only terminal cell extents on this line, never producer bytes. The
+ * terminal itself keeps the text and reflows it; wide cells and HT spans must
+ * remain atomic when they straddle a new right margin. */
+static void sl_surface_reflow_column(sl_surface_t *surface, int width) {
+  size_t i, previous = 0, logical = 0, original = surface->line_cells;
+  int col = 0;
+  for (i = 0; i < surface->reflow_count; i++) {
+    sl_reflow_event_t *event = &surface->reflow_events[i];
+    size_t gap;
+    if (event->start < previous || event->end < event->start ||
+        event->end > original || event->cells > width) {
+      surface->reflow_count = 0;
+      surface->col = (int)(original % (size_t)width);
+      if (surface->col == 0)
+        surface->col = width;
+      return;
+    }
+    gap = event->start - previous;
+    col = sl_surface_reflow_ones(col, gap, width);
+    logical += gap;
+    previous = event->end;
+    event->start = logical;
+    if (col + event->cells > width)
+      col = 0;
+    col += event->cells;
+    logical += event->cells;
+    event->end = logical;
+  }
+  col = sl_surface_reflow_ones(col, original - previous, width);
+  surface->line_cells = logical + original - previous;
+  surface->col = col;
+}
+
 int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   struct winsize terminal;
   char seq[64];
@@ -609,7 +718,10 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   surface->terminal_rows = terminal.ws_row;
   surface->terminal_columns = terminal.ws_col;
   if (surface->width != width && surface->line_cells > 0) {
-    surface->col = (int)(surface->line_cells % (size_t)width);
+    if (surface->reflow_count > 0)
+      sl_surface_reflow_column(surface, width);
+    else
+      surface->col = (int)(surface->line_cells % (size_t)width);
     /* Keep an exact right-edge endpoint distinct from an empty row. Cursor
      * addressing loses the terminal's pending-wrap flag; the next write must
      * continue below this row rather than overwrite its first character. */

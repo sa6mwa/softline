@@ -190,9 +190,10 @@ tracked output position. Cursor positions are stored as distances from the
 bottom; no terminal cursor save/restore sequences are used. Unchanged prompt
 rows that still fit are preserved. Width changes rebuild only prompt layout;
 transcript reflow belongs to the terminal.
-A bounded cell counter tracks the open output line so width growth restores its
-reflowed column rather than overwriting the last physical row. No transcript
-bytes are retained for this calculation.
+A cell counter and sparse wide-cell/tab extents track the open output line so
+width changes restore its reflowed column without overwriting existing cells.
+This metadata grows with exceptional cells on the unfinished line; no producer
+bytes are retained or delayed for this calculation.
 Every batch that positions the output cursor establishes its scroll margin
 alongside the producer bytes. Physical resize itself updates geometry;
 an unchanged prompt needs no cursor movement or repaint. Updating the margin

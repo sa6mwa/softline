@@ -258,7 +258,8 @@ additional reports. This observes generic terminal behavior without grapheme
 buffering, renderer knowledge, or producer wrapping decisions.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
-only cursor geometry and bounded partial ANSI/UTF-8 state.
+cursor geometry, bounded partial ANSI/UTF-8 state, and wide-cell/tab extents
+for the unfinished output line. It retains no producer text for resize.
 SGR and UTF-8 sequences can cross writes; ending with an incomplete sequence
 fails and keeps the session open.
 With an active prompt, a printable continuation after a write ending exactly
@@ -461,7 +462,8 @@ single-owner rendering rule.
 ### Output And Transcript Management
 
 `print_above()` and a persistent output session handle chunked output above the
-active prompt. Softline retains cursor geometry and bounded parser state.
+active prompt. Softline retains cursor geometry, bounded parser state, and
+wide-cell/tab extents for the unfinished output line.
 The terminal owns transcript cells and scrollback. Physical resizing leaves
 surviving output cells as the terminal reflowed them; changing the output
 margin does not scroll them again. Output clipped off the top is not recovered
