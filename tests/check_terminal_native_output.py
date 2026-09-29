@@ -374,8 +374,7 @@ def finite_retained_case(fixture, build, source, prefilled=False):
                 expected = full_transcript(direct)
                 assert observed == expected, ('finite cursor drift', source, prefilled, expected, observed)
                 cursor = rows(actual)[1]
-                visible_row = cursor[0] - int(adjustment_value(get_adjustment(actual)))
-                assert (visible_row, cursor[1]) == (vt.row_count(actual) - 1, 2), ('finite input cursor', cursor)
+                assert cursor == (len(full_transcript(actual)) - 1, 2), ('finite input cursor', cursor)
 
             try:
                 assert ack() == (40, 8)
@@ -412,6 +411,7 @@ def finite_retained_case(fixture, build, source, prefilled=False):
                             vt.feed(direct, b'YZ', 2)
                             vt.pump()
                         compare()
+                input_row = rows(actual)[1][0]
                 os.write(command_fd, b'x')
                 deadline = time.monotonic() + 4
                 while child.poll() is None:
@@ -421,8 +421,7 @@ def finite_retained_case(fixture, build, source, prefilled=False):
                 vt.pump()
                 assert full_transcript(actual) == full_transcript(direct), ('finite teardown transcript', source)
                 cursor = rows(actual)[1]
-                visible_row = cursor[0] - int(adjustment_value(get_adjustment(actual)))
-                assert (visible_row, cursor[1]) == (vt.row_count(actual) - 1, 0), ('finite exit cursor', cursor)
+                assert cursor == (input_row, 0), ('finite exit cursor', cursor)
                 print('PASS finite', prefilled, repr(source), flush=True)
             finally:
                 os.close(command_fd)

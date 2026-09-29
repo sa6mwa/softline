@@ -185,8 +185,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   call starts cleanly.
 - `sl:output_stream_begin()` opens one persistent output session above the
   prompt. Transcript output starts at the existing terminal cursor; the editable
-  prompt is anchored at the bottom from its first frame. Producer bytes pass
-  through unchanged. Before the first frame, output uses the full terminal and
+  prompt starts at the bottom. Physical resize preserves the terminal's native
+  prompt position; only prompt layout changes update its cells. Producer bytes
+  pass through unchanged. Before the first frame, output uses the full terminal and
   leaves its cursor in place between writes, preserving native autowrap and
   Unicode clusters. Cursor reports occur at ownership and resize boundaries.
   With a prompt frame present, complete emissions containing Unicode also
@@ -237,7 +238,8 @@ live scroll regions, status lines, and spinners are off; the theme is
   editor. Output-session and quoted-prompt methods run on the Lua/editor owner
   thread; foreign producers should notify a watched descriptor instead of
   calling Lua.
-- Physical resize redraws the prompt without replaying transcript output.
+- Physical resize preserves an unchanged prompt and cursor at their native
+  terminal positions. Changed prompt layout updates only owned cells.
   The application updates its external renderer width separately. Softline
   does not cache or repaint the transcript.
 - `sl:last_readline_status()` returns the last readline status code.
@@ -365,7 +367,8 @@ lua examples/chat.lua
 
 `examples/chat.lua` accepts the same `SOFTLINE_PROMPT_THEME` values as the C
 chat example. It uses the default native persistent output session: transcript
-output starts at the original cursor, while the prompt stays at the bottom.
+output starts at the original cursor, while the prompt starts at the bottom
+and follows the terminal's native resize position.
 Output feeds preserve unchanged prompt cells; prompt updates patch only cells
 that differ from the previous frame.
 

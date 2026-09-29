@@ -407,7 +407,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   struct iovec parts[3];
   sl_surface_t next;
   char prefix[192], suffix[64];
-  int count, style_count, suffix_count, first, newline_returns;
+  int count, position, style_count, suffix_count, first, newline_returns;
   struct termios attributes;
   size_t i;
   if (!sl_surface_is_native(surface))
@@ -429,11 +429,17 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   }
   count = 0;
   if (!surface->producer_cursor_live || prompt_row >= 0) {
-    count = sl_surface_cursor(
-        prefix, sizeof(prefix), surface->producer_below,
-        surface->col < surface->width ? surface->col : surface->width - 1);
-    if (count < 0)
+    /* Resize can reset margins after its PTY size is already observable.
+     * Establish the output region in every batch that positions its cursor. */
+    count = snprintf(prefix, sizeof(prefix), "\033[1;%dr", surface->height);
+    if (count <= 0 || (size_t)count >= sizeof(prefix))
       return -1;
+    position = sl_surface_cursor(
+        prefix + count, sizeof(prefix) - (size_t)count, surface->producer_below,
+        surface->col < surface->width ? surface->col : surface->width - 1);
+    if (position < 0)
+      return -1;
+    count += position;
     /* Cursor addressing cancels pending wrap. Resume on the following row when
      * a printable continuation follows a completely filled row. */
     if (surface->col == surface->width &&
@@ -570,15 +576,21 @@ int sl_surface_native_resize_pending(const sl_surface_t *surface) {
 int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   struct winsize terminal;
   char seq[64];
-  int shift, count, previous_height, retain_cursor;
+  int shift, count, previous_height, retain_cursor, physical_resize;
   if (!sl_surface_is_native(surface) || width < 1 || height < 2 ||
       sl_surface_terminal_size(surface->fd, &terminal) != 0)
     return -1;
+  if (surface->width == width && surface->height == height &&
+      surface->terminal_rows == (int)terminal.ws_row &&
+      surface->terminal_columns == (int)terminal.ws_col)
+    return 0;
   /* A full-height region follows native terminal resize. Keep its live
    * producer cursor and pending wrap; no margin command is necessary. */
   retain_cursor = surface->producer_cursor_live &&
                   surface->height == surface->terminal_rows &&
                   height == (int)terminal.ws_row;
+  physical_resize = surface->terminal_rows != (int)terminal.ws_row ||
+                    surface->terminal_columns != (int)terminal.ws_col;
   previous_height =
       surface->height + (int)terminal.ws_row - surface->terminal_rows;
   if (previous_height < 2)
@@ -613,7 +625,7 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   if (retain_cursor)
     return 0;
   surface->producer_cursor_live = 0;
-  return sl_surface_native_region(surface);
+  return physical_resize ? 0 : sl_surface_native_region(surface);
 }
 
 int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,

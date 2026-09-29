@@ -350,14 +350,6 @@ static int term_row_of(const struct terminal *t, const char *needle) {
   return -1;
 }
 
-static int term_rows_blank(const struct terminal *t, int first, int last) {
-  int row;
-  for (row = first; row <= last; row++)
-    if (strspn(t->cells[row], " ") != (size_t)t->cols)
-      return 0;
-  return 1;
-}
-
 static struct timespec deadline_after(int milliseconds) {
   struct timespec deadline;
   (void)clock_gettime(CLOCK_MONOTONIC, &deadline);
@@ -1074,7 +1066,6 @@ static void test_chat_steer_after_last_seam_starts_turn(const char *path) {
 
 static void test_chat_native_lifecycle(const char *path, int initial_row) {
   struct terminal t;
-  struct winsize ws;
   struct timespec deadline;
   char transcript[MAX_ROWS][MAX_COLS + 1];
   const char *draft =
@@ -1085,7 +1076,6 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   unsigned int region_scrolls;
   int tries;
   int turn;
-  int cycle;
   int row;
   int reaped;
   size_t mark;
@@ -1137,65 +1127,9 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
     ASSERT_TRUE(memcmp(transcript[row + t.region_scrolls - region_scrolls],
                        t.cells[row], (size_t)t.cols) == 0,
                 "wrapping overwrote surviving transcript cells");
-  /* A PTY read may end at any byte, including before the renderer clears
-   * prompt rows released by a width increase. */
+  /* Width reflow is checked in VTE and tmux. This grid model clips
+   * columns, so retain only its per-byte editor shrink check here. */
   t.read_chunk = 1;
-  for (cycle = 0; cycle < 4; cycle++) {
-    int cols;
-    int status_rows;
-    cols = cycle % 2 == 0 ? 30 : 80;
-    memset(&ws, 0, sizeof(ws));
-    ws.ws_col = (unsigned short)cols;
-    ws.ws_row = 24;
-    protected_rows = t.scroll_bottom + 1;
-    memcpy(transcript, t.cells, sizeof(transcript));
-    region_scrolls = t.region_scrolls;
-    mark = t.raw_len;
-    t.cols = cols;
-    if (t.col >= cols)
-      t.col = cols - 1;
-    if (t.saved_col >= cols)
-      t.saved_col = cols - 1;
-    ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "width resize failed");
-    deadline = deadline_after(3000);
-    while (before_deadline(&deadline) &&
-           (t.raw_len == mark || t.row != 23 ||
-            t.col != (cols == 30 ? 6 : 62) ||
-            !term_rows_blank(&t, protected_rows, t.scroll_bottom)))
-      if (term_read(&t) < 0)
-        break;
-    if (t.row != 23 || t.col != (cols == 30 ? 6 : 62) ||
-        !term_rows_blank(&t, protected_rows, t.scroll_bottom)) {
-      fprintf(stderr, "resize cycle %d, cols %d, bytes since resize %lu\n",
-              cycle, cols, (unsigned long)(t.raw_len - mark));
-      term_dump(&t);
-      FAIL("idle resize did not restore the draft cursor");
-    }
-    ASSERT_TRUE(strstr(t.raw + mark, "\n") == NULL &&
-                    strstr(t.raw + mark, "A short answer") == NULL &&
-                    strstr(t.raw + mark, "Next step") == NULL,
-                "idle resize scrolled or replayed transcript text");
-    for (row = 0;
-         row <= t.scroll_bottom &&
-         row + (int)(t.region_scrolls - region_scrolls) < protected_rows;
-         row++) {
-      if (memcmp(transcript[row + t.region_scrolls - region_scrolls],
-                 t.cells[row], (size_t)cols) != 0) {
-        fprintf(stderr, "cycle %d row %d before: |%s| after: |%s|\n", cycle,
-                row, transcript[row], t.cells[row]);
-        term_dump(&t);
-        FAIL("width resize overwrote a transcript row");
-      }
-    }
-    ASSERT_TRUE(t.row == 23 && t.scroll_bottom < 23,
-                "width resize moved the parked prompt");
-    status_rows = 0;
-    for (row = t.scroll_bottom + 1; row < t.rows; row++)
-      if (strstr(t.cells[row], "streaming demo"))
-        status_rows++;
-    ASSERT_TRUE(status_rows <= 1,
-                "width resize left a duplicate status row above the prompt");
-  }
   protected_rows = t.scroll_bottom + 1;
   memcpy(transcript, t.cells, sizeof(transcript));
   region_scrolls = t.region_scrolls;
@@ -1367,6 +1301,7 @@ static void test_chat_piped_input_terminal_output(const char *path) {
 struct frame_producer {
   int input;
   int ack;
+  int output;
 };
 
 static int frame_finite_source(sl_t *sl, void *userdata, const char **bytes,
@@ -1419,7 +1354,10 @@ static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
     result = sl_output_stream_write(sl, span, sizeof(span) - 1);
   } else
     result = sl_output_stream_write(sl, &byte, 1);
-  if (result == SL_OK && write(producer->ack, "a", 1) != 1)
+  /* The PTY can deliver data after a pipe ACK. Fence the visible frame with
+   * an idempotent SGR so the parent observes all preceding terminal bytes. */
+  if (result == SL_OK && (write(producer->output, "\033[0;0m", 6) != 6 ||
+                          write(producer->ack, "a", 1) != 1))
     return SL_ERROR_IO;
   return result;
 }
@@ -1428,9 +1366,11 @@ static int frame_exchange(struct terminal *t, int commands, int ack,
                           char byte) {
   struct timespec deadline = deadline_after(2000);
   int received = 0;
+  size_t mark = t->raw_len;
   if (write(commands, &byte, 1) != 1)
     return -1;
-  while (!received && before_deadline(&deadline)) {
+  while ((!received || strstr(t->raw + mark, "\033[0;0m") == NULL) &&
+         before_deadline(&deadline)) {
     fd_set ready;
     struct timeval timeout = {0, 50000};
     int max_fd = t->fd > ack ? t->fd : ack;
@@ -1444,7 +1384,7 @@ static int frame_exchange(struct terminal *t, int commands, int ack,
     if (FD_ISSET(ack, &ready))
       received = read(ack, &byte, 1) == 1;
   }
-  if (!received)
+  if (!received || strstr(t->raw + mark, "\033[0;0m") == NULL)
     return -1;
   /* An ACK follows the last terminal write; drain those bytes before checking
    * the screen, without relying on a sleep or a matching intermediate cursor.
@@ -1470,7 +1410,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
   struct winsize ws;
   struct frame_producer producer;
   int fd, slave, commands[2], ack[2], status, step;
-  int parked = 0;
+  int restored = 0, expected_row = 23;
   pid_t pid;
   TEST(theme == SL_PROMPT_THEME_PLAIN
            ? "every producer byte preserves the plain prompt frame"
@@ -1501,6 +1441,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
     sl = sl_create_with_config(&config);
     producer.input = commands[0];
     producer.ack = ack[1];
+    producer.output = slave;
     if (!sl || sl_set_status_elements(sl, elements, 1) != SL_OK ||
         sl_set_status_message(sl, "notice") != SL_OK ||
         sl_prompt_queue_append(sl, "queued") != SL_OK ||
@@ -1527,6 +1468,8 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
   ASSERT_TRUE(wait_screen(&t, "more", 3000) == 0, "multiline draft missing");
   while (term_read(&t) > 0)
     ;
+  ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0,
+              "initial frame did not settle before resize");
   t.guard[0] = "> draft";
   t.guard[1] = "more";
   t.guard[2] = "fixture";
@@ -1535,13 +1478,18 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
   for (step = 0; step < 3; step++) {
     static const int fitted_widths[] = {38, 36, 40};
     size_t mark = t.raw_len;
+    unsigned int regions = t.region_updates;
     ws.ws_col = (unsigned short)fitted_widths[step];
     ASSERT_TRUE(ioctl(fd, TIOCSWINSZ, &ws) == 0, "fitted frame resize failed");
     term_resize(&t, ws.ws_col, ws.ws_row);
     ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0,
                 "fitted frame resize did not finish");
-    ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
-                "fitted resize displaced the input cursor");
+    if (t.row != t.rows - 1 || t.col != 6 || !t.cursor_visible) {
+      fprintf(stderr, "fitted step %d cursor %d,%d theme %d\n", step, t.row,
+              t.col, (int)theme);
+      term_dump(&t);
+      FAIL("fitted resize displaced the input cursor");
+    }
     ASSERT_TRUE(strstr(t.raw + mark, "\0337") == NULL &&
                     strstr(t.raw + mark, "\0338") == NULL &&
                     strstr(t.raw + mark, "\033[s") == NULL &&
@@ -1554,11 +1502,17 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
                     strstr(t.raw + mark, "queued") == NULL &&
                     strstr(t.raw + mark, "more") == NULL,
                 "width resize erased or repainted a fitted prompt frame");
+    if (t.region_updates != regions ||
+        strstr(t.raw + mark, "\033[65535;") != NULL) {
+      fprintf(stderr, "fitted resize step %d, theme %d, clear %d: |%s|\n", step,
+              (int)theme, clear, t.raw + mark);
+      term_dump(&t);
+      FAIL("fitted resize moved the cursor or changed output margins");
+    }
   }
   for (step = 0; step < 480; step++) {
     char byte = source[(size_t)step % (sizeof(source) - 1)];
     size_t mark;
-    unsigned int region_updates;
     if (step > 0 && step % (int)(sizeof(source) - 1) == 0) {
       int cycle = step / (int)(sizeof(source) - 1);
       int row, shift, transcript_rows = t.scroll_bottom + 1;
@@ -1570,6 +1524,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       if (t.row >= ws.ws_row)
         transcript_rows -= t.row - ws.ws_row + 1;
       term_resize(&t, ws.ws_col, ws.ws_row);
+      expected_row = t.row;
       memcpy(transcript, t.cells, sizeof(transcript));
       scrolls = t.region_scrolls;
       /* Layout changes may reflow the prompt; feed guards start after that
@@ -1577,7 +1532,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       memset(t.guard, 0, sizeof(t.guard));
       ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0,
                   "resize did not finish");
-      ASSERT_TRUE(t.row == t.rows - 1 && t.col == 6 && t.cursor_visible,
+      ASSERT_TRUE(t.row == expected_row && t.col == 6 && t.cursor_visible,
                   "resize displaced the editor cursor");
       shift = (int)(t.region_scrolls - scrolls);
       for (row = 0; row + shift < transcript_rows && row <= t.scroll_bottom;
@@ -1596,9 +1551,9 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       t.guard[4] = "queued";
     }
     mark = t.raw_len;
-    region_updates = t.region_updates;
     ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '=') == 0 &&
-                    t.raw_len == mark,
+                    t.raw_len == mark + 6 &&
+                    strcmp(t.raw + mark, "\033[0;0m") == 0,
                 "native width setter repainted an unchanged prompt");
     if (step == 0 || step == (int)(sizeof(source) - 1) * 8)
       byte = '@';
@@ -1606,8 +1561,6 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       byte = '%';
     ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], byte) == 0,
                 "producer feed did not complete");
-    ASSERT_TRUE(t.region_updates == region_updates,
-                "native feed reset or changed the output margins");
     if (t.frame_failure) {
       term_dump(&t);
       fprintf(stderr, "feed %d lost prompt content at byte %lu\n", step,
@@ -1633,13 +1586,13 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
                     strstr(t.raw + mark, "> draft") == NULL &&
                     strstr(t.raw + mark, "queued") == NULL,
                 "feed erased or repainted an unchanged prompt frame");
-    if (t.row == t.rows - 1)
-      parked++;
+    if (t.row == expected_row)
+      restored++;
     ASSERT_TRUE(t.cursor_visible && t.col == 6,
                 "feed did not restore the editor cursor");
   }
-  ASSERT_TRUE(parked == 480 && t.frames > 1000,
-              "producer feeds moved the bottom-anchored prompt");
+  ASSERT_TRUE(restored == 480 && t.frames > 1000,
+              "producer feeds moved the terminal-positioned prompt");
   memset(t.guard, 0, sizeof(t.guard));
   {
     char before[MAX_ROWS][MAX_COLS + 1];
@@ -1672,15 +1625,15 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
     ASSERT_TRUE(!term_contains(&t, "> draft") && !term_contains(&t, "more"),
                 "exit left input cells visible");
     if (!clear) {
-      ASSERT_TRUE(t.row == t.rows - 1 && t.region_scrolls == scrolls &&
+      ASSERT_TRUE(t.row == expected_row && t.region_scrolls == scrolls &&
                       strstr(t.raw + exit_mark, "\n") == NULL &&
                       !t.frame_failure,
                   "exit scrolled, advanced a row, or erased status cells");
-      for (row = 0; row < t.rows - 2; row++)
+      for (row = 0; row < expected_row - 1; row++)
         ASSERT_TRUE(memcmp(t.cells[row], before[row], (size_t)t.cols) == 0,
                     "exit changed cells above the editor");
-      ASSERT_TRUE(strspn(t.cells[t.rows - 2], " ") == (size_t)t.cols &&
-                      strspn(t.cells[t.rows - 1], " ") == (size_t)t.cols,
+      ASSERT_TRUE(strspn(t.cells[expected_row - 1], " ") == (size_t)t.cols &&
+                      strspn(t.cells[expected_row], " ") == (size_t)t.cols,
                   "exit did not clear all wrapped editor rows");
     } else {
       ASSERT_TRUE(!term_contains(&t, "fixture") &&
@@ -1735,6 +1688,7 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
     sl = sl_create_with_config(&config);
     producer.input = commands[0];
     producer.ack = ack[1];
+    producer.output = slave;
     if (!sl || sl_set_prompt_queue(sl, 1, 4, 3) != SL_OK ||
         sl_set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) !=
             SL_OK ||

@@ -102,8 +102,9 @@ Current rendering guarantees:
 
 Ordinary readline participates in terminal scrollback. Persistent chat uses
 native full-width output beginning at the original cursor and a prompt
-anchored at the terminal bottom from its first frame. Rectangular viewports
-and bounds configuration are unsupported.
+initially at the terminal bottom. Physical resize leaves an unchanged prompt
+at the terminal's native position; only prompt layout changes update cells.
+Rectangular viewports and bounds configuration are unsupported.
 Softline never implies a retained full transcript.
 
 Ordinary readline width changes reconcile the old prompt's physical rows and
@@ -229,14 +230,17 @@ prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `output_stream_begin()` opens a persistent session; every later
 `output_stream_write()` forwards its byte span immediately, without waiting for
 EOF or the next prompt. Full-terminal transcripts start at the existing cursor;
-the editable prompt is anchored at the bottom from its first frame. Producer
+the editable prompt starts at the bottom. Producer
 bytes pass through unchanged in a VT scroll region above the prompt. Native
 transcript text is never cached, padded, rewrapped, cleared, or replayed.
 Prompt updates compare the previous frame and patch only changed cells; output
 feeds preserve unchanged prompt cells and restore the editor cursor. The
 scroll region ends immediately above the current prompt frame.
-Resize updates prompt cells and output geometry; the terminal owns transcript
-reflow. Ending chat restores the full scroll region and clears input rows
+Resize preserves the terminal's prompt position, updating only changed prompt
+layout and internal output geometry. Output reinstates its margin when
+emission resumes. The terminal owns transcript reflow and any empty rows
+exposed below the prompt by growth. Ending chat restores the full scroll region
+and clears input rows
 while retaining queue and status rows. The cursor stays at column zero on the current input
 row; exit adds no newline or scroll. `clear_prompt_on_exit` defaults to zero;
 setting it to one clears the whole prompt area and returns below the transcript.
@@ -464,8 +468,8 @@ Positions are tracked relative to the terminal bottom,
 without terminal cursor save/restore. Resize reconciliation queries the live
 input cursor to account for terminal movement and adjusts only owned prompt
 rows whose cells or placement changed. Fitted, unchanged rows are preserved.
-Width changes rebuild prompt layout. The editable prompt stays anchored at the
-bottom.
+Width changes rebuild prompt layout. The editable prompt starts at the bottom
+and follows the terminal's native resize position when its layout is unchanged.
 
 Missing:
 

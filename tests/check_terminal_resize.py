@@ -28,6 +28,15 @@ def example_case(tmux, example, build, height_only=False, prefilled=False,
         def screen():
             return run("capture-pane", "-p", "-t", "chat:0.0")
 
+        def cursor_at_input():
+            rows = subprocess.check_output(
+                [tmux, "-S", socket, "capture-pane", "-p", "-t", "chat:0.0"],
+                text=True).splitlines()
+            last = max(i for i, row in enumerate(rows) if row)
+            cursor = run("display-message", "-p", "-t", "chat:0.0",
+                         "#{cursor_y},#{cursor_x},#{cursor_flag}").split(",")
+            return cursor == [str(last), str(len(rows[last])), "1"]
+
         def wait(predicate, description):
             deadline = time.monotonic() + 4
             while time.monotonic() < deadline:
@@ -60,13 +69,12 @@ def example_case(tmux, example, build, height_only=False, prefilled=False,
                     time.sleep(0.3)
                 mark = recording.stat().st_size
                 run("resize-window", "-t", "chat:0", "-x", str(width), "-y", str(height))
-                wait(lambda text: b"END" in recording.read_bytes()[mark:] and
-                     b"\x1b[6n" in recording.read_bytes()[mark:] and
+                wait(lambda text: b"\x1b[6n" in recording.read_bytes()[mark:] and
                      text.splitlines()[-1].endswith("END") and
-                     run("display-message", "-p", "-t", "chat:0.0", "#{cursor_y},#{pane_height}") == f"{height - 1},{height}",
+                     cursor_at_input(),
                      f"prompt missing at {width}x{height}")
                 cursor = run("display-message", "-p", "-t", "chat:0.0", "#{cursor_x},#{cursor_y},#{cursor_flag}")
-                assert cursor.split(",")[1:] == [str(height - 1), "1"], cursor
+                assert cursor_at_input(), cursor
             # Exercise the real example while its Markdown producer is live.
             run("send-keys", "-t", "chat:0.0", "C-u")
             run("send-keys", "-t", "chat:0.0", "-l", "hello")
@@ -84,8 +92,7 @@ def example_case(tmux, example, build, height_only=False, prefilled=False,
                 run("resize-window", "-t", "chat:0", "-x", str(width), "-y", str(height))
                 wait(lambda text: text.splitlines()[-1] == "> draft" and
                      b"\x1b[6n" in recording.read_bytes()[mark:] and
-                     re.search(rb"\x1b\[1;[0-9]+r", recording.read_bytes()[mark:]) and
-                     run("display-message", "-p", "-t", "chat:0.0", "#{cursor_y}") == str(height - 1),
+                     cursor_at_input(),
                      "live resize displaced the draft")
                 if height_only:
                     time.sleep(0.15)
@@ -101,13 +108,15 @@ def example_case(tmux, example, build, height_only=False, prefilled=False,
             time.sleep(0.1)  # Allow pipe-pane's recorder to drain its last bytes.
             raw = recording.read_bytes()
             assert b"\x1b[?25l" not in raw, "chat repeatedly hid the cursor"
+            exit_row = run("display-message", "-p", "-t", "chat:0.0", "#{cursor_y}")
             run("send-keys", "-t", "chat:0.0", "C-u")
             run("send-keys", "-t", "chat:0.0", "-l", "/quit")
             run("send-keys", "-t", "chat:0.0", "Enter")
             wait(lambda text: "! Goodbye." in text and
                  run("capture-pane", "-p", "-t", "chat:0.0",
-                     "-S", str(height - 1), "-E", str(height - 1)) == "" and
+                     "-S", exit_row, "-E", exit_row) == "" and
                  "> /quit" not in text and
+                 run("display-message", "-p", "-t", "chat:0.0", "#{cursor_y},#{cursor_x}") == exit_row + ",0" and
                  run("display-message", "-p", "-t", "chat:0.0", "#{pane_dead}") == "1",
                  "exit did not clear input while keeping the farewell")
             # A dead pane changes cursor visibility itself; the PTY frame tests
@@ -151,6 +160,7 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
         command_fd = os.open(commands, os.O_RDWR | os.O_NONBLOCK)
         ack_fd = os.open(acknowledgments, os.O_RDWR | os.O_NONBLOCK)
         producer_line_open = False
+        expected_prompt_row = None
 
         def run(*args):
             return subprocess.check_output(
@@ -194,7 +204,10 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
             while True:
                 cursor = run("display-message", "-p", "-t", "fixture:0.0",
                              "#{cursor_y},#{pane_height},#{cursor_flag}").split(",")
-                if (int(cursor[0]) == int(cursor[1]) - 1 and cursor[2] == "1" and
+                rows = physical_rows()
+                expected_row = (max(i for i, row in enumerate(rows) if row)
+                                if expected_prompt_row is None else expected_prompt_row)
+                if (int(cursor[0]) == expected_row and cursor[2] == "1" and
                         capture().endswith(draft_tail)):
                     break
                 if time.monotonic() >= deadline:
@@ -308,7 +321,8 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                     original_marker_row = next(i for i, row in enumerate(initial) if "AFTER RESIZE" in row)
                 sizes = [(80, 8), (80, 24), (80, 6), (80, 24)] if height_roundtrip else [(30, 18), (80, 28), (16, 8), (45, 24)]
                 if grow_both:
-                    sizes = [(80, 28), (120, 36)]
+                    sizes = [(80, 28), (120, 36), (160, 72), (160, 96),
+                             (80, 48), (120, 96)]
                 if quoted:
                     sizes = [(40, 24), (20, 24), (8, 24), (80, 28)]
                 for width, height in sizes:
@@ -327,6 +341,7 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                         finally:
                             os.close(tty)
                         native = physical_rows()
+                        expected_prompt_row = int(run("display-message", "-p", "-t", "fixture:0.0", "#{cursor_y}"))
                         owned = next((i for i, row in enumerate(native) if row.startswith(("+", "Q 1."))), height)
                         time.sleep(0.03)
                         mark = recording.stat().st_size
@@ -347,6 +362,11 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                         live_row = next((i for i in range(len(native) - 1, -1, -1) if "AFTER RESIZE" in native[i]), -1)
                         shifted = max(0, live_row - retained + 1)
                     assert actual[:retained] == native[shifted:retained + shifted], f"{name}: application moved static transcript at {width}x{height}\nNative: {native}\nActual: {actual}"
+                    if grow_both:
+                        # Queue previews can reveal text at the wider width.
+                        # Everything below the input remains the terminal's
+                        # own empty rows; resize must not move the prompt down.
+                        assert actual[expected_prompt_row + 1:] == native[expected_prompt_row + 1:], f"{name}: resize changed rows below the prompt at {width}x{height}\nNative: {native}\nActual: {actual}"
                     time.sleep(0.03)
                     controls = recording.read_bytes()[mark:]
                     if quoted:
@@ -412,6 +432,7 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
             assert "Thinking..." not in transcript, f"{name}: obsolete prompt cells\n{transcript}"
             assert transcript.count("> draft") == 1, f"{name}: duplicated draft\n{transcript}"
             exchange("g")
+            exit_row = run("display-message", "-p", "-t", "fixture:0.0", "#{cursor_y}")
             run("send-keys", "-t", "fixture:0.0", "C-u", "C-d")
             deadline = time.monotonic() + 4
             while run("display-message", "-p", "-t", "fixture:0.0", "#{pane_dead}") != "1":
@@ -420,10 +441,10 @@ def fixture_case(tmux, fixture, build, document, resize, height_resize=True, sta
                 time.sleep(0.02)
             time.sleep(0.05)
             assert b"\x1b[?25l" not in recording.read_bytes(), name + ": cursor hidden"
-            last = str(int(run("display-message", "-p", "-t", "fixture:0.0",
-                               "#{pane_height}")) - 1)
-            assert run("capture-pane", "-p", "-t", "fixture:0.0", "-S", last,
-                       "-E", last) == "", name + ": input retained on exit"
+            assert run("capture-pane", "-p", "-t", "fixture:0.0", "-S", exit_row,
+                       "-E", exit_row) == "", name + ": input retained on exit"
+            assert run("display-message", "-p", "-t", "fixture:0.0",
+                       "#{cursor_y},#{cursor_x}") == exit_row + ",0", name + ": exit cursor displaced"
             print(name + ": passed")
         except (AssertionError, subprocess.SubprocessError):
             pathlib.Path(build, name + ".txt").write_text(capture(history=True))

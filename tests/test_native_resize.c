@@ -63,7 +63,7 @@ static int resize_case(int columns, int rows, int producer_row) {
   if (ioctl(master, TIOCSWINSZ, &size) != 0)
     return 1;
   failed = sl_surface_resize(surface, columns, rows - 2) != 0;
-  (void)drain(master, bytes, sizeof(bytes));
+  failed |= drain(master, bytes, sizeof(bytes)) != 0;
   sl_surface_native_position(surface, &row, &col);
   failed |= has_scroll(bytes) || strchr(bytes, '\n') != NULL ||
             row >= rows - 2 || col != 3 || strstr(bytes, "\0337") != NULL ||
@@ -71,6 +71,16 @@ static int resize_case(int columns, int rows, int producer_row) {
   if (failed)
     fprintf(stderr, "%dx%d producer row %d: unexpected resize %s\n", columns,
             rows, producer_row, bytes);
+  failed |= sl_surface_native_write(surface, "X", 1, rows - 1, 2, 0) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  {
+    char margin[32];
+    (void)snprintf(margin, sizeof(margin), "\033[1;%dr", rows - 2);
+    failed |= strstr(bytes, margin) == NULL;
+  }
+  failed |= sl_surface_native_write(surface, "Y", 1, rows - 1, 2, 0) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= strstr(bytes, "Y") == NULL || has_scroll(bytes);
   sl_surface_destroy(surface);
   close(slave);
   close(master);

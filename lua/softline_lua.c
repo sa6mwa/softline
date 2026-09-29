@@ -1209,10 +1209,11 @@ static int softline_lua_print_above(lua_State *L) {
 }
 
 /** Lua editor:output_stream_begin(): open one renderer-agnostic session.
- * The transcript starts at the original cursor; the prompt is anchored at
- * the bottom and its actual frame height sets the output margin. The
- * Lua/editor owner thread controls writes; an external producer hands chunks
- * through a watched descriptor. Non-TTY handles forward validated bytes only.
+ * The transcript starts at the original cursor; the prompt starts at the
+ * bottom and follows native resize. Its actual position sets the output margin.
+ * The Lua/editor owner thread controls writes; an external producer hands
+ * chunks through a watched descriptor. Non-TTY handles forward validated bytes
+ * only.
  */
 static int softline_lua_output_stream_begin(lua_State *L) {
   softline_lua_handle_t *handle;

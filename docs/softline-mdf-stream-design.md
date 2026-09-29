@@ -66,8 +66,10 @@ features are exposed through the C receiver/free functions and Lua methods.
 
 The output session and editor prompt have one serial terminal owner. A
 full-terminal transcript begins at the existing terminal cursor. The editable
-prompt is anchored at the bottom from its first frame. The VT scroll region
-ends immediately above the current prompt frame. Native producer bytes
+prompt starts at the bottom. An unchanged frame follows the terminal's native
+resize position, including space exposed below it; only changed prompt layout
+updates cells. The VT scroll region ends immediately above the current prompt
+frame. Native producer bytes
 are written unchanged, with only bounded partial ANSI/UTF-8 parser state and
 an output cursor retained. Softline never rewraps, pads, clears, or replays
 native transcript text. Positions are distances from the terminal bottom.
@@ -101,6 +103,11 @@ Finite callbacks and live writes share the same native geometry reconciliation.
 Finite output reconciles the retained prompt before invoking its producer and
 again after each callback returns, including EOF. A resize during a callback
 uses the same observed cursor delta as a live write.
+Physical resize updates internal geometry without homing or repositioning an
+unchanged prompt. Each batch that positions the producer cursor establishes
+its output margin alongside the producer bytes, cursor moves, and prompt return.
+Margin state is not cached across these batches because terminal resize can
+reset it after the new PTY size becomes observable.
 Updating margins after physical resize
 must not scroll the transcript again; cells clipped off the top are not
 recovered or replayed. When an unfinished line leaves the screen, its next

@@ -9509,9 +9509,9 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
   ASSERT_TRUE(sync_start && reset && prompt && reset < prompt,
               "native stream was rewritten or leaked style into the prompt");
   resized = reset ? strstr(reset + 4, "\033[1;7r") : NULL;
-  ASSERT_TRUE(resized && !strstr(resized, "\033[41m") &&
+  ASSERT_TRUE(!resized && !strstr(reset + 4, "\033[41m") &&
                   !strstr(output, "\0337") && !strstr(output, "\0338"),
-              "resize restored producer style onto the plain prompt");
+              "fitted resize changed margins or restored producer style");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
   sl_destroy(sl);
   close(slave_fd);

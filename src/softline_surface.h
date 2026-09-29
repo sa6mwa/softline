@@ -19,6 +19,8 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
                             int report_cursor);
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row);
 void sl_surface_destroy(sl_surface_t *surface);
+/* Physical resize updates geometry without output. The next producer write
+ * reinstates its margin; prompt layout growth still reserves needed rows. */
 int sl_surface_resize(sl_surface_t *surface, int width, int height);
 void sl_surface_geometry(const sl_surface_t *surface, int *width, int *height,
                          int *terminal_rows);

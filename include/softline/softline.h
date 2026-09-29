@@ -586,10 +586,12 @@ struct sl {
   /** Begin one owner-thread, renderer-agnostic live output session. Only one
    * session may be open per handle. Output occupies terminal rows above the
    * prompt. A full-terminal transcript starts at the current cursor and the
-   * editable prompt is anchored at the bottom from its first frame. Before that
-   * frame, output uses the full terminal and leaves the producer cursor in
-   * place between writes. Native output bytes pass through unchanged; wrapping
-   * and scrollback are preserved. The output margin follows actual prompt
+   * editable prompt starts at the bottom. Physical resize preserves the
+   * terminal's position for an unchanged frame; only prompt layout changes
+   * update cells. Before that frame, output uses the full terminal and leaves
+   * the producer cursor in place between writes. Native output bytes pass
+   * through unchanged; wrapping and scrollback are preserved. The output
+   * margin follows actual prompt
    * height. At least three terminal rows are required: two output rows and one
    * prompt row. An unfinished line clipped into scrollback continues at the
    * first visible output row without replay. A clipped hard line boundary
@@ -910,8 +912,10 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 /** Start a persistent output session on self's editor-owner thread. The
  * caller owns its producer, wakeup, renderer, and document lifecycle. A
  * native transcript starts at the current cursor; the editable prompt is
- * anchored at the bottom from its first frame. Before that frame, output uses
- * the full terminal and leaves the producer cursor in place between writes.
+ * initially at the bottom. Physical resize preserves the terminal's prompt
+ * position; unchanged cells and the cursor remain untouched. Before that frame,
+ * output uses the full terminal and leaves the producer cursor in place
+ * between writes.
  * Output feeds preserve unchanged prompt cells; prompt updates patch only
  * changed cells. The output margin follows the current prompt frame height;
  * growth scrolls existing output cells

@@ -144,6 +144,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
     set_tests_properties(softline_terminal_blank_reflow PROPERTIES
       LABELS "integration;streaming" TIMEOUT 60)
+    foreach(_softline_chat_theme plain riced)
+      add_test(NAME softline_chat_width_${_softline_chat_theme}
+        COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_width_resize.py"
+        "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+        "${_softline_chat_theme}")
+      set_tests_properties(softline_chat_width_${_softline_chat_theme} PROPERTIES
+        LABELS "integration;streaming;libmdf" TIMEOUT 40)
+    endforeach()
     add_test(NAME softline_terminal_streaming_resize
       COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_blank_reflow.py"

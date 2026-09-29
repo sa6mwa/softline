@@ -153,7 +153,9 @@ session with the native terminal layout by default.
 ## Terminal-native chat
 
 A full-terminal output session starts the transcript at the current terminal
-cursor. The editable prompt is anchored at the bottom from its first frame.
+cursor. The editable prompt starts at the bottom. Physical resize preserves
+the terminal's position for an unchanged prompt, including newly exposed rows
+below it. Only prompt layout changes update its cells.
 A VT scroll region ends immediately above the current prompt frame. Producer
 bytes, including libmdf styles and wrapping, pass through unchanged. Softline keeps
 parser state and the output cursor; it does not cache, pad, rewrap, clear, or
@@ -186,11 +188,13 @@ transcript reflow belongs to the terminal.
 A bounded cell counter tracks the open output line so width growth restores its
 reflowed column rather than overwriting the last physical row. No transcript
 bytes are retained for this calculation.
-Updating the output margin after a physical resize does not scroll the
-transcript again. Softline does not recover or replay output that leaves the
-visible screen. An unfinished line that moves into scrollback continues at the
-first visible output row. If the clipped position was at a hard line boundary,
-new output starts next to the prompt. Existing scrollback, including native
+Every batch that positions the output cursor establishes its scroll margin
+alongside the producer bytes. Physical resize itself updates geometry;
+an unchanged prompt needs no cursor movement or repaint. Updating the margin
+does not scroll the transcript again. Softline does not recover or replay output
+that leaves the visible screen. An unfinished line that moves into scrollback
+continues at the first visible output row. If the clipped position was at a hard
+line boundary, new output starts next to the prompt. Existing scrollback, including native
 blank rows, stays intact. Ending chat restores the full scroll region, clears
 only the input rows, and keeps queue and status rows visible. The cursor remains
 at column zero on the current input row, with no final newline or scroll. Set
@@ -198,7 +202,7 @@ at column zero on the current input row, with no final newline or scroll. Set
 below the transcript instead. Ending a stream inside an active editor keeps
 the prompt and scroll region for later finite output or another stream;
 destroying the handle always closes native chat. Native feeds do not toggle
-cursor visibility or wait for cursor-position replies on unchanged frames;
+cursor visibility. ASCII feeds do not wait for cursor-position replies on unchanged frames;
 bounded chunks are batched with cursor restoration, retrying short writes as
 needed.
 

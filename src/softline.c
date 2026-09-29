@@ -724,7 +724,7 @@ static int sl_terminal_bottom(sl_impl_t *impl) {
 }
 
 static int sl_prompt_top(sl_impl_t *impl, int prompt_rows) {
-  int top;
+  int top, below;
   int height;
   height = sl_terminal_height(impl);
   if (prompt_rows < 1)
@@ -732,6 +732,16 @@ static int sl_prompt_top(sl_impl_t *impl, int prompt_rows) {
   if (prompt_rows > height)
     prompt_rows = height;
   top = sl_terminal_bottom(impl) - prompt_rows + 1;
+  if (sl_surface_is_native(impl->output_surface) && impl->rendered_rows > 0) {
+    /* Retain the terminal's prompt position after resize. Newly exposed rows
+     * below it belong to the terminal, not to prompt layout. */
+    below =
+        impl->rendered_height - impl->rendered_top_row - impl->rendered_rows;
+    if (below > 0)
+      top -= below;
+    if (top < 2)
+      top = 2;
+  }
   if (top < 0)
     top = 0;
   return top;
@@ -3079,12 +3089,13 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
       sl_render_store_reflow(impl, width, height, impl->rendered_top_row, span,
                              offset) != 0)
     return -1;
-  impl->rendered_cursor_valid = 0;
+  impl->rendered_height = height;
+  impl->rendered_cursor_valid =
+      observed > 0 && impl->probed_cursor_col == impl->rendered_cursor_col;
   if (sl_output_surface_reconcile(
           self, sl_prompt_top(impl, sl_output_prompt_rows(impl))) != 0)
     return -1;
   impl->rendered_width = width;
-  impl->rendered_height = height;
   if (ioctl(impl->output_fd, TIOCGWINSZ, &size) == 0 &&
       (size.ws_col != width || size.ws_row != height))
     return 1;
@@ -3191,6 +3202,10 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   if ((impl->output_stream_active || impl->output_surface) &&
       (!impl->output_surface ||
        !sl_surface_matches(impl->output_surface, width, transcript_top))) {
+    /* A resize can arrive after the frame's size snapshot. Observe it on
+     * retry before changing margins or restoring a stale cursor position. */
+    if (sl_native_resize_pending(impl))
+      return 1;
     impl->rendered_cursor_valid = 0;
     if (sl_output_surface_reconcile(self, transcript_top) != 0) {
       sl_set_error(self, "failed to resize live output surface");
@@ -4049,12 +4064,18 @@ static int sl_output_flush_redirected(sl_t *self, const char *bytes,
   if (length == 0)
     return SL_OK;
   if (sl_surface_is_native(impl->output_surface)) {
-    int row = impl->rendered_rows > 0
-                  ? impl->rendered_top_row + impl->rendered_cursor_row
-                  : -1;
+    int row;
     struct termios original;
     int report = 0, temporary = 0, written;
     size_t i;
+    /* Validation may span a resize after the session was prepared. Use the
+     * current native geometry before addressing either output or input. */
+    if (sl_native_resize_pending(impl) &&
+        sl_prepare_native_output(self) != SL_OK)
+      return SL_ERROR_IO;
+    row = impl->rendered_rows > 0
+              ? impl->rendered_top_row + impl->rendered_cursor_row
+              : -1;
     if (row >= 0 && impl->cursor_position_probe >= 0) {
       for (i = 0; i < length; i++) {
         if ((unsigned char)bytes[i] >= 128u) {
