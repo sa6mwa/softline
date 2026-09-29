@@ -359,10 +359,15 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
     if (sl_surface_write_all(fd, seq, (size_t)count) != 0)
       goto fail;
   }
-  count = sl_surface_cursor(seq, sizeof(seq), surface->producer_below, col);
-  if (sl_surface_native_region(surface) != 0 || count < 0 ||
-      sl_surface_write_all(fd, seq, (size_t)count) != 0 ||
-      sl_surface_write_all(fd, "\033[0m", 4) != 0)
+  /* A full-height producer already owns the hardware cursor. Margin and
+   * cursor commands would discard pending wrap from earlier terminal text. */
+  if (height != surface->terminal_rows) {
+    count = sl_surface_cursor(seq, sizeof(seq), surface->producer_below, col);
+    if (sl_surface_native_region(surface) != 0 || count < 0 ||
+        sl_surface_write_all(fd, seq, (size_t)count) != 0)
+      goto fail;
+  }
+  if (sl_surface_write_all(fd, "\033[0m", 4) != 0)
     goto fail;
   surface->line_cells = (size_t)col;
   surface->producer_cursor_live = 1;

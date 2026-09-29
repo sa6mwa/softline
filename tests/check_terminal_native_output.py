@@ -30,7 +30,7 @@ def rows(terminal):
     return result, (row.value, col.value)
 
 
-def render(fixture, text, chunk, handoff, grow):
+def render(fixture, text, chunk, handoff, grow, initial=''):
     terminal, window = vt.new_terminal(), vt.new_window(0)
     vt.add(window, terminal)
     vt.size(terminal, 40, 8)
@@ -38,6 +38,10 @@ def render(fixture, text, chunk, handoff, grow):
     vt.pump()
     child = None
     try:
+        if initial:
+            payload = initial.encode()
+            vt.feed(terminal, payload, len(payload))
+            vt.pump()
         if chunk == 0:
             payload = (text.replace('\n', '\r\n') + ('Y' if handoff else '') + '\r\n').encode()
             vt.feed(terminal, payload, len(payload))
@@ -548,6 +552,12 @@ def main():
             for chunk in sorted({1, 4, 8, len(text.encode())}):
                 actual = render(fixture, text, chunk, handoff, grow)
                 assert actual == expected, (text, chunk, handoff, grow, actual, expected)
+    for initial in ('a' * 39, 'a' * 40):
+        for handoff, grow in ((False, False), (False, True), (True, False)):
+            expected = render(fixture, 'X', 0, handoff, grow, initial)
+            actual = render(fixture, 'X', 1, handoff, grow, initial)
+            assert actual == expected, (
+                'startup pending wrap', initial, handoff, grow, actual, expected)
     for source in ('abcdefghijklmnopqrstuvwxyz', 'one\nABC', 'café 中文',
                    '🇸🇪' * 22 + 'X', '👩‍💻' * 10 + 'X', '❤️' * 22 + 'X',
                    '1️⃣' * 22 + 'X', 'a' * 40):
