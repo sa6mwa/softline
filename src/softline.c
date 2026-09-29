@@ -3208,9 +3208,9 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   if ((impl->output_stream_active || impl->output_surface) &&
       (!impl->output_surface ||
        !sl_surface_matches(impl->output_surface, width, transcript_top))) {
-    /* A resize can arrive after the frame's size snapshot. Observe it on
-     * retry before changing margins or restoring a stale cursor position. */
-    if (sl_native_resize_pending(impl))
+    /* Retry resized frames after observing their new position. If no frame
+     * exists, reconcile the producer before drawing the first prompt. */
+    if (sl_native_resize_pending(impl) && impl->rendered_rows > 0)
       return 1;
     impl->rendered_cursor_valid = 0;
     if (sl_output_surface_reconcile(self, transcript_top) != 0) {

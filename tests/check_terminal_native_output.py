@@ -469,7 +469,7 @@ def interrupt_case(fixture, disposition):
         vt.pump()
 
 
-def clamped_native_prompt_case(fixture, build):
+def clamped_native_prompt_case(fixture, build, first_frame_resize=False):
     widget, window = terminal()
     child = None
     with tempfile.TemporaryDirectory(prefix='clamped-prompt-', dir=build) as work:
@@ -499,6 +499,8 @@ def clamped_native_prompt_case(fixture, build):
                     assert child.poll() is None and time.monotonic() < deadline
 
             ack()
+            if first_frame_resize:
+                resize(widget, window, 50, 10)
             os.write(command_fd, b'i')
             deadline = time.monotonic() + 4
             while '> ' not in full_transcript(widget):
@@ -554,6 +556,7 @@ def main():
     for disposition in ('ignore', 'handler'):
         interrupt_case(fixture, disposition)
     clamped_native_prompt_case(fixture, build)
+    clamped_native_prompt_case(fixture, build, first_frame_resize=True)
     for source in ('ABC', 'a' * 39 + 'X', '🇸🇪', '\x1b[1m🇸🇪\x1b[0mX',
                    '👩‍💻X', 'é 中文', '🇸🇪\nnext'):
         for prefilled in (False, True):
