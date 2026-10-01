@@ -8,7 +8,7 @@ where `Enter` submits the current buffer and `Ctrl-J` inserts a literal newline.
 
 softline is not currently a complete GNU Readline replacement. It is a
 handle-owned editor core with enough terminal rendering, history, key binding,
-and bounded prompt support to build multiline readline-like interfaces without
+and native chat support to build multiline readline-like interfaces without
 global editor state.
 
 ## Current Public Shape
@@ -19,12 +19,12 @@ The public API is the installed header `include/softline/softline.h`.
   pointers plus an opaque implementation pointer.
 - `sl_create()` creates a handle with default configuration.
 - `sl_create_with_config()` accepts `sl_config_t` for input/output fds, prompt
-  bounds, live scroll regions, queueing, themes, status lines, history length,
+  wrapping width, live scroll regions, queueing, themes, status lines, history length,
   and line length.
 - `sl_config_init()` sets the documented defaults:
   - input fd: `STDIN_FILENO`
   - output fd: `STDOUT_FILENO`
-  - unbounded prompt geometry
+  - ordinary readline at the current cursor
   - history max length: 100
   - line max length: 4096 bytes
   - prompt queueing and live scroll regions: disabled
@@ -70,6 +70,32 @@ The editor supports these built-in behaviors:
 - `Ctrl-R` starts reverse incremental search over the handle's current history.
   Typing updates the query, repeated `Ctrl-R` cycles older matches and wraps,
   Enter accepts the displayed match, and Escape or `Ctrl-G` restores the draft.
+- `Ctrl-V` in the TTY editor saves PNG or JPEG data from the X11 `CLIPBOARD`
+  selection to an owner-only cache file and inserts its visible absolute path
+  at the cursor. The image file persists after the handle closes. On Linux,
+  X11 is accessed directly over Unix or TCP sockets with Xauthority credentials,
+  including a `DISPLAY` forwarded by `ssh -Y`. No host X11 library is required.
+  Both Linux library forms embed MIT-licensed c-ares 1.34.8 privately. TCP
+  display hosts support literal IPv4/IPv6, `/etc/hosts`, then DNS configured by
+  `/etc/resolv.conf`, including search domains. Lookup shares the clipboard's
+  10-second deadline and uses no libc NSS modules or additional link libraries.
+  The default path is `${XDG_CACHE_HOME}/softline/{xid}.png` or `.jpeg`,
+  falling back to `$HOME/.cache/softline/` when `XDG_CACHE_HOME` is unset or
+  relative. The xid is 20 lowercase base32hex characters in the
+  [rs/xid](https://github.com/rs/xid) format, generated internally.
+  `image_paste_path_template` in the config or the receiver setter
+  `set_image_paste_path_template()` overrides the path. An override must be an
+  absolute path template with exactly one `*` for the xid; `~/` and
+  `{{HOME}}`, `{{home}}`, `{{XDG_CACHE_HOME}}`, `{{xdg_cache_home}}` expand to
+  their directories. The XDG token follows the same fallback rule. The image
+  type always appends `.png` or `.jpeg` after substitution, including when the
+  template already ends in an extension. For example, `/tmp/softline/*/image`
+  creates `/tmp/softline/{xid}/image.png`. Parents are created recursively.
+  `disable_image_paste = 1` disables built-in capture; the draft stays intact
+  and `last_error()` reports that it is disabled. If the clipboard lacks a supported image,
+  the draft stays unchanged and `last_error()` explains the failure. A custom
+  binding for `SL_KEY_CTRL_V` overrides the built-in paste. This operation is
+  unavailable on other platforms and does not change bracketed text paste.
 - `Alt-B` and `Alt-F` move by words.
 - Backspace and Delete operate at the cursor.
 - `Ctrl-U`, `Ctrl-K`, and `Ctrl-W` edit across the whole multiline buffer.
@@ -100,22 +126,22 @@ Current rendering guarantees:
 - Render failures during active editing return as errors, not as submitted
   input.
 
-softline has two prompt modes:
+Ordinary readline participates in terminal scrollback. Persistent chat uses
+native full-width output beginning at the original cursor and a prompt
+initially at the terminal bottom. Physical resize leaves an unchanged prompt
+at the terminal's native position; only prompt layout changes update cells.
+Rectangular viewports and bounds configuration are unsupported.
+Softline never implies a retained full transcript.
 
-- Normal mode: the prompt participates in the terminal's ordinary scrollback.
-- Bounded mode: `set_bounds()` pins the prompt to a rectangular region. A
-  `0,0,0,0` bounds configuration, or `sl_config_t` with `bounded = 1` and zero
-  bounds, means a dynamic full-terminal bottom prompt.
+Ordinary readline width changes reconcile the old prompt's physical rows and
+cursor before updating its layout. Cursor reports locate the frame when the
+terminal supports them; only owned prompt rows are rewritten. The replacement
+frame uses normal terminal scrolling when it needs additional space.
 
-Bounded mode works in either the normal or alternate screen. Both finite
-`print_above()` and persistent output sessions render above the editable
-prompt, including in offset/narrow rectangles. Geometry setters may run during
-an active edit or stream and immediately reconcile the visible output and
-prompt. Neither mode implies a retained full transcript.
 
 ### Prompt Queue
 
-Interactive normal and bounded prompts can opt into a prompt queue through
+Interactive ordinary readline and native chat prompts can opt into a prompt queue through
 configuration or `set_prompt_queue()`. Non-TTY input remains a plain line
 reader, so queueing does not alter it. Tab moves a nonempty active editor into
 the queue and clears the editor; Tab on an empty editor does nothing. Alt-E
@@ -133,7 +159,7 @@ While an editor is active, the renderer owns a queue panel above it. The panel
 shows a total count plus a capped oldest-first preview list, and supports all
 built-in prompt themes, including the ANSI-only `default` theme. The selected
 prompt theme also styles the active editor and optional status line in both
-normal and bounded modes. The panel is not built with `print_above()` because
+ordinary readline and native chat sessions. The panel is not built with `print_above()` because
 queue entries must be removable and must reflow with the active editor.
 Application key bindings retain precedence over the Tab and Alt-E defaults.
 
@@ -215,23 +241,73 @@ eight callbacks before it gives terminal input another chance to run.
 
 ### Streaming Output Above Prompt
 
+Native chat sizes the prompt from its current rendered frame. Empty queue
+slots and absent status messages reserve no rows. Adding or removing queue,
+status, or editor rows adjusts the output margin immediately. Growth scrolls
+existing output cells only by the rows needed to fit; shrink clears former
+prompt cells and returns their rows to output without moving transcript cells.
+The editor pages only when the frame exceeds the physical terminal capacity;
+queue and status rows stay visible whenever they fit.
+
 `print_above()` accepts a chunk callback and writes all chunks above the active
 prompt. The callback returns `SL_OK` with a non-empty chunk to continue, or
 `SL_OK` with length `0` to finish.
 
 `output_stream_begin()` opens a persistent session; every later
 `output_stream_write()` forwards its byte span immediately, without waiting for
-EOF or the next prompt. `output_stream_end()` closes it without adding content.
-The visible TTY viewport survives across sessions. If one ends mid-row, the
-next output producer starts on a fresh row when it writes.
+EOF or the next prompt. Full-terminal transcripts start at the existing cursor;
+the editable prompt starts at the bottom. Producer
+bytes pass through unchanged in a VT scroll region above the prompt. Native
+transcript text is never cached, padded, rewrapped, cleared, or replayed.
+Prompt updates compare the previous frame and patch only changed cells; output
+feeds preserve unchanged prompt cells and restore the editor cursor. The
+scroll region ends immediately above the current prompt frame.
+Resize preserves the terminal's prompt position, updating only changed prompt
+layout and internal output geometry. Output reinstates its margin when
+emission resumes. The terminal owns transcript reflow and any empty rows
+exposed below the prompt by growth. Ending chat restores the full scroll region
+and clears input rows
+while retaining queue and status rows. The cursor stays at column zero on the current input
+row; exit adds no newline or scroll. `clear_prompt_on_exit` defaults to zero;
+setting it to one clears the whole prompt area and returns below the transcript.
+Ending a producer session inside an active editor retains the native prompt and
+scroll region for subsequent finite output or another stream; closing the handle
+always restores terminal state. Non-TTY sessions emit no teardown controls.
+Native feeds batch bounded chunks with cursor restoration and retry short
+writes as needed, without cursor visibility toggles or repainting unchanged
+frames. With a prompt frame present, complete bounded emissions containing
+Unicode request the actual producer cursor position before returning to the
+editor cursor in the same output batch. Replies use the existing 100 ms timeout
+and preserve concurrent user input. An unanswered report disables further
+probing and retains estimated positions. ASCII emissions do not request
+additional reports. This observes generic terminal behavior without grapheme
+buffering, renderer knowledge, or producer wrapping decisions.
 An owner-thread watch callback can feed an external renderer and forward each
-sink emission directly while editing and queueing continue. The bounded
-viewport stores only visible cells and partial ANSI/UTF-8 state. SGR and UTF-8
-sequences can cross writes; ending with an incomplete sequence fails and keeps
-the session open. Narrow and offset boxes never use a full-row VT scroll
-region, so their output does not touch outside columns.
+sink emission directly while editing and queueing continue. Softline stores
+cursor geometry and bounded partial ANSI/UTF-8 state. Plain ASCII lines use a
+scalar cell count; producer Unicode and tabs have no width estimates or span
+tables. Reports record the actual terminal endpoint without assigning a width
+discrepancy to any character. Width resize retains that endpoint for an opaque
+line, clamping an offscreen column. Exact continuation after Unicode/tab reflow,
+including CR-overwritten tails, is deliberately outside the contract. It retains
+no producer text for resize. Carriage return preserves the visible tail of an
+ASCII line; its cursor position and extent are tracked separately.
+SGR and UTF-8 sequences can cross writes; ending with an incomplete sequence
+fails and keeps the session open.
+With an active prompt, a printable continuation after a known ASCII write ending
+at the terminal's right edge uses CR and IND after the cursor handoff. The
+resulting hard row boundary can remain split after width growth, and a Unicode
+cluster divided there may lose its attachment. The accepted scope and rationale
+are recorded in `softline-mdf-stream-design.md` under the active-prompt
+right-edge review exception.
+At the bottom output margin, width growth can reflow a row boundary differently
+in VTE and tmux; exact continuation at that seam is outside the native contract
+without transcript replay. Rapid tmux resize commands can also update its
+visible grid before the matching PTY size reaches Softline, so output emitted
+in that interval may be corrupted. The paced resize tests do not cover this
+queued-notification diagnostic.
 
-For finite `print_above()` output on an unbounded prompt, rendering uses
+For finite `print_above()` output on an ordinary readline prompt, rendering uses
 normal clear-and-redraw scrollback by default. Set `live_scroll_region = 1` in
 `sl_config_t` or call `sl_set_live_scroll_region()` to opt into a
 cursor-position probe once the prompt reaches the terminal bottom. When
@@ -242,9 +318,9 @@ bottom. The terminal scroll region is reset on every completion, cancellation,
 error, and handle teardown. If the terminal does not answer the probe, output
 uses the compatible clear-and-redraw path.
 
-After a TTY live session, finite `print_above()` output shares the visible
-viewport with later sessions. This preserves intervening rows and applies the
-viewport's printable UTF-8 and ANSI SGR byte rules.
+After a TTY live session, finite `print_above()` output continues in native
+terminal scrollback. Producer output accepts printable UTF-8 and ANSI SGR
+bytes without cell reserialization.
 
 ## Current History Behavior
 
@@ -277,6 +353,13 @@ shell-style history metadata.
 - Public string results are released through `free_string()`.
 - Terminal raw mode and bracketed paste are restored on normal return, cancel,
   interrupt, and tested error paths.
+- While Softline owns raw mode, kernel tab expansion (`TAB3`/`OXTABS`, such as
+  `stty -tabs`) is disabled so the terminal handles producer tabs. OPOST/ONLCR
+  and other output flags are preserved. Original flags are restored on release,
+  including when input and output are separate TTYs. Softline does not expand
+  tabs into producer bytes.
+  Native writes after raw-mode release borrow the same output flags for each
+  write and restore them before returning, without flushing pending input.
 
 The return value remains optimized for the common case: a non-`NULL` result is
 submitted text, while `NULL` means no submitted text. Callers that need precise
@@ -292,10 +375,11 @@ Current build surfaces include:
 - CMake presets
 - static and shared library builds
 - shared-library ABI/SOVERSION policy through `SOFTLINE_ABI_VERSION`, currently
-  `1`, decoupled from the project release version. v0.3.0 is withdrawn as an
-  architectural miss rather than a supported shared-library upgrade baseline;
-  the current event-driven architecture replaces it without advancing that ABI
-  generation.
+  `0`, decoupled from the project release version. Softline and its sole
+  consumer evolve together; current API changes do not establish a new ABI
+  compatibility commitment. Both are rebuilt together; older compiled consumers
+  are unsupported, as recorded in the
+  [development ABI exception](softline-mdf-stream-design.md#review-exception-development-abi-0).
 - installed CMake package exports with canonical target `softline::softline`
 - installed pkg-config metadata
 - Lua 5.5 facade packaged as LuaRocks source artifacts
@@ -327,7 +411,7 @@ Missing:
 - multiline-aware completion display
 - async completion lifecycle
 - completion cancellation
-- completion tests across wrapped prompts and bounded mode
+- completion tests across wrapped prompts and native chat
 
 Likely API shape:
 
@@ -354,7 +438,7 @@ user accepts them explicitly.
 Supported:
 
 - reverse incremental search
-- search prompt rendering inside multiline/bounded mode
+- search prompt rendering inside multiline and native chat sessions
 - accept/cancel search state
 
 Missing:
@@ -419,13 +503,27 @@ application descriptors. Workers signal an application-created wake FD; they
 must never call Softline directly. Future work may add a separately driven
 session API or platform-specific backends, but it must preserve this
 single-owner rendering rule.
-`readline()` alone.
 
 ### Output And Transcript Management
 
 `print_above()` and a persistent output session handle chunked output above the
-active prompt. Softline retains a bounded visible viewport, not a full
-transcript model.
+active prompt. Softline retains cursor geometry and bounded parser state, with
+scalar counts for plain ASCII lines. Unicode width/cluster layout belongs only
+to Softline-owned prompts. Producer output has no glyph-width or span model.
+The terminal owns transcript cells and scrollback. Physical resizing leaves
+surviving output cells as the terminal reflowed them; changing the output
+margin does not scroll them again. Output clipped off the top is not recovered
+or replayed by Softline. If an unfinished line moves into scrollback, its next
+fragment starts at the first visible output row instead of adding empty rows
+down to the prompt. If the clipped position was at a hard line boundary, new
+output starts next to the prompt. Native scrollback cells and spacing remain
+unchanged.
+Positions are tracked relative to the terminal bottom,
+without terminal cursor save/restore. Resize reconciliation queries the live
+input cursor to account for terminal movement and adjusts only owned prompt
+rows whose cells or placement changed. Fitted, unchanged rows are preserved.
+Width changes rebuild prompt layout. The editable prompt starts at the bottom
+and follows the terminal's native resize position when its layout is unchanged.
 
 Missing:
 
@@ -433,10 +531,9 @@ Missing:
 - offscreen transcript replay or scrollback
 - caller-driven reflow of already emitted content after resize
 - arbitrary terminal controls beyond documented SGR
-- application-level viewport controls
 
-Bounded mode remains a prompt and visible-output manager, not a full terminal
-UI toolkit.
+These transcript-management features are outside the current native chat
+contract. There is one full-width chat layout, and no boxed viewport API.
 
 ### Styling
 
@@ -524,7 +621,7 @@ facade, not a reason to weaken the core handle model.
 
 1. Completion provider API
 
-   Add synchronous completion with replacement spans and bounded-mode tests.
+   Add synchronous completion with replacement spans and native chat tests.
 
 2. Unicode width policy
 

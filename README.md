@@ -5,7 +5,7 @@ It is meant for shells, chat prompts, REPLs, and other readline-like
 interfaces where Enter submits and `Ctrl-J` inserts a newline.
 
 The project is a handle-oriented editor core. It is usable for simple
-multiline prompts and bounded bottom-prompt interfaces, but it is not a
+multiline prompts and terminal-native chat, but it is not a
 complete GNU Readline replacement and does not provide Readline API or ABI
 compatibility. The current-state and gap spec lives in `docs/softline-spec.md`.
 
@@ -48,12 +48,38 @@ Currently implemented:
   `Ctrl-P`/`Ctrl-N`), and delete keys operate across the whole multiline buffer.
 - `Ctrl-R` starts reverse incremental history search over the handle's current
   in-memory history, including entries loaded before `readline()`.
+- `Ctrl-V` reads PNG or JPEG image data from the X11 `CLIPBOARD` selection and
+  inserts the literal path to an owner-only cache image file at the cursor.
+  It speaks X11 directly through `DISPLAY`, including an SSH-forwarded display,
+  without a host X11 library or clipboard command. The file remains
+  after the editor exits so the host can consume it. By default the path is
+  `${XDG_CACHE_HOME}/softline/{xid}.png` (or `.jpeg`), falling back to
+  `$HOME/.cache/softline/`; `xid` is a 20-character lowercase base32hex ID
+  compatible with [rs/xid](https://github.com/rs/xid), implemented inside
+  Softline without an added library dependency.
+  `sl_config_t.image_paste_path_template` or
+  `sl_set_image_paste_path_template()` changes the path. Its single `*` becomes
+  the xid; `.png` or `.jpeg` is always appended, so
+  `/tmp/softline/*/image` creates `/tmp/softline/{xid}/image.png`. Parent
+  directories are created recursively. Templates accept `~/`, `{{HOME}}`,
+  `{{home}}`, `{{XDG_CACHE_HOME}}`, and `{{xdg_cache_home}}`; the XDG token
+  follows the same fallback rule. Set `disable_image_paste = 1` to disable
+  built-in capture (the draft stays unchanged). A missing or unsupported
+  image leaves the draft unchanged and sets `last_error()`. X11 image paste is
+  currently available on Linux when `DISPLAY` is present;
+  the transfer limit is 32 MiB. A `Ctrl-V` key binding takes precedence.
 - Long input wraps by words where possible and reflows after terminal resize.
 - Bracketed paste is enabled while editing so pasted carriage returns become
   buffer content instead of submitting the prompt.
 - Editing uses a plain silent line reader when either standard input or output
   is not a TTY and does not emit prompts; streamed output uses LF line endings
   instead of terminal CRLF.
+- While Softline owns terminal raw mode, kernel tab expansion
+  (`TAB3`/`OXTABS`, such as `stty -tabs`) is disabled so tabs reach the terminal
+  unchanged. OPOST/ONLCR and other output flags are preserved. Original flags
+  are restored on release, including for separate input and output TTYs.
+  Native stream writes after that release temporarily disable tab expansion
+  for the write and restore it before returning.
 - Keys such as TAB, Enter, function keys, and Alt-letter combinations can be
   bound per handle. A binding may handle the key, pass through to the built-in
   behavior, submit, cancel, interrupt, or mutate the active buffer.
@@ -99,8 +125,8 @@ submitted line and the next prompt proceeds below it like an ordinary REPL.
 `example_chat` is the C streaming Markdown demo. It links libmdf only as an
 example dependency: libsoftline and its installed package remain independent
 of libmdf. The composer gives libmdf a two-column left margin and its default
-ANSI palette, updating both renderers' geometry on resize and dropping the
-margin on very narrow terminals. Softline's quoted-prompt helper writes each
+ANSI palette for terminal output (escape-free when redirected), updating both
+renderers' geometry on resize and dropping the margin on very narrow terminals. Softline's quoted-prompt helper writes each
 submitted prompt directly into the output session as a literal, italic quote.
 It repeats the configurable `> ` prefix after wrapping and supplies the line
 breaks needed for one visible empty row on each side. Markdown punctuation in
@@ -134,11 +160,7 @@ external renderer.
 make run-simple
 make run-chat
 make run-chat-default
-make run-chat-default-sr
-make run-chat-accent-sr
-make run-chat-dracula-sr
 make run-chat-plain
-make run-chat-plain-sr
 make run-chat-riced
 make run-chat-monogreen
 make run-chat-monochrome
@@ -151,46 +173,101 @@ and Lua examples accept
 `SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
 `monogreen`, `outrun`, `riced`, or `synthwave`; the generic Make targets also
 expose that as `THEME=...`. The simple and chat examples default to `default`;
-`make run-chat` supplies Gruvbox. The C live output session uses the main
-terminal's scrollback for a full-width prompt; the `-sr` convenience targets
-do not change that output layout. `SOFTLINE_LIVE_SCROLL_REGION=1` remains
-available to the Lua chat example for finite `print_above()` calls.
+`make run-chat` supplies Gruvbox. Both chat examples use one persistent output
+session with the native terminal layout by default.
 
-## Bounded prompts
+## Terminal-native chat
 
-Set `screen_width` and `screen_height` in `sl_config_t`, or call
-`sl_set_bounds()`, to anchor the prompt inside a terminal box. In bounded mode
-the prompt grows upward as input wraps while `sl_print_above()` pulls streamed
-chunks from a callback and writes them through the region above the prompt.
-Full-width bounds can use terminal scrolling. Narrow or offset bounds use a
-bounded cell viewport, not a VT scroll region that would alter outside columns.
-A persistent `sl_output_stream_*()` session accepts later chunks without
-waiting for EOF. Full-width sessions that reach the physical terminal bottom
-scroll the main terminal, preserving native scrollback; shorter, narrow, or
-offset sessions use the bounded viewport.
-Use `sl_set_bounds(sl, 0, 0, 0, 0)`, or set `bounded = 1` with zero config
-bounds, for a dynamic full-terminal bottom prompt that tracks terminal resize
-in softline. Bounded rendering keeps a retained view of the visible editor
-rows: ordinary edits patch only changed cells, structural changes redraw the
-affected rows, and terminal geometry changes reflow the bounded box while
-editing. During a bounded structural update or transcript dispatch,
-softline hides the hardware cursor and restores it only at the final prompt
-position, preventing visible cursor travel across the prompt area.
+A full-terminal output session starts the transcript at the current terminal
+cursor. The editable prompt starts at the bottom. Physical resize preserves
+the terminal's position for an unchanged prompt, including newly exposed rows
+below it. Only prompt layout changes update its cells.
+A VT scroll region ends immediately above the current prompt frame. Producer
+bytes, including libmdf styles and wrapping, pass through unchanged. Softline keeps
+parser state and the output cursor; it does not cache, pad, rewrap, clear, or
+replay the native transcript.
 
-For a normal scrollback prompt, streamed output uses the compatible
-clear-and-redraw path by default. Set `live_scroll_region = 1` in
-`sl_config_t`, or call `sl_set_live_scroll_region(sl, 1)`, to opt into a
-temporary full-width scroll region once the active prompt reaches the bottom
-row. That avoids repainting the live prompt while output streams. Queue
-previews, status lines, wrapping, and resize reflow change that region with the
-prompt. Softline resets the region whenever the edit finishes; terminals that
-do not answer the cursor-position report continue with clear-and-redraw.
+Before a prompt frame exists, output uses the full terminal and keeps the
+producer cursor in place between writes. Native autowrap and Unicode clusters
+survive chunk boundaries. Full-height output follows terminal resize without
+another margin command. Cursor reports refresh the producer position at
+resize and cursor handoffs. With a prompt frame present, complete emissions
+containing Unicode also request the producer's actual terminal endpoint.
+The report records a cursor position; it never assigns widths to characters.
+Unicode width and cluster layout are calculated only for Softline-owned prompts.
+ASCII emissions keep their existing cursor path. The report request and return
+to the editor cursor share one output batch; waiting for the reply leaves the
+cursor at the prompt. Replies use the existing 100 ms timeout and preserve
+concurrent user input. No grapheme or transcript buffering is introduced.
+At a known ASCII right edge with an active prompt, a later chunk uses a hard
+row advance after the cursor handoff. This avoids overwriting the last cell,
+but that row may not join on width growth and a Unicode cluster split there
+may lose its attachment. See the scoped
+[review exception](docs/softline-mdf-stream-design.md#review-exception-active-prompt-right-edge-continuation).
 
-For a persistent bottom prompt, use bounded mode in either the normal or
-alternate screen. Softline never enters or leaves the alternate screen itself.
-The live viewport retains only visible terminal cells and partial parser state.
-Full-width main-screen sessions scroll those cells into native terminal
-scrollback. Softline does not keep its own transcript history.
+Softline retains the previous prompt frame and patches only changed cells.
+Feeding output leaves unchanged prompt cells intact and restores the editor
+cursor. The output region follows the current frame height: only visible
+queue entries, nonempty status messages, status lines, and editor rows occupy
+prompt space. Growth scrolls existing output cells only enough to fit when
+needed; shrink returns freed rows to output without moving transcript cells.
+The editor pages only when the frame exceeds the terminal's available height.
+Resize leaves transcript cells to the terminal. Softline queries the live input
+cursor once when reconciling changed geometry and applies its movement to the
+tracked output position. Cursor positions are stored as distances from the
+bottom; no terminal cursor save/restore sequences are used. Unchanged prompt
+rows that still fit are preserved. Width changes rebuild only prompt layout;
+transcript reflow belongs to the terminal. The prompt retains its logical row
+layout across successive resizes, even when a physical row temporarily wraps.
+A scalar cell counter handles plain ASCII lines. Producer Unicode and tabs have
+no width estimates, span tables, or reflow reconstruction. Their observed column
+is retained, clamping only an offscreen column after resize. Continuation after
+width reflow of an unfinished Unicode/tab line can therefore resume at a
+different cell, including a CR-overwritten tail. This is an intentional
+[opaque-feed limitation](docs/softline-mdf-stream-design.md#review-exception-opaque-feed).
+Feed state is bounded independently of line length. If output scrolls at the
+bottom of the output margin, a later width change can reflow that boundary
+differently across terminal emulators; exact continuation at that seam is not
+guaranteed without replaying the producer's text.
+Rapid tmux resizes may update its visible grid before delivering the matching
+PTY size; output emitted during that interval can be corrupted. The ordinary
+resize tests wait for each size notification before proceeding.
+After a carriage return, Softline tracks the cursor separately from the
+still-visible end of that line so resize does not place new output in its tail.
+Unicode/tab tails follow the opaque-feed limitation above. A clipped producer
+cursor can also resume on a different row. See the
+[review exception](docs/softline-mdf-stream-design.md#review-exception-output-clipped-behind-a-bottom-anchored-prompt).
+Every batch that positions the output cursor establishes its scroll margin
+alongside the producer bytes. Physical resize itself updates geometry;
+an unchanged prompt needs no cursor movement or repaint. Updating the margin
+does not scroll the transcript again. Softline does not recover or replay output
+that leaves the visible screen. An unfinished line that moves into scrollback
+continues at the first visible output row. If the clipped position was at a hard
+line boundary, new output starts next to the prompt. For example, with no
+prior scrollback, a bottom-anchored prompt can keep the hardware cursor at
+the bottom during a height shrink while a short CR-overwritten output line
+scrolls above the screen. Its continuation cannot resume at the original
+offscreen cell; it follows the clipped-line rule. Existing scrollback,
+including native blank rows, stays intact. A promptless stream ending after CR
+advances below the still-visible line. Ending chat restores the full scroll
+region, clears only the input rows, and keeps queue and status rows visible.
+The cursor remains at column zero on the current input row, with no final
+newline or scroll. Set
+`sl_config_t.clear_prompt_on_exit = 1` to clear the whole prompt area and return
+below the transcript instead. Ending a stream inside an active editor keeps
+the prompt and scroll region for later finite output or another stream;
+destroying the handle always closes native chat. Native feeds do not toggle
+cursor visibility. ASCII feeds do not wait for cursor-position replies on unchanged frames;
+bounded chunks are batched with cursor restoration, retrying short writes as
+needed.
+
+Chat uses the full terminal width and needs at least three rows: two for the
+VT100 scroll region and one for the prompt. Rectangular viewports are unsupported.
+Softline never enters or leaves the alternate screen itself.
+
+For ordinary finite `print_above()` calls without a persistent output
+session, `sl_set_live_scroll_region()` remains available to configure the
+readline scrollback editor. Chat examples use the persistent session API.
 
 ## Persistent output session
 
@@ -208,13 +285,13 @@ sl->output_stream_end(sl);
 
 Completed sessions retain their visible TTY rows. The next output starts on a
 fresh row if the previous session ended mid-row. Finite `print_above()` output
-between sessions shares that viewport.
+between sessions continues in ordinary terminal scrollback.
 
 Each write is visible before it returns, including while `next_prompt()` is
-active. Chunk boundaries add no content or document semantics; ANSI SGR and
+active. Chunk boundaries add no content or document separators; ANSI SGR and
 UTF-8 sequences may cross calls. End rejects an incomplete sequence. Softline
-clears completed editor rows when a turn is submitted during an open session;
-applications can render the submitted text into the transcript. Use
+does not automatically append submitted editor text to the transcript;
+applications render it explicitly. Use
 `sl_output_stream_write_quoted_prompt(sl, submitted)` between complete renderer
 segments for a literal, italic prompt. Softline wraps it at the current output
 width, repeats `> ` on each visible row, and supplies missing line breaks for
@@ -222,10 +299,9 @@ one blank row on each side. The prefix and its colour can be configured
 independently with `sl_set_quoted_prompt_prefix()` and
 `sl_set_quoted_prompt_style()`; NULL restores the theme defaults. The Lua
 facade exposes matching methods. The composer
-updates Softline geometry (`set_bounds` or `set_screen_width`) and
-renderer width on the owner thread when the terminal changes; neither library
-owns the other's margins. Softline immediately reconciles the transcript and
-editable prompt within its new bounds. A watched FD is the usual way to
+updates its external renderer width on the owner thread when the terminal
+changes. Softline detects terminal dimensions and redraws only the prompt;
+it never replays the transcript. A watched FD is the usual way to
 deliver producer events without blocking editor input. See the
 [composition contract](docs/softline-mdf-stream-design.md) for limits and
 failure semantics.
@@ -341,7 +417,7 @@ the first element and slot 0 for the second.
 
 ```c
 static const char *const status[] = {
-    "gpt-5.6-terra high", "ctx 36%", "~/g/softline", "feat/prompt-queue"};
+    "gpt-5.6-terra high", "ctx 36%", "demo/project", "feat/prompt-queue"};
 
 sl->set_statusline(sl, 1, 0);
 sl->set_status_elements(sl, status, 4);
@@ -362,8 +438,8 @@ enabled. Elements wrap between elements when possible; an oversized element
 wraps by text. Softline retains at most 32 elements. A longer bulk update keeps
 the first 31 and renders `...` as the final element.
 
-Enabling the status line reserves space immediately above it for a
-status message. `sl_set_status_message()` accepts printable single-line UTF-8,
+A nonempty status message occupies rows immediately above the status line.
+`sl_set_status_message()` accepts printable single-line UTF-8,
 wraps long text at words with continuation rows indented to the prefix width,
 and redraws immediately while the editor is
 active. The default prefix is `! ` in the theme's muted colour; the message
@@ -372,7 +448,7 @@ text is italic in the theme's secondary colour. Use
 or `NULL` to restore `! `. Use `sl_set_status_message_colors(sl, prefix_color,
 text_color)` to select palette roles independently, such as
 `SL_THEME_COLOR_MUTED` and `SL_THEME_COLOR_ELEMENT_2`. Clearing the message
-leaves the row blank, so the status line and editor stay in place.
+removes its rows and returns that space to the output region.
 
 The output callback is chunk based. Return `SL_OK` with `*chunk` and `*len` set
 for each chunk; return `SL_OK` with `*len == 0` to end the stream.
@@ -412,13 +488,13 @@ make lua-test
 make prerelease
 ```
 
-Every project-owned C target is compiled as C89 with POSIX terminal APIs. Shared builds use
-the separate CMake `SOFTLINE_ABI_VERSION`, currently `1`, for SONAME/SOVERSION.
-That ABI version is bumped only for shared-library ABI breaks, not for every
-project release-version bump. The v0.3.0 receiver-shell architecture is
-withdrawn as an architectural miss and is not a supported shared-library
-upgrade baseline; the current event-driven architecture replaces it while
-retaining ABI version `1`.
+Every project-owned C target is compiled as C89 with POSIX terminal APIs.
+Shared builds use `SOFTLINE_ABI_VERSION=0` for SONAME/SOVERSION during current
+development. Softline and its sole consumer change together; API changes in
+this development phase do not establish a new ABI compatibility commitment.
+Both are rebuilt together; older compiled consumers are unsupported. The
+[development ABI exception](docs/softline-mdf-stream-design.md#review-exception-development-abi-0)
+records this explicit decision and its scope.
 
 Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
 builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin
@@ -463,6 +539,27 @@ matrix may skip Darwin when osxcross is unavailable. `make release` is stricter:
 it requires the Darwin toolchain and a verified Darwin artifact, then creates
 and reconstructs the source archive; packaged Darwin artifacts require
 target-correct Mach-O inspection.
+
+Linux clipboard protocol tests run without an X server. They check request and
+reply sequence wraparound, I/O failures, and byte preservation for a 17 MiB PNG
+transferred in small INCR chunks. The optional X11 tests also exercise real
+clipboard owners and forwarded displays.
+
+Package smoke links fully static GNU and musl consumers with fatal linker
+warnings. Linux X11 hostname lookup uses privately bundled MIT-licensed c-ares
+1.34.8 (with its BSD-3-Clause sorting helper) in both static and shared libraries:
+literal IPv4/IPv6 addresses (including IPv6 interface qualifiers), `/etc/hosts`,
+then DNS configured by `/etc/resolv.conf` (including search
+domains). It does not use libc NSS or load hostname modules. No additional
+library is needed when linking `libsoftline.a`. Resolver symbols are private
+and namespaced so callers may also link their own c-ares. Source provenance,
+the small numeric-service patch, and the license are in `vendor/c-ares/`;
+Linux SDKs install notices and provenance under `share/softline/licenses/c-ares/`.
+Resolver sources are checked in; configuring/building never downloads c-ares.
+
+Source archive smoke extracts and builds under the repository's `build/`,
+independently of the caller's working directory or `TMPDIR`, and removes its
+workspace on success, failure, or interruption.
 
 `cmake/softline.exports` is the source-controlled dynamic export contract for
 `libsoftline`. Build and extracted-package checks fail if a public symbol is

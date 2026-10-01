@@ -36,10 +36,10 @@ sl_prompt_queue_take
 sl_prompt_queue_get_mode
 sl_prompt_queue_set_mode
 sl_readline
-sl_set_bounds
 sl_set_buffer
 sl_set_cursor
 sl_set_idle_callback
+sl_set_image_paste_path_template
 sl_set_live_scroll_region
 sl_set_prompt_queue
 sl_set_prompt_queue_delivery

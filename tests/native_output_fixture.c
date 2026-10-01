@@ -1,0 +1,323 @@
+#define _POSIX_C_SOURCE 200809L
+#include "softline/softline.h"
+#include <fcntl.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t interrupt_count;
+
+static void returned_interrupt(int signum) {
+  (void)signum;
+  interrupt_count++;
+}
+
+static int same_input_mode(const struct termios *before,
+                           const struct termios *after) {
+  return before->c_iflag == after->c_iflag &&
+         before->c_oflag == after->c_oflag &&
+         before->c_cflag == after->c_cflag &&
+         before->c_lflag == after->c_lflag &&
+         memcmp(before->c_cc, after->c_cc, sizeof(before->c_cc)) == 0;
+}
+
+static int interrupted(int handler) {
+  sl_t *sl;
+  char *input;
+  int result;
+  struct termios before, after;
+  if (tcgetattr(STDIN_FILENO, &before) != 0 ||
+      signal(SIGINT, handler ? returned_interrupt : SIG_IGN) == SIG_ERR)
+    return 2;
+  sl = sl_create();
+  if (!sl || sl_output_stream_begin(sl) != SL_OK)
+    return 2;
+  input = sl_readline(sl, "> ");
+  result = !input && sl_last_readline_status(sl) == SL_READLINE_INTERRUPTED &&
+                   tcgetattr(STDIN_FILENO, &after) == 0 &&
+                   same_input_mode(&before, &after) &&
+                   interrupt_count == (handler ? 1 : 0)
+               ? SL_OK
+               : SL_ERROR;
+  sl_free_string(sl, input);
+  if (result == SL_OK)
+    result = sl_output_stream_write(sl, "AFTER INTERRUPT", 15);
+  if (result == SL_OK)
+    result = sl_output_stream_end(sl);
+  sl_destroy(sl);
+  if (tcgetattr(STDIN_FILENO, &after) != 0 || !same_input_mode(&before, &after))
+    return 2;
+  return result == SL_OK ? 0 : 1;
+}
+
+static int stream_chunks(const char *text, const char *chunk_text,
+                         int handoff) {
+  sl_t *sl;
+  size_t offset, length, chunk;
+  int result;
+  chunk = (size_t)strtoul(chunk_text, NULL, 10);
+  if (chunk == 0)
+    return 2;
+  sl = sl_create();
+  if (!sl)
+    return 2;
+  length = strlen(text);
+  result = sl_output_stream_begin(sl);
+  for (offset = 0; result == SL_OK && offset < length;) {
+    size_t take = length - offset;
+    if (take > chunk)
+      take = chunk;
+    result = sl_output_stream_write(sl, text + offset, take);
+    offset += take;
+  }
+  if (result == SL_OK && handoff) {
+    char *input = sl_readline(sl, "> ");
+    result = input && !input[0] ? SL_OK : SL_ERROR;
+    sl_free_string(sl, input);
+    if (result == SL_OK)
+      result = sl_output_stream_write(sl, "Y", 1);
+  }
+  if (result == SL_OK)
+    result = sl_output_stream_end(sl);
+  sl_destroy(sl);
+  return result == SL_OK ? 0 : 1;
+}
+
+static int consecutive_streams(void) {
+  static const char *messages[] = {"FIRST\r", "SECOND\n", "THIRD\n"};
+  sl_t *sl = sl_create();
+  size_t i;
+  int result = SL_OK;
+  if (!sl)
+    return 2;
+  for (i = 0; i < sizeof(messages) / sizeof(messages[0]) && result == SL_OK;
+       i++) {
+    result = sl_output_stream_begin(sl);
+    if (result == SL_OK)
+      result = sl_output_stream_write(sl, messages[i], strlen(messages[i]));
+    if (result == SL_OK)
+      result = sl_output_stream_end(sl);
+  }
+  sl_destroy(sl);
+  return result == SL_OK ? 0 : 1;
+}
+
+static int quoted_after(const char *first) {
+  sl_t *sl = sl_create();
+  int result;
+  if (!sl)
+    return 2;
+  result = sl_output_stream_begin(sl);
+  if (result == SL_OK)
+    result = sl_output_stream_write(sl, first, strlen(first));
+  if (result == SL_OK)
+    result = sl_output_stream_end(sl);
+  if (result == SL_OK)
+    result = sl_output_stream_begin(sl);
+  if (result == SL_OK)
+    result = sl_output_stream_write_quoted_prompt(sl, "NEXT");
+  if (result == SL_OK)
+    result = sl_output_stream_end(sl);
+  sl_destroy(sl);
+  return result == SL_OK ? 0 : 1;
+}
+
+struct finite_source {
+  const char *prefix;
+  const char *source;
+  size_t offset;
+};
+
+static int finite_chunk(sl_t *sl, void *userdata, const char **bytes,
+                        size_t *length) {
+  struct finite_source *producer = (struct finite_source *)userdata;
+  size_t prefix_length = strlen(producer->prefix);
+  (void)sl;
+  if (producer->offset < prefix_length) {
+    *bytes = producer->prefix + producer->offset;
+    *length = 1;
+  } else {
+    *bytes = producer->source + producer->offset - prefix_length;
+    *length = **bytes ? 1 : 0;
+  }
+  producer->offset++;
+  return SL_OK;
+}
+
+struct retained_output {
+  int commands, replies, result, started;
+  const char *source;
+};
+
+static int retained_reply(struct retained_output *state) {
+  struct winsize geometry;
+  unsigned short reply[2];
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &geometry) != 0)
+    return SL_ERROR_IO;
+  reply[0] = geometry.ws_col;
+  reply[1] = geometry.ws_row;
+  return write(state->replies, reply, sizeof(reply)) == (ssize_t)sizeof(reply)
+             ? SL_OK
+             : SL_ERROR_IO;
+}
+
+struct paused_finite {
+  struct finite_source source;
+  struct retained_output *state;
+  size_t gate_offset;
+};
+
+static int paused_chunk(sl_t *sl, void *userdata, const char **bytes,
+                        size_t *length) {
+  struct paused_finite *producer = (struct paused_finite *)userdata;
+  if (producer->source.offset == producer->gate_offset) {
+    char command;
+    if (retained_reply(producer->state) != SL_OK ||
+        read(producer->state->commands, &command, 1) != 1 || command != 'g')
+      return SL_ERROR_IO;
+  }
+  return finite_chunk(sl, &producer->source, bytes, length);
+}
+
+static void retained_idle(sl_t *sl, void *userdata) {
+  struct retained_output *state = (struct retained_output *)userdata;
+  if (state->started)
+    return;
+  state->started = 1;
+  state->result =
+      sl_output_stream_write(sl, state->source, strlen(state->source));
+  if (state->result == SL_OK)
+    state->result = sl_output_stream_end(sl);
+  while (state->result == SL_OK) {
+    char command;
+    struct paused_finite producer;
+    /* Stay in the callback while the parent resizes, so another editor
+     * iteration cannot reconcile the geometry before print_above does. */
+    if (retained_reply(state) != SL_OK ||
+        read(state->commands, &command, 1) != 1) {
+      state->result = SL_ERROR_IO;
+      break;
+    }
+    if (command == 'x')
+      break;
+    if (command != 'f' && command != 'm' && command != 'e') {
+      state->result = SL_ERROR_INVALID;
+      break;
+    }
+    producer.source.prefix = "";
+    producer.source.source = "XYZ";
+    producer.source.offset = 0;
+    producer.state = state;
+    producer.gate_offset = command == 'm' ? 1 : 3;
+    state->result = command == 'f'
+                        ? sl_print_above(sl, finite_chunk, &producer.source)
+                        : sl_print_above(sl, paused_chunk, &producer);
+  }
+  (void)sl_cancel(sl);
+}
+
+static int retained(const char *command_path, const char *reply_path,
+                    const char *source) {
+  struct retained_output state;
+  sl_t *sl;
+  char *input;
+  memset(&state, 0, sizeof(state));
+  state.commands = open(command_path, O_RDWR);
+  state.replies = open(reply_path, O_RDWR);
+  state.source = source;
+  if (state.commands < 0 || state.replies < 0)
+    return 2;
+  sl = sl_create();
+  if (!sl || sl_output_stream_begin(sl) != SL_OK ||
+      sl_set_idle_callback(sl, retained_idle, &state) != SL_OK)
+    return 2;
+  input = sl_readline(sl, "> ");
+  if (input || sl_last_readline_status(sl) != SL_READLINE_CANCELLED ||
+      !state.started)
+    state.result = SL_ERROR;
+  sl_free_string(sl, input);
+  sl_destroy(sl);
+  close(state.commands);
+  close(state.replies);
+  return state.result == SL_OK ? 0 : 1;
+}
+
+static int gated(const char *command_path, const char *ack_path,
+                 const char *text, const char *prompt) {
+  sl_t *sl;
+  int command_fd, ack_fd, result = SL_OK;
+  char command = 'r';
+  command_fd = open(command_path, O_RDWR);
+  ack_fd = open(ack_path, O_RDWR);
+  if (command_fd < 0 || ack_fd < 0)
+    return 2;
+  sl = sl_create();
+  if (!sl || sl_output_stream_begin(sl) != SL_OK)
+    return 2;
+  for (;;) {
+    struct winsize geometry;
+    unsigned short reply[2];
+    if (command == 's') {
+      size_t i;
+      for (i = 0; result == SL_OK && text[i]; i++)
+        result = sl_output_stream_write(sl, text + i, 1);
+    } else if (command == 'p') {
+      result = sl_output_stream_write(sl, "Y", 1);
+    } else if (command == 'w') {
+      result = sl_set_screen_width(sl, 12);
+    } else if (command == 'f') {
+      struct finite_source producer;
+      producer.prefix = "F: ";
+      producer.source = text;
+      producer.offset = 0;
+      result = sl_output_stream_end(sl);
+      if (result == SL_OK)
+        result = sl_print_above(sl, finite_chunk, &producer);
+      if (result == SL_OK)
+        result = sl_output_stream_begin(sl);
+    } else if (command == 'i') {
+      char *input = sl_readline(sl, prompt);
+      result = input && !input[0] ? SL_OK : SL_ERROR;
+      sl_free_string(sl, input);
+    } else if (command == 'x') {
+      result = sl_output_stream_end(sl);
+      break;
+    }
+    if (result != SL_OK || ioctl(STDOUT_FILENO, TIOCGWINSZ, &geometry) != 0)
+      break;
+    reply[0] = geometry.ws_col;
+    reply[1] = geometry.ws_row;
+    if (write(ack_fd, reply, sizeof(reply)) != (ssize_t)sizeof(reply) ||
+        read(command_fd, &command, 1) != 1) {
+      result = SL_ERROR;
+      break;
+    }
+  }
+  sl_destroy(sl);
+  close(command_fd);
+  close(ack_fd);
+  return result == SL_OK ? 0 : 1;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--consecutive-streams") == 0)
+    return consecutive_streams();
+  if (argc == 3 && strcmp(argv[1], "--quoted-after") == 0)
+    return quoted_after(argv[2]);
+  if (argc == 5 && strcmp(argv[1], "--finite-retained") == 0)
+    return retained(argv[2], argv[3], argv[4]);
+  if (argc == 3 && strcmp(argv[1], "--interrupt") == 0)
+    return interrupted(strcmp(argv[2], "handler") == 0);
+  if (argc == 4 && strcmp(argv[1], "--chunks") == 0)
+    return stream_chunks(argv[2], argv[3], 0);
+  if (argc == 4 && strcmp(argv[1], "--handoff") == 0)
+    return stream_chunks(argv[2], argv[3], 1);
+  if (argc == 5 && strcmp(argv[1], "--gated") == 0)
+    return gated(argv[2], argv[3], argv[4], "> ");
+  if (argc == 6 && strcmp(argv[1], "--gated") == 0)
+    return gated(argv[2], argv[3], argv[4], argv[5]);
+  return 2;
+}

@@ -32,8 +32,8 @@ decl_patterns = [
     re.compile(r"^\s*(?:SL|SOFTLINE)_[A-Z0-9_]+(?:\s*=|\s|$)"),
     re.compile(r"^\s*typedef struct sl_[a-z0-9_]+ \{"),
     re.compile(
-        r"^\s*(?:int|size_t|unsigned int|unsigned char|char|sl_[a-z0-9_]+_t)"
-        r"\s+[a-z][a-z0-9_]*;"
+        r"^\s*(?:int|size_t|unsigned int|unsigned char|char|const char\s*\*|sl_[a-z0-9_]+_t)"
+        r"\s*[a-z][a-z0-9_]*;"
     ),
     re.compile(r"^\s*struct sl \{"),
     re.compile(r"^\s*void \*impl;"),
@@ -91,9 +91,42 @@ for path in release_docs:
     if re.search(r"\bunreleased\b", text, re.IGNORECASE):
         failures.append(f"{path.relative_to(root)}: stale unreleased wording")
 
+# ABI policy prose must agree with the configured shared-library default.
+abi = re.search(
+    r'set\(SOFTLINE_ABI_VERSION "([0-9]+)"',
+    (root / "CMakeLists.txt").read_text(),
+)
+abi_docs = {
+    "README.md": r"SOFTLINE_ABI_VERSION=([0-9]+)",
+    "docs/softline-spec.md": r"`SOFTLINE_ABI_VERSION`, currently\s+`([0-9]+)`",
+    "docs/softline-mdf-stream-design.md": r"ABI ([0-9]+) is retained",
+}
+for name, pattern in abi_docs.items():
+    documented = re.search(pattern, (root / name).read_text())
+    if not abi or not documented or documented.group(1) != abi.group(1):
+        failures.append(f"{name}: ABI policy differs from CMake default")
+
 lua_text = lua_readme.read_text(encoding="utf-8")
 header_text = header.read_text(encoding="utf-8")
 binding_text = lua_binding.read_text(encoding="utf-8")
+# The installed dynamic API must exactly match the declared free functions.
+header_code = re.sub(r"/\*.*?\*/", "", header_text, flags=re.DOTALL)
+public_functions = {name for name in re.findall(
+    r"\b(sl_[a-z0-9_]+)\s*\([^;{}]*\);", header_code
+) if not name.endswith("_t")}
+exports_path = root / "cmake" / "softline.exports"
+exports = {
+    line.strip() for line in exports_path.read_text().splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+}
+if public_functions != exports:
+    failures.append(
+        "C declarations/export mismatch: "
+        f"missing exports {sorted(public_functions - exports)}, "
+        f"undeclared exports {sorted(exports - public_functions)}"
+    )
+if "sl_set_bounds" in public_functions or "set_bounds" in header_code:
+    failures.append("removed boxed bounds API reintroduced")
 receiver = re.search(r"struct sl \{(.*?)\n\};", header_text, re.DOTALL)
 registry = re.search(
     r"static const luaL_Reg softline_lua_methods\[\] = \{(.*?)\{NULL, NULL\}\};",
@@ -169,7 +202,7 @@ if not config or not config_parser:
 else:
     config_fields = set(
         re.findall(
-            r"\b(?:int|size_t|char|sl_prompt_theme_t)\s+([a-z][a-z0-9_]*);",
+            r"\b(?:int|size_t|char|sl_prompt_theme_t|const char\s*\*)\s*([a-z][a-z0-9_]*);",
             config.group(1),
         )
     )
@@ -179,6 +212,15 @@ else:
             config_parser.group(1),
         )
     )
+    removed_fields = {"bounded", "screen_x", "screen_y", "screen_height"}
+    if config_fields & removed_fields or lua_fields & removed_fields:
+        failures.append("removed boxed config fields reintroduced")
+    accepted = re.search(
+        r"softline_lua_config_fields\[\] = \{(.*?)\};", binding_text, re.DOTALL
+    )
+    accepted_names = re.findall(r'"([a-z][a-z0-9_]*)"', accepted.group(1)) if accepted else []
+    if set(accepted_names) != config_fields or len(accepted_names) != len(config_fields):
+        failures.append("Lua accepted config names do not match sl_config_t")
     for field in sorted(config_fields - lua_fields):
         failures.append(
             f"{lua_binding.relative_to(root)}: missing config field {field}"

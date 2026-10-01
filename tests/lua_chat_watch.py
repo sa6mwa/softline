@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import pty
+import re
 import select
 import signal
 import subprocess
@@ -9,8 +10,17 @@ import termios
 import time
 
 
+def contains_output(data, needle, start=0):
+    span = bytes(data[start:])
+    if b"\x1b" not in needle:
+        # These producer markers do not occur in the draft or status text.
+        # A marker may span writes surrounded by cursor/style controls.
+        span = re.sub(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[78])", b"", span)
+    return needle in span
+
+
 def read_until(fd, data, needle, start=0, timeout=10.0):
-    if data.find(needle, start) >= 0:
+    if contains_output(data, needle, start):
         return
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -24,7 +34,7 @@ def read_until(fd, data, needle, start=0, timeout=10.0):
         if not chunk:
             break
         data.extend(chunk)
-        if data.find(needle, start) >= 0:
+        if contains_output(data, needle, start):
             return
     raise AssertionError(f"missing {needle!r} in terminal output {bytes(data)!r}")
 
@@ -206,7 +216,7 @@ def main():
         os.write(master, b"\x03")
         read_until(master, output, b"[operation] cancelled\r\n", ctrl_c_offset)
         read_until(master, output, b"\x1b[?2004h", ctrl_c_offset)
-        if output.find(b"[queued] queued\r\n", ctrl_c_offset) >= 0:
+        if contains_output(output, b"[queued] queued\r\n", ctrl_c_offset):
             raise AssertionError("cancellation automatically dispatched queued work")
         os.write(master, b"\x1b\r")
         promote_offset = len(output)
@@ -222,8 +232,8 @@ def main():
         read_until(master, output, b"\x1b[?2004h", escape_offset)
         history_offset = len(output)
         os.write(master, b"\x1b[A")
-        read_until(master, output, b"\x1b[0msteer", history_offset)
-        if b"\x1b[0mstart" in output[history_offset:]:
+        read_until(master, output, b"steer", history_offset)
+        if contains_output(output, b"start", history_offset):
             raise AssertionError("Up recalled an older turn instead of the delivered steer")
         os.write(master, b"\x15")
         os.write(master, b"/quit\r")

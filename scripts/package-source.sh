@@ -3,8 +3,9 @@ set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf ${TMP_DIR}' EXIT
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package-source.XXXXXX")"
+trap 'rm -rf "${TMP_DIR}"' EXIT
 
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 ARCHIVE="${DIST_DIR}/softline-${VERSION}.tar.gz"

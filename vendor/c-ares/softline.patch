@@ -1,0 +1,154 @@
+--- a/src/lib/ares_getaddrinfo.c
++++ b/src/lib/ares_getaddrinfo.c
+@@ -178,54 +178,12 @@
+ /* Resolve service name into port number given in host byte order.
+  * If not resolved, return 0.
+  */
++/* Softline uses numeric X11 ports only. Do not pull libc NSS service
++ * resolution into fully static consumers through this unused branch. */
+ static unsigned short lookup_service(const char *service, int flags)
+ {
+-  const char     *proto;
+-  struct servent *sep;
+-#ifdef HAVE_GETSERVBYNAME_R
+-  struct servent se;
+-  char           tmpbuf[4096];
+-#endif
+-
+-  if (service) {
+-    if (flags & ARES_NI_UDP) {
+-      proto = "udp";
+-    } else if (flags & ARES_NI_SCTP) {
+-      proto = "sctp";
+-    } else if (flags & ARES_NI_DCCP) {
+-      proto = "dccp";
+-    } else {
+-      proto = "tcp";
+-    }
+-#ifdef HAVE_GETSERVBYNAME_R
+-    memset(&se, 0, sizeof(se));
+-    sep = &se;
+-    memset(tmpbuf, 0, sizeof(tmpbuf));
+-#  if GETSERVBYNAME_R_ARGS == 6
+-    if (getservbyname_r(service, proto, &se, (void *)tmpbuf, sizeof(tmpbuf),
+-                        &sep) != 0) {
+-      sep = NULL; /* LCOV_EXCL_LINE: buffer large so this never fails */
+-    }
+-#  elif GETSERVBYNAME_R_ARGS == 5
+-    sep = getservbyname_r(service, proto, &se, (void *)tmpbuf, sizeof(tmpbuf));
+-#  elif GETSERVBYNAME_R_ARGS == 4
+-    if (getservbyname_r(service, proto, &se, (void *)tmpbuf) != 0) {
+-      sep = NULL;
+-    }
+-#  else
+-    /* Lets just hope the OS uses TLS! */
+-    sep = getservbyname(service, proto);
+-#  endif
+-#else
+-    /* Lets just hope the OS uses TLS! */
+-#  if (defined(NETWARE) && !defined(__NOVELL_LIBC__))
+-    sep = getservbyname(service, (char *)proto);
+-#  else
+-    sep = getservbyname(service, proto);
+-#  endif
+-#endif
+-    return (sep ? ntohs((unsigned short)sep->s_port) : 0);
+-  }
++  (void)service;
++  (void)flags;
+   return 0;
+ }
+ 
+--- a/src/lib/ares_getnameinfo.c
++++ b/src/lib/ares_getnameinfo.c
+@@ -270,79 +270,20 @@
+   ares_free(niquery);
+ }
+ 
++/* Softline has no named-service API. Keep numeric formatting without
++ * introducing libc NSS service lookup into the resolver object closure. */
+ static char *lookup_service(unsigned short port, unsigned int flags, char *buf,
+                             size_t buflen)
+ {
+-  const char     *proto;
+-  struct servent *sep;
+-#ifdef HAVE_GETSERVBYPORT_R
+-  struct servent se;
+-#endif
+-  char        tmpbuf[4096];
+-  const char *name;
+-  size_t      name_len;
+-
+-  if (port) {
+-    if (flags & ARES_NI_NUMERICSERV) {
+-      sep = NULL;
+-    } else {
+-      if (flags & ARES_NI_UDP) {
+-        proto = "udp";
+-      } else if (flags & ARES_NI_SCTP) {
+-        proto = "sctp";
+-      } else if (flags & ARES_NI_DCCP) {
+-        proto = "dccp";
+-      } else {
+-        proto = "tcp";
+-      }
+-#ifdef HAVE_GETSERVBYPORT_R
+-      memset(&se, 0, sizeof(se));
+-      sep = &se;
+-      memset(tmpbuf, 0, sizeof(tmpbuf));
+-#  if GETSERVBYPORT_R_ARGS == 6
+-      if (getservbyport_r(port, proto, &se, (void *)tmpbuf, sizeof(tmpbuf),
+-                          &sep) != 0) {
+-        sep = NULL; /* LCOV_EXCL_LINE: buffer large so this never fails */
+-      }
+-#  elif GETSERVBYPORT_R_ARGS == 5
+-      sep = getservbyport_r(port, proto, &se, (void *)tmpbuf, sizeof(tmpbuf));
+-#  elif GETSERVBYPORT_R_ARGS == 4
+-      if (getservbyport_r(port, proto, &se, (void *)tmpbuf) != 0) {
+-        sep = NULL;
+-      }
+-#  else
+-      /* Lets just hope the OS uses TLS! */
+-      sep = getservbyport(port, proto);
+-#  endif
+-#else
+-      /* Lets just hope the OS uses TLS! */
+-#  if (defined(NETWARE) && !defined(__NOVELL_LIBC__))
+-      sep = getservbyport(port, (char *)proto);
+-#  else
+-      sep = getservbyport(port, proto);
+-#  endif
+-#endif
+-    }
+-    if (sep && sep->s_name) {
+-      /* get service name */
+-      name = sep->s_name;
+-    } else {
+-      /* get port as a string */
+-      snprintf(tmpbuf, sizeof(tmpbuf), "%u", (unsigned int)ntohs(port));
+-      name = tmpbuf;
+-    }
+-    name_len = ares_strlen(name);
+-    if (name_len < buflen) {
+-      /* return it if buffer big enough */
+-      memcpy(buf, name, name_len + 1);
+-    } else {
+-      /* avoid reusing previous one */
+-      buf[0] = '\0'; /* LCOV_EXCL_LINE: no real service names are too big */
+-    }
+-    return buf;
+-  }
+-  buf[0] = '\0';
+-  return NULL;
++  (void)flags;
++  if (!port) {
++    if (buflen) {
++      buf[0] = '\0';
++    }
++    return NULL;
++  }
++  snprintf(buf, buflen, "%u", (unsigned int)ntohs(port));
++  return buf;
+ }
+ 
+ #ifdef HAVE_STRUCT_SOCKADDR_IN6_SIN6_SCOPE_ID

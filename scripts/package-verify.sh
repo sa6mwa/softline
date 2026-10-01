@@ -14,7 +14,7 @@ fi
 
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 CHECKSUM_FILE="${DIST_DIR}/softline-${VERSION}-CHECKSUMS"
-SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
+SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-0}"
 
 if [ ! -f "${CHECKSUM_FILE}" ]; then
   echo "ERROR: missing checksum manifest ${CHECKSUM_FILE}"
@@ -221,6 +221,11 @@ project(softline_extracted_consumer LANGUAGES C)
 find_package(softline REQUIRED CONFIG)
 add_executable(softline_extracted_consumer main.c)
 target_link_libraries(softline_extracted_consumer PRIVATE softline::softline)
+target_compile_options(softline_extracted_consumer PRIVATE
+  -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(softline_extracted_consumer PRIVATE -Wl,--fatal-warnings)
+endif()
 include("${SOFTLINE_RUNTIME_HELPER}")
 softline_local_runtime(softline_extracted_consumer)
 EOF
@@ -258,7 +263,7 @@ EOF
       $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
       $(pkg-config --libs softline) -o "${consumer_dir}/pkg-config-consumer"
   else
-    "${CC}" -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
+    "${CC}" -Wl,--fatal-warnings -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
       @"${consumer_dir}/cmake-build/softline_extracted_consumer-runtime.flags" \
       $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
       $(pkg-config --libs softline) -Wl,-rpath,"${pkg_lib_dir}" -o "${consumer_dir}/pkg-config-consumer"
@@ -267,7 +272,7 @@ EOF
   if [ "${target}" = "x86_64-linux-gnu" ] || [ "${target}" = "x86_64-linux-musl" ]; then
     "${consumer_dir}/cmake-build/softline_extracted_consumer"
     "${consumer_dir}/pkg-config-consumer"
-    "${CC}" -static -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
+    "${CC}" -Wl,--fatal-warnings -static -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
       $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
       $(pkg-config --static --libs softline) -o "${consumer_dir}/static-consumer"
     "${consumer_dir}/static-consumer"
@@ -395,6 +400,20 @@ for archive in "${DIST_DIR}"/softline-*.tar.gz; do
     echo "ERROR: ${basename} missing softline README"
     exit 1
   fi
+
+  case "${target}" in
+    *-linux-*)
+      for notice in LICENSE.md LICENSE.BSD-3-Clause AUTHORS provenance.json README.softline.md softline.patch; do
+        if ! cmp -s "${ROOT_DIR}/vendor/c-ares/${notice}" \
+             "${pkg_root}/share/softline/licenses/c-ares/${notice}"; then
+          echo "ERROR: ${basename} missing or mismatched resolver notice ${notice}" >&2
+          exit 1
+        fi
+      done
+      python3 "${ROOT_DIR}/tests/check_resolver_symbols.py" "${NM}" \
+        "${pkg_lib_dir}/libsoftline.a"
+      ;;
+  esac
 
   metadata_file="${pkg_root}/share/softline/package-metadata.json"
   if [ ! -f "${metadata_file}" ]; then

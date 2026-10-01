@@ -58,6 +58,7 @@ static int new_renderer(struct chat_state *state, mdf **out) {
   mdf_options options;
   mdf_sink sink;
   mdf_options_init(&options);
+  options.output_fd = STDOUT_FILENO;
   options.width = state->columns;
   options.margin_left = chat_margin_left(state->columns);
   options.boring = !state->interactive;
@@ -81,8 +82,7 @@ static int sync_geometry(struct chat_state *state) {
   /* The composer updates both handles in one owner-thread callback. A very
    * narrow terminal drops the margin so libmdf retains three content columns.
    */
-  if (sl_set_bounds(state->sl, 0, 0, 0, 0) != SL_OK ||
-      state->note_renderer->set_geometry(state->note_renderer, columns,
+  if (state->note_renderer->set_geometry(state->note_renderer, columns,
                                          chat_margin_left(columns),
                                          0) != MDF_OK ||
       state->response_renderer->set_geometry(state->response_renderer, columns,
@@ -133,6 +133,16 @@ static int set_busy(struct chat_state *state, int busy) {
   return 0;
 }
 
+static int show_goodbye(struct chat_state *state) {
+  if (!state->interactive)
+    return 0;
+  if (sl_set_status_spinner(state->sl, 0) != SL_OK ||
+      sl_set_status_busy(state->sl, 0) != SL_OK ||
+      sl_set_status_message(state->sl, "Goodbye.") != SL_OK)
+    return -1;
+  return 0;
+}
+
 static int finish_response_document(struct chat_state *state) {
   if (!state->response_open)
     return 0;
@@ -166,7 +176,7 @@ static int deliver_steers(struct chat_state *state, int at_seam) {
     if (strcmp(line, "/quit") == 0) {
       sl_free_string(state->sl, line);
       state->exit_requested = 1;
-      return sl_cancel(state->sl) == SL_OK ? 0 : -1;
+      return show_goodbye(state) == 0 && sl_cancel(state->sl) == SL_OK ? 0 : -1;
     }
     if (sl_history_add(state->sl, line) != SL_OK ||
         render_user_prompt(state, line) != 0) {
@@ -358,7 +368,7 @@ static int dispatch_next_turn(struct chat_state *state) {
     if (strcmp(line, "/quit") == 0) {
       sl_free_string(state->sl, line);
       state->exit_requested = 1;
-      return sl_cancel(state->sl) == SL_OK ? 0 : -1;
+      return show_goodbye(state) == 0 && sl_cancel(state->sl) == SL_OK ? 0 : -1;
     }
     if (sl_history_add(state->sl, line) != SL_OK ||
         render_user_prompt(state, line) != 0 || start_operation(state) != 0) {
@@ -381,6 +391,29 @@ static int cancel_editor_key(sl_t *sl, sl_key_t key, void *userdata,
     return SL_ERROR_INVALID;
   *action = SL_KEY_ACTION_CANCEL;
   return SL_OK;
+}
+
+/* Status changes must render before readline releases its active prompt. */
+static int exit_editor_key(sl_t *sl, sl_key_t key, void *userdata,
+                           sl_key_action_t *action) {
+  struct chat_state *state = (struct chat_state *)userdata;
+  const char *text = sl_buffer(sl);
+  char *queued = NULL;
+  int leaving = key == SL_KEY_CTRL_D && text[0] == '\0';
+  *action = SL_KEY_ACTION_PASS;
+  if (!state->busy && (key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER)) {
+    if (key == SL_KEY_ALT_ENTER && text[0] == '\0' &&
+        sl_prompt_queue_count(sl) > 0) {
+      int result =
+          sl_prompt_queue_peek(sl, sl_prompt_queue_count(sl) - 1, &queued);
+      if (result != SL_OK)
+        return result;
+      text = queued;
+    }
+    leaving = strcmp(text, "/quit") == 0;
+  }
+  sl_free_string(sl, queued);
+  return leaving && show_goodbye(state) != 0 ? SL_ERROR_IO : SL_OK;
 }
 
 static int set_prompt_theme_from_environment(sl_t *sl) {
@@ -429,7 +462,7 @@ static void report_failure(struct chat_state *state, const char *operation) {
 
 int main(void) {
   static const char *const status_elements[] = {"streaming demo", "ctx 36%",
-                                                "~/g/softline", "queue demo"};
+                                                "demo/project", "queue demo"};
   struct chat_state state;
   sl_prompt_source_t source;
   sl_readline_status_t status;
@@ -451,8 +484,7 @@ int main(void) {
   }
   state.columns = mdf_terminal_width(STDOUT_FILENO, 80);
   if ((interactive &&
-       (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
-        sl_set_prompt_queue(state.sl, 1, 64, 3) != SL_OK ||
+       (sl_set_prompt_queue(state.sl, 1, 64, 3) != SL_OK ||
         sl_set_prompt_queue_profile(
             state.sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) != SL_OK ||
         sl_set_prompt_queue_delivery(
@@ -463,6 +495,11 @@ int main(void) {
                                    sizeof(status_elements[0])) != SL_OK ||
         set_prompt_theme_from_environment(state.sl) != 0 ||
         sl_bind_key(state.sl, SL_KEY_ESCAPE, cancel_editor_key, NULL) !=
+            SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_ENTER, exit_editor_key, &state) != SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_ALT_ENTER, exit_editor_key, &state) !=
+            SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_CTRL_D, exit_editor_key, &state) !=
             SL_OK)) ||
       state.sl->output_stream_begin(state.sl) != SL_OK ||
       new_renderer(&state, &state.note_renderer) != 0 ||

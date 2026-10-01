@@ -21,7 +21,7 @@ endif()
 
 set(SL_DIST_DIR "${CMAKE_SOURCE_DIR}/dist" CACHE PATH "Release artifact output directory")
 set(SL_TARGET_ID "" CACHE STRING "Release target identifier")
-set(SOFTLINE_ABI_VERSION "1" CACHE STRING "softline shared library ABI version")
+set(SOFTLINE_ABI_VERSION "0" CACHE STRING "softline shared library ABI version")
 
 if(NOT SOFTLINE_ABI_VERSION MATCHES "^[0-9]+$")
   message(FATAL_ERROR "SOFTLINE_ABI_VERSION must be a non-negative integer")
@@ -122,7 +122,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
   add_link_options(-Wl,--fatal-warnings)
 endif()
 
-add_library(sl_lib_obj OBJECT src/softline.c src/softline_surface.c)
+add_library(sl_lib_obj OBJECT src/softline.c src/softline_surface.c
+  src/softline_clipboard.c)
 set_target_properties(sl_lib_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(sl_lib_obj
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -131,10 +132,12 @@ target_include_directories(sl_lib_obj
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 softline_apply_warnings(sl_lib_obj)
+include(cmake/softline_resolver.cmake)
 
 if(SL_BUILD_STATIC)
   add_library(softline_static STATIC)
-  target_sources(softline_static PRIVATE $<TARGET_OBJECTS:sl_lib_obj>)
+  target_sources(softline_static PRIVATE $<TARGET_OBJECTS:sl_lib_obj>
+    ${SL_PRIVATE_RESOLVER_OBJECTS})
   target_include_directories(softline_static
     PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -180,7 +183,8 @@ if(SL_BUILD_SHARED)
   file(APPEND "${_softline_export_map}" "  local: *;\n};\n")
 
   add_library(softline_shared SHARED)
-  target_sources(softline_shared PRIVATE $<TARGET_OBJECTS:sl_lib_obj>)
+  target_sources(softline_shared PRIVATE $<TARGET_OBJECTS:sl_lib_obj>
+    ${SL_PRIVATE_RESOLVER_OBJECTS})
   target_include_directories(softline_shared
     PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

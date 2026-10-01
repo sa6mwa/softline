@@ -3,8 +3,12 @@ set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf ${TMP_DIR}' EXIT
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package-source-smoke.XXXXXX")"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
 ARCHIVE="${DIST_DIR}/softline-${VERSION}.tar.gz"

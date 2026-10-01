@@ -79,15 +79,24 @@ typedef struct sl_watch {
   void *userdata;
 } sl_watch_t;
 
+/* Logical prompt rows retained while the terminal reflows their physical
+ * cells. Transcript bytes never enter this frame. */
+typedef struct {
+  char **lines;
+  size_t *lens;
+  int *cols;
+  int rows;
+  int editor_first;
+  int cursor_row;
+  int cursor_col;
+} sl_reflow_frame_t;
+
 typedef struct sl_impl {
   int input_fd;
   int output_fd;
-  int screen_x;
-  int screen_y;
   int screen_width;
-  int screen_height;
-  int bounded;
   int live_scroll_region;
+  int clear_prompt_on_exit;
   int auto_scroll_pinned;
   int output_stream_active;
   int output_trailing_newlines;
@@ -97,15 +106,21 @@ typedef struct sl_impl {
   size_t output_pending_len;
   sl_surface_t *output_surface;
   int cursor_position_probe;
-  int dynamic_width;
-  int dynamic_height;
+  int probed_cursor_col;
+  /* Last native teardown position, for terminals without cursor reports. */
+  int native_cursor_valid;
+  int native_cursor_below;
   char *buf;
   size_t len;
   size_t cap;
   size_t line_max_len;
+  int disable_image_paste;
+  char *image_paste_path_template;
   size_t cursor;
   int raw_active;
   struct termios original_termios;
+  tcflag_t original_output_oflag;
+  int output_oflag_changed;
   sl_history_t history;
   sl_prompt_queue_t prompt_queue;
   sl_prompt_theme_t prompt_theme;
@@ -122,15 +137,21 @@ typedef struct sl_impl {
   int bracketed_paste;
   int cursor_hidden;
   int rendered_rows;
+  int rendered_editor_first;
   int rendered_top_row;
   int rendered_cursor_row;
   int rendered_cursor_col;
+  /* Logical cursor is part of the prompt frame; this tracks whether the
+   * terminal cursor currently matches it. Output may invalidate only this. */
+  int rendered_cursor_valid;
   int rendered_width;
   int rendered_height;
+  int native_prompt_rows;
   char **rendered_lines;
   size_t *rendered_lens;
   int *rendered_cols;
   int rendered_cap;
+  sl_reflow_frame_t reflow_frame;
   const char *active_prompt;
   int active_readline;
   int request_submit;

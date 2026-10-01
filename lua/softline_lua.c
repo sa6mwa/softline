@@ -243,12 +243,55 @@ static int softline_lua_watch_callback(sl_t *sl, const sl_watch_event_t *event,
   return SL_OK;
 }
 
-static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
+/** Accepted configuration names mirror sl_config_t. Reject unknown fields so
+ * removed layouts and misspelled options cannot silently use defaults. */
+static const char *const softline_lua_config_fields[] = {
+    "input_fd",
+    "output_fd",
+    "screen_width",
+    "live_scroll_region",
+    "disable_image_paste",
+    "image_paste_path_template",
+    "clear_prompt_on_exit",
+    "prompt_queue",
+    "prompt_queue_max_entries",
+    "prompt_queue_preview_entries",
+    "prompt_theme",
+    "statusline",
+    "statusline_start_element",
+    "status_spinner",
+    "status_busy",
+    "status_idle_marker",
+    "history_max_len",
+    "line_max_len"};
+
+static void softline_lua_config(lua_State *L, int index, sl_config_t *config,
+                                int *rooted_template) {
   const char *idle_marker;
   size_t idle_marker_len;
   if (lua_isnoneornil(L, index))
     return;
   luaL_checktype(L, index, LUA_TTABLE);
+  index = lua_absindex(L, index);
+  lua_pushnil(L);
+  while (lua_next(L, index) != 0) {
+    size_t field, name_len;
+    const char *name;
+    if (lua_type(L, -2) != LUA_TSTRING)
+      luaL_error(L, "configuration field names must be strings");
+    name = lua_tolstring(L, -2, &name_len);
+    for (field = 0; field < sizeof(softline_lua_config_fields) /
+                                sizeof(softline_lua_config_fields[0]);
+         field++) {
+      if (name_len == strlen(softline_lua_config_fields[field]) &&
+          memcmp(name, softline_lua_config_fields[field], name_len) == 0)
+        break;
+    }
+    if (field == sizeof(softline_lua_config_fields) /
+                     sizeof(softline_lua_config_fields[0]))
+      luaL_error(L, "unknown configuration field '%s'", name);
+    lua_pop(L, 1);
+  }
 
   lua_getfield(L, index, "input_fd");
   if (!lua_isnil(L, -1))
@@ -260,33 +303,36 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
     config->output_fd = (int)luaL_checkinteger(L, -1);
   lua_pop(L, 1);
 
-  lua_getfield(L, index, "screen_x");
-  if (!lua_isnil(L, -1))
-    config->screen_x = (int)luaL_checkinteger(L, -1);
-  lua_pop(L, 1);
-
-  lua_getfield(L, index, "screen_y");
-  if (!lua_isnil(L, -1))
-    config->screen_y = (int)luaL_checkinteger(L, -1);
-  lua_pop(L, 1);
-
   lua_getfield(L, index, "screen_width");
   if (!lua_isnil(L, -1))
     config->screen_width = (int)luaL_checkinteger(L, -1);
   lua_pop(L, 1);
 
-  lua_getfield(L, index, "screen_height");
-  if (!lua_isnil(L, -1))
-    config->screen_height = (int)luaL_checkinteger(L, -1);
-  lua_pop(L, 1);
-
-  lua_getfield(L, index, "bounded");
-  if (!lua_isnil(L, -1))
-    config->bounded = lua_toboolean(L, -1);
-  lua_pop(L, 1);
   lua_getfield(L, index, "live_scroll_region");
   if (!lua_isnil(L, -1))
     config->live_scroll_region = lua_toboolean(L, -1);
+  lua_pop(L, 1);
+  /* Linux image paste uses private bundled c-ares: literal IPv4/IPv6,
+   * /etc/hosts, then /etc/resolv.conf DNS within the paste deadline. Static
+   * and shared builds need no libc NSS modules or extra resolver library. */
+  lua_getfield(L, index, "disable_image_paste");
+  if (!lua_isnil(L, -1))
+    config->disable_image_paste = lua_toboolean(L, -1);
+  lua_pop(L, 1);
+  lua_getfield(L, index, "image_paste_path_template");
+  if (!lua_isnil(L, -1)) {
+    size_t template_len;
+    config->image_paste_path_template = luaL_checklstring(L, -1, &template_len);
+    if (strlen(config->image_paste_path_template) != template_len)
+      luaL_error(L, "image_paste_path_template cannot contain NUL bytes");
+    /* Keep the Lua string on the stack until sl_create_with_config copies it.
+     * Later configuration lookups may invoke __index and collect garbage. */
+    *rooted_template = 1;
+  } else
+    lua_pop(L, 1);
+  lua_getfield(L, index, "clear_prompt_on_exit");
+  if (!lua_isnil(L, -1))
+    config->clear_prompt_on_exit = lua_toboolean(L, -1);
   lua_pop(L, 1);
   lua_getfield(L, index, "prompt_queue");
   if (!lua_isnil(L, -1))
@@ -343,9 +389,9 @@ static void softline_lua_config(lua_State *L, int index, sl_config_t *config) {
 static int softline_lua_new(lua_State *L) {
   sl_config_t config;
   softline_lua_handle_t *handle;
-  int i;
+  int i, rooted_template = 0;
   sl_config_init(&config);
-  softline_lua_config(L, 1, &config);
+  softline_lua_config(L, 1, &config, &rooted_template);
   handle = (softline_lua_handle_t *)lua_newuserdatauv(L, sizeof(*handle), 0);
   handle->L = L;
   for (i = 0; i < SOFTLINE_LUA_MAX_KEY_BINDINGS; i++) {
@@ -367,6 +413,8 @@ static int softline_lua_new(lua_State *L) {
     return luaL_error(L, "failed to create softline handle");
   luaL_getmetatable(L, SOFTLINE_LUA_HANDLE);
   lua_setmetatable(L, -2);
+  if (rooted_template)
+    lua_remove(L, -2);
   return 1;
 }
 
@@ -404,6 +452,9 @@ static int softline_lua_close(lua_State *L) {
   return softline_lua_gc(L);
 }
 
+/** Lua editor:readline(prompt): return submitted input or nil, status.
+ * Raw mode temporarily disables kernel tab expansion (TAB3/OXTABS) while
+ * preserving OPOST/ONLCR; original terminal flags are restored on release. */
 static int softline_lua_readline(lua_State *L) {
   softline_lua_handle_t *handle;
   const char *prompt;
@@ -487,16 +538,8 @@ static int softline_lua_history_load(lua_State *L) {
       L, sl_history_load(handle->sl, luaL_checkstring(L, 2)));
 }
 
-static int softline_lua_set_bounds(lua_State *L) {
-  softline_lua_handle_t *handle;
-  handle = softline_lua_check(L, 1);
-  return softline_lua_status(L, sl_set_bounds(handle->sl,
-                                              (int)luaL_checkinteger(L, 2),
-                                              (int)luaL_checkinteger(L, 3),
-                                              (int)luaL_checkinteger(L, 4),
-                                              (int)luaL_checkinteger(L, 5)));
-}
-
+/** Lua editor:set_screen_width(width): set ordinary readline wrapping width.
+ * With no active readline, this hint leaves native output geometry alone. */
 static int softline_lua_set_screen_width(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -509,6 +552,25 @@ static int softline_lua_set_live_scroll_region(lua_State *L) {
   handle = softline_lua_check(L, 1);
   return softline_lua_status(
       L, sl_set_live_scroll_region(handle->sl, lua_toboolean(L, 2)));
+}
+
+/** Lua editor:set_image_paste_path_template(template): set the image path
+ * template, or nil for the XDG cache default. `*` is replaced by a 20-character
+ * xid, then `.png` or `.jpeg` is appended. Supports ~/ and HOME/XDG_CACHE_HOME
+ * template tokens in uppercase or lowercase. Parent directories are created
+ * recursively when an image is pasted. */
+static int softline_lua_set_image_paste_path_template(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  const char *path_template = NULL;
+  size_t length;
+  if (!lua_isnoneornil(L, 2)) {
+    path_template = luaL_checklstring(L, 2, &length);
+    if (strlen(path_template) != length)
+      return luaL_error(L,
+                        "image paste path template cannot contain NUL bytes");
+  }
+  return softline_lua_status(
+      L, sl_set_image_paste_path_template(handle->sl, path_template));
 }
 
 static int softline_lua_set_prompt_queue(lua_State *L) {
@@ -1163,6 +1225,8 @@ static int softline_lua_next_chunk(sl_t *sl, void *userdata, const char **chunk,
   return SL_OK;
 }
 
+/* Delegate finite chunks to the core's native resize reconciliation, including
+ * physical resize while a Lua source function is running. */
 static int softline_lua_print_above(lua_State *L) {
   softline_lua_handle_t *handle;
   softline_lua_stream_t stream;
@@ -1190,8 +1254,15 @@ static int softline_lua_print_above(lua_State *L) {
 }
 
 /** Lua editor:output_stream_begin(): open one renderer-agnostic session.
- * The Lua/editor owner thread controls writes and geometry; an external
- * producer must hand chunks through a watched descriptor. */
+ * The transcript starts at the original cursor; the prompt starts at the
+ * bottom and follows native resize. Its actual position sets the output margin.
+ * A clipped unfinished line resumes at the first visible output row without
+ * replay. Rapid tmux resizes can outrun PTY size notifications while output
+ * is emitted, so exact output in that interval is not guaranteed.
+ * The Lua/editor owner thread controls writes; an external producer hands
+ * chunks through a watched descriptor. Non-TTY handles forward validated bytes
+ * only.
+ */
 static int softline_lua_output_stream_begin(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -1199,7 +1270,29 @@ static int softline_lua_output_stream_begin(lua_State *L) {
 }
 
 /** Lua editor:output_stream_write(bytes): forward a byte string immediately.
- * No newline or document boundary is inferred, including for an empty string.
+ * No newline or document boundary is inferred; an empty string is a no-op.
+ * Printable UTF-8, LF/CR/Tab and ANSI SGR are accepted. Partial ANSI/UTF-8 is
+ * bounded and retained across writes; complete bytes are emitted before return.
+ * Native LF follows OPOST/ONLCR. While Softline owns raw mode, kernel tab
+ * expansion (TAB3/OXTABS) is disabled so tabs reach the terminal unchanged;
+ * original flags are restored when raw mode is released.
+ * Native writes after release disable expansion for the write and restore it
+ * before returning, without flushing pending input.
+ * With a prompt frame present, complete Unicode emissions request the actual
+ * producer cursor before returning to the editor cursor in the same batch.
+ * Reply reads preserve concurrent input and wait up to 100 ms; unanswered
+ * reports disable further probing. ASCII emissions add no reports. There is
+ * no producer Unicode width estimates, span correction or grapheme buffering.
+ * Reports record endpoints only; Unicode layout belongs to Softline-owned
+ * prompts. Width resize keeps an opaque line's observed column and clamps it
+ * only if offscreen. Continuation after Unicode/tab reflow can land in a gap or
+ * overwrite text, including CR tails. With an active prompt, a later printable
+ * chunk after a known ASCII right-edge write uses a hard row advance; width
+ * growth may leave it split and a divided Unicode cluster may lose its
+ * attachment. Bottom-margin reflow can also leave a continuation split after
+ * growth. A last-column report cannot distinguish Unicode pending wrap from a
+ * cursor before the final cell. These intentional opaque-feed limits are
+ * accepted without reconstructing or replaying producer text.
  */
 static int softline_lua_output_stream_write(lua_State *L) {
   softline_lua_handle_t *handle;
@@ -1220,8 +1313,10 @@ static int softline_lua_output_stream_write_quoted_prompt(lua_State *L) {
       L, sl_output_stream_write_quoted_prompt(handle->sl, text));
 }
 
-/** Lua editor:output_stream_end(): release the session without finishing any
- * external renderer document or adding output bytes. */
+/** Lua editor:output_stream_end(): end the producer session without finishing
+ * an external renderer document. An active editor retains its prompt and
+ * scroll region. Otherwise native chat closes using clear_prompt_on_exit.
+ * Incomplete ANSI/UTF-8 fails and leaves the session open. */
 static int softline_lua_output_stream_end(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -1235,9 +1330,10 @@ static const luaL_Reg softline_lua_methods[] = {
     {"history_set_max_len", softline_lua_history_set_max_len},
     {"history_save", softline_lua_history_save},
     {"history_load", softline_lua_history_load},
-    {"set_bounds", softline_lua_set_bounds},
     {"set_screen_width", softline_lua_set_screen_width},
     {"set_live_scroll_region", softline_lua_set_live_scroll_region},
+    {"set_image_paste_path_template",
+     softline_lua_set_image_paste_path_template},
     {"set_prompt_queue", softline_lua_set_prompt_queue},
     {"queue_count", softline_lua_queue_count},
     {"queue_capacity", softline_lua_queue_capacity},
@@ -1420,6 +1516,8 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "KEY_CTRL_R");
   lua_pushinteger(L, SL_KEY_CTRL_U);
   lua_setfield(L, -2, "KEY_CTRL_U");
+  lua_pushinteger(L, SL_KEY_CTRL_V);
+  lua_setfield(L, -2, "KEY_CTRL_V");
   lua_pushinteger(L, SL_KEY_CTRL_W);
   lua_setfield(L, -2, "KEY_CTRL_W");
   lua_pushinteger(L, SL_KEY_ESCAPE);

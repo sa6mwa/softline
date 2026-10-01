@@ -22,16 +22,20 @@ sl:close()
 ## Handles
 
 `softline.new([config])` returns an independent editor handle. The optional
-config table mirrors `sl_config_t`:
+config table mirrors `sl_config_t`. Unknown fields are rejected, including
+removed boxed-layout options (`bounded`, `screen_x`, `screen_y`, and
+`screen_height`). Invalid config names or values raise a Lua error. Supported
+fields are:
 
 - `input_fd`
 - `output_fd`
-- `screen_x`
-- `screen_y`
 - `screen_width`
-- `screen_height`
-- `bounded`
 - `live_scroll_region`
+- `disable_image_paste` (default `false`; disables built-in Ctrl-V image capture)
+- `image_paste_path_template` (default `nil`; XDG cache path)
+- `clear_prompt_on_exit` (default `false`: clear input rows, keep queue and
+  status rows, and return at column zero on the current input row; `true` clears
+  the whole prompt area and returns below the transcript)
 - `prompt_queue`
 - `prompt_queue_max_entries`
 - `prompt_queue_preview_entries`
@@ -55,7 +59,12 @@ live scroll regions, status lines, and spinners are off; the theme is
 ## Methods
 
 - `sl:readline([prompt])` returns a submitted string, or `nil, status` for EOF,
-  cancellation, interrupt, or error.
+  cancellation, interrupt, or error. Ctrl-C restores terminal state before
+  raising SIGINT; if a handler returns, an existing native output session
+  remains available.
+- While terminal raw mode is owned, kernel tab expansion (`TAB3`/`OXTABS`) is
+  disabled so the terminal handles tabs. OPOST/ONLCR and other output flags are
+  preserved; original flags are restored on release.
 - `sl:next_prompt([prompt])` returns `line, source`. Automatic queue delivery
   dispatches FIFO entries before opening an editor; manual delivery retains
   them for explicit take or Alt-Enter promotion. `source` is
@@ -68,13 +77,21 @@ live scroll regions, status lines, and spinners are off; the theme is
   clears and disables history.
 - `sl:history_save(filename)` writes history with owner-only permissions.
 - `sl:history_load(filename)` loads history entries into the handle.
-- `sl:set_bounds(x, y, width, height)` sets prompt and output geometry; zero
-  width or height follows terminal bounds.
-- `sl:set_screen_width(width)` sets prompt and output wrapping width; `0`
-  returns to terminal-width probing.
-- `sl:set_live_scroll_region(enabled)` opts an unbounded prompt into
+- `sl:set_screen_width(width)` sets ordinary readline wrapping width; `0`
+  returns to terminal-width probing. Native chat uses physical terminal width.
+  Without an active readline, this hint does not move or resize native output.
+- `sl:set_live_scroll_region(enabled)` opts an ordinary readline prompt into
   bottom-pinned scroll-region output after it reaches the terminal bottom.
-  It is disabled by default.
+  It is disabled by default; native chat always uses its own scroll region.
+- `sl:set_image_paste_path_template(template)` copies an override path; pass
+  `nil` to restore the default. A template contains exactly one `*` for a
+  20-character lowercase base32hex xid. Softline always appends `.png` or
+  `.jpeg`: `/tmp/softline/*/image` yields
+  `/tmp/softline/{xid}/image.png`. Directories are created recursively.
+  Templates support `~/`, `{{HOME}}`, `{{home}}`, `{{XDG_CACHE_HOME}}`, and
+  `{{xdg_cache_home}}`. The XDG token uses `XDG_CACHE_HOME` when absolute,
+  otherwise `$HOME/.cache`. The default is
+  `${XDG_CACHE_HOME}/softline/{xid}.png` or `.jpeg` with that fallback.
 - `sl:set_idle_callback(callback)` registers a no-argument Lua callback that
   runs while an interactive editor is idle; pass `nil` to clear it. The
   callback may use methods such as `print_above`, `insert`, `submit`, or
@@ -171,22 +188,75 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:bind_key(key, callback)` binds a decoded key to a callback. The callback
   receives the key code and returns a `softline.KEY_ACTION_*` value, or `nil`
   to mark the key handled. Passing `nil` as the callback removes the binding.
-- `sl:print_above(source)` prints above the active prompt. Bounded prompts use
-  their output region, including narrow/offset bounds; normal prompts clear
+  The default `softline.KEY_CTRL_V` action saves a PNG or JPEG from the Linux
+  X11 clipboard and inserts its persistent cache path; a binding overrides
+  that action. It uses `DISPLAY`, including one forwarded by `ssh -Y`, and a
+  missing image leaves the buffer unchanged with a `last_error()` diagnostic.
+  Linux static and shared libraries privately bundle MIT-licensed c-ares for
+  literal IPv4/IPv6, `/etc/hosts`, then `/etc/resolv.conf` DNS (including search
+  domains). Lookup shares the 10-second paste deadline without libc NSS modules
+  or an additional link library.
+- `sl:print_above(source)` prints above the active prompt. Ordinary prompts clear
   and redraw by default, or use an
   enabled live scroll region after reaching the terminal bottom. `source` may
   be a string, an array-like table of string chunks, or a function that
   receives a 1-based chunk index and returns the next string or `nil`.
+  Native chat reconciles physical resize before each chunk, including resize
+  while a source function is running.
+  Failed native finite output discards partial ANSI/UTF-8 bytes so the next
+  call starts cleanly.
 - `sl:output_stream_begin()` opens one persistent output session above the
-  prompt. With no explicit bounds, the prompt is pinned to the terminal bottom
-  while the session is open. The application owns its renderer, wakeup, and
+  prompt. Transcript output starts at the existing terminal cursor; the editable
+  prompt starts at the bottom. Physical resize preserves the terminal's native
+  prompt position; only prompt layout changes update its cells. Producer bytes
+  pass through unchanged. Before the first frame, output uses the full terminal and
+  leaves its cursor in place between writes, preserving native autowrap and
+  Unicode clusters. Cursor reports occur at ownership and resize boundaries.
+  With a prompt frame present, complete emissions containing Unicode also
+  observe the producer's actual terminal endpoint. Reports record positions
+  without estimating Unicode widths or correcting character spans. Unicode
+  layout is computed only for Softline-owned prompts. The request and
+  return to the editor cursor share one output batch; waiting for a reply
+  leaves the cursor at the prompt. Replies use the existing 100 ms timeout,
+  preserving concurrent input; an unanswered report disables further probing
+  and retains estimated positions. ASCII emissions add no reports. There is
+  no grapheme buffering or renderer-specific behavior. Transcript reflow
+  belongs to the terminal. With an active prompt, a known ASCII right-edge
+  continuation advances a hard row after the cursor handoff. That row may not
+  rejoin on width growth, and a split Unicode cluster can lose its attachment.
+  At the bottom output margin, VTE and tmux can reflow that boundary
+  differently on width growth; exact continuation there is not guaranteed.
+  Unfinished Unicode/tab lines have no reflow model. Width resize retains the
+  observed column, clamping it only if offscreen; continuation can land in a gap
+  or overwrite text, including CR tails. A last-column report cannot distinguish
+  Unicode pending wrap from a cursor before the last cell. These are intentional
+  opaque-feed limits; Softline never reconstructs or replays the transcript.
+  The output margin follows the actual prompt height, including visible queue
+  entries, nonempty status messages, status lines, and editor rows. Unused
+  preview slots occupy no space. At physical capacity the editor pages, leaving
+  at least two output rows. Native chat needs at least three terminal rows, uses physical
+  terminal width, and supports no rectangular viewport.
+  An unfinished line clipped into scrollback continues at the first visible
+  output row without replay. If the clipped position was at a hard line
+  boundary, new output starts next to the prompt. Existing scrollback cells
+  and spacing are preserved. Rapid tmux resizes may update its visible grid
+  before delivering the matching PTY size; output during that interval can be
+  corrupted. The native stream does not replay transcript bytes to repair it.
+  The application owns its renderer, wakeup, and
   response/document lifecycle; Softline has no Markdown dependency.
 - `sl:output_stream_write(bytes)` sends a Lua byte string immediately into the
   open session. Calls from a watch callback can alternate with prompt typing.
   Chunk boundaries add no newline or response separator. The stream accepts
   printable UTF-8, LF/CR/Tab, and ANSI SGR styling; malformed or unsupported
   terminal controls return `nil, status`. An empty string succeeds without
-  changing the screen. No full response is buffered.
+  changing the screen. No full response is buffered. Native LF positioning
+  follows the output TTY's OPOST/ONLCR settings without changing those settings
+  or producer bytes. While Softline owns raw mode, kernel tab expansion
+  (`TAB3`/`OXTABS`, such as `stty -tabs`) is temporarily disabled so the terminal
+  receives tabs unchanged. Original flags are restored when raw mode is
+  released, including when input and output use separate TTYs.
+  Native writes after that release disable expansion for the write and restore
+  it before returning, without flushing pending input.
 - `sl:output_stream_write_quoted_prompt(text)` writes submitted text between
   renderer segments as a wrapped, themed quote, repeating the prefix on every
   visible row and keeping one empty row on each side. The text is literal, so
@@ -195,20 +265,27 @@ live scroll regions, status lines, and spinners are off; the theme is
   `sl:set_quoted_prompt_style({prefix={r,g,b}, text={r,g,b}})` overrides the
   theme colours; `nil` restores theme defaults. The prefix stays faded and the
   text stays italic.
-- `sl:output_stream_end()` ends the session without inserting a newline or
-  finishing an external renderer document. If the last write left an ANSI or
-  UTF-8 sequence incomplete, it returns `nil, status` and keeps the session
+- `sl:output_stream_end()` ends the producer session without finishing an
+  external renderer document. Inside an active editor callback it retains the
+  prompt and scroll region for later finite output or another stream. Otherwise
+  native chat closes using `clear_prompt_on_exit`: by default it clears only
+  input rows, keeps queue/status rows, and leaves the cursor at column zero on
+  the current input row without a newline or scroll. With no rendered prompt
+  it returns below output. Non-TTY output adds no teardown controls. If the
+  last write left an ANSI or UTF-8 sequence incomplete, it returns
+  `nil, status` and keeps the session
   open so the missing bytes can be supplied. Only one session may be open per
   editor. Output-session and quoted-prompt methods run on the Lua/editor owner
   thread; foreign producers should notify a watched descriptor instead of
   calling Lua.
-- `sl:set_bounds(x, y, width, height)` and `sl:set_screen_width(width)` may be
-  called while a session is streaming or a prompt is being edited. Softline
-  immediately redraws its visible output and prompt inside the new geometry;
-  the application updates its external renderer width separately.
+- Physical resize preserves an unchanged prompt and cursor at their native
+  terminal positions. Changed prompt layout updates only owned cells.
+  The application updates its external renderer width separately. Softline
+  does not cache or repaint the transcript.
 - `sl:last_readline_status()` returns the last readline status code.
 - `sl:last_error()` returns the last handle-owned diagnostic string, or `nil`.
-- `sl:close()` destroys the handle.
+- `sl:close()` destroys the handle and restores terminal state. Native chat
+  cleanup uses the same `clear_prompt_on_exit` policy as `output_stream_end()`.
 
 Fallible setter and operation methods return `true` on success or
 `nil, status` on failure; getters and prompt reads return their documented
@@ -276,6 +353,7 @@ without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 - `softline.KEY_CTRL_K`
 - `softline.KEY_CTRL_R`
 - `softline.KEY_CTRL_U`
+- `softline.KEY_CTRL_V`
 - `softline.KEY_CTRL_W`
 - `softline.KEY_ESCAPE`
 - `softline.KEY_BACKSPACE`
@@ -329,8 +407,11 @@ lua examples/chat.lua
 ```
 
 `examples/chat.lua` accepts the same `SOFTLINE_PROMPT_THEME` values as the C
-chat example. Set `SOFTLINE_LIVE_SCROLL_REGION=1` to demonstrate the optional
-unbounded bottom-pinned scroll-region mode.
+chat example. It uses the default native persistent output session: transcript
+output starts at the original cursor, while the prompt starts at the bottom
+and follows the terminal's native resize position.
+Output feeds preserve unchanged prompt cells; prompt updates patch only cells
+that differ from the previous frame.
 
 To run against the in-tree debug `libsoftline` instead of the installed local
 SDK:

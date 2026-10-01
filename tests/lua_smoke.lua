@@ -45,7 +45,19 @@ local prompt_methods = {
   "set_status_idle_marker",
 }
 
+for _, field in ipairs({ "bounded", "screen_x", "screen_y", "screen_height",
+                         "unknown_option", "screen_wdith", "screen_width\0extra" }) do
+  local ok, message = pcall(softline.new, { [field] = true })
+  assert(not ok and message:find("unknown configuration field", 1, true),
+         "unknown configuration option accepted: " .. field)
+end
+local ok, message = pcall(softline.new, { [1] = true })
+assert(not ok and message:find("configuration field names must be strings", 1, true))
+
 local sl = assert(softline.new({ line_max_len = 32 }))
+assert(sl:set_image_paste_path_template("{{xdg_cache_home}}/softline/*"))
+assert(sl:set_image_paste_path_template(nil))
+assert(not sl:set_image_paste_path_template("relative/*"))
 assert_eq(sl:last_readline_status(), softline.READLINE_NONE, "initial status")
 assert(sl:history_add("history entry"))
 assert(sl:set_buffer("draft"))
@@ -77,10 +89,29 @@ assert(sl:output_stream_end())
 assert(not sl:output_stream_write("after end"))
 sl:close()
 
-local bounded = assert(softline.new({ bounded = true, screen_height = 1 }))
-local ok = bounded:print_above("should not fit\n")
-assert_eq(ok, nil, "bounded config should affect print_above")
-bounded:close()
+local image_config = assert(softline.new({
+  disable_image_paste = true,
+  image_paste_path_template = "{{HOME}}/captures/*",
+}))
+image_config:close()
+local retained_templates = {}
+local collected_template = assert(softline.new(setmetatable({}, {
+  __index = function(_, key)
+    if key == "image_paste_path_template" then
+      return "/tmp/" .. string.rep("x", 100) .. "/*"
+    end
+    if key == "clear_prompt_on_exit" then
+      collectgarbage("collect")
+      for i = 1, 50 do retained_templates[i] = string.rep("Z", 107) end
+    end
+  end,
+})))
+collected_template:close()
+local image_ok = pcall(softline.new,
+  { image_paste_path_template = "{{XDG_CACHE_DIR}}/*" })
+assert(not image_ok, "unsupported XDG token accepted")
+
+assert_eq(sl.set_bounds, nil, "boxed viewport method removed")
 
 local status = assert(softline.new({
   prompt_queue = true,

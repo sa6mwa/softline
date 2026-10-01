@@ -38,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix="export-reconfigure-", dir=root / "build
     build = fixture / "build"
     source.mkdir()
     shutil.copy2(root / "CMakeLists.txt", source / "CMakeLists.txt")
-    for name in ("src", "include", "cmake", "scripts"):
+    for name in ("src", "include", "cmake", "scripts", "vendor"):
         shutil.copytree(root / name, source / name)
 
     configure_options = [
