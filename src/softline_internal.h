@@ -98,7 +98,10 @@ typedef struct sl_impl {
   int live_scroll_region;
   int clear_prompt_on_exit;
   int auto_scroll_pinned;
+  int scroll_region_probe_pending;
   int output_stream_active;
+  /* Feed calls never wait for a terminal cursor-position reply. */
+  int output_write_active;
   int output_trailing_newlines;
   int output_ansi_state;
   /* Hold at most ESC [, 128 CSI bytes, and a terminator across writes. */
@@ -110,6 +113,7 @@ typedef struct sl_impl {
   /* Last native teardown position, for terminals without cursor reports. */
   int native_cursor_valid;
   int native_cursor_below;
+  int native_history_rows; /* Viewport shifts only; no transcript storage. */
   char *buf;
   size_t len;
   size_t cap;

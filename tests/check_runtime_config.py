@@ -1,5 +1,6 @@
 """Configuration failure and verified archive cache regressions."""
 import hashlib
+import http.server
 import os
 import pathlib
 import select
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 
 root = pathlib.Path(sys.argv[1]).resolve()
 (root / "build").mkdir(exist_ok=True)
@@ -98,4 +100,30 @@ endwhile()
     cached.write_bytes(b"corrupt")
     assert "cannot acquire" in run(script, False).lower()
     assert not list(cached.parent.iterdir()), "failed download left partial data"
+    class TruncatedDownload(http.server.BaseHTTPRequestHandler):
+        requests = 0
+
+        def do_GET(self):
+            type(self).requests += 1
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload if self.requests == 3 else payload[:3])
+            self.close_connection = True
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), TruncatedDownload)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        run(script.replace(upstream.as_uri(), f"http://127.0.0.1:{server.server_port}/archive"))
+        assert TruncatedDownload.requests == 3
+        assert cached.read_bytes() == payload
+        assert sorted(path.name for path in cached.parent.iterdir()) == [cached.name]
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 print("Missing-runtime and archive cache contracts passed")

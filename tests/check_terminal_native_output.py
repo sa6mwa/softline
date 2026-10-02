@@ -311,12 +311,14 @@ def case(fixture, build, source, prefilled=False):
 
 def handoff_resize_case(fixture, build, source, prefilled=False, draft='',
                         dimensions=((80, 12), (30, 8), (80, 8), (40, 12)),
-                        expand_tabs=False):
+                        expand_tabs=False, live_input=False, homed_history=False):
     direct, direct_window = terminal()
     actual, actual_window = terminal()
     child = None
-    if prefilled:
+    if prefilled or homed_history:
         prior = ''.join(f'existing row {i:03}\r\n' for i in range(100)).encode()
+        if homed_history:
+            prior += b'\x1b[2J\x1b[H'
         for widget in (direct, actual):
             vt.feed(widget, prior, len(prior))
         vt.pump()
@@ -337,7 +339,8 @@ def handoff_resize_case(fixture, build, source, prefilled=False, draft='',
             assert terminal_pty
             vt.set_pty(actual, terminal_pty)
             vt.unref(terminal_pty)
-            child = subprocess.Popen([fixture, '--gated', str(commands), str(replies), source],
+            mode = '--gated-live' if live_input else '--gated'
+            child = subprocess.Popen([fixture, mode, str(commands), str(replies), source],
                                      stdin=slave, stdout=slave, stderr=slave)
             os.close(slave)
 
@@ -365,6 +368,7 @@ def handoff_resize_case(fixture, build, source, prefilled=False, draft='',
                     vt.pump()
                     assert child.poll() is None and time.monotonic() < deadline, 'handoff timed out'
                 if draft:
+                    assert not live_input
                     payload = draft.encode()
                     vt.send(actual, payload, len(payload))
                     for _ in range(10):
@@ -374,7 +378,7 @@ def handoff_resize_case(fixture, build, source, prefilled=False, draft='',
                     for _ in range(10):
                         vt.pump()
                     vt.send(actual, b'\x15\r', 2)
-                else:
+                elif not live_input:
                     vt.send(actual, b'\r', 1)
                 ack()
                 for width, height in dimensions:
@@ -397,7 +401,8 @@ def handoff_resize_case(fixture, build, source, prefilled=False, draft='',
                     vt.pump()
                     assert time.monotonic() < deadline, 'handoff teardown timed out'
                 assert child.wait() == 0
-                print('PASS handoff resize', prefilled, repr(source), flush=True)
+                print('PASS handoff resize', prefilled, live_input, homed_history,
+                      repr(source), flush=True)
             finally:
                 os.close(command_fd)
                 os.close(reply_fd)
@@ -742,6 +747,13 @@ def main():
     # wrap that tail without moving the cursor to its end.
     for source in ('a' * 35 + '\r', 'a' * 35 + '\rZ'):
         handoff_resize_case(fixture, build, source, True)
+    # Exact cursor observation belongs to the live input loop, before feeds.
+    # Earlier hard-ended ASCII lines can contract, and ED+CUP preserves history.
+    for prefilled in (False, True):
+        handoff_resize_case(fixture, build, 'a' * 80 + '\nABC', prefilled,
+                            dimensions=((80, 8), (40, 8), (80, 8)), live_input=True)
+    handoff_resize_case(fixture, build, 'ABC', dimensions=((40, 12), (40, 8)),
+                        live_input=True, homed_history=True)
     for source in ('ABC', 'one\nline', 'café', '\x1b[1mStyled\x1b[0m',
                    '🇸🇪', '\x1b[1m🇸🇪\x1b[0m', '👩‍💻', 'é 中文'):
         for prefilled in (False, True):

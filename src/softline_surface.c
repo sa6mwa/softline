@@ -1,4 +1,5 @@
 #include "softline_surface.h"
+#include "softline_unicode.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -21,6 +22,8 @@ struct sl_surface {
   int native_stream;
   int producer_cursor_live;
   int producer_below;
+  int history_rows; /* Bounded viewport-shift estimate, not terminal history.
+                     * -1 assumes history can fill exposed rows. */
   int tracking;
   int write_line_control;
   unsigned int attributes;
@@ -63,18 +66,22 @@ static int sl_surface_write_all(int fd, const char *bytes, size_t length) {
   return 0;
 }
 
-/* Only ASCII has an unambiguous one-cell fallback. Producer Unicode is
- * validated and forwarded without measuring it; CPR records its endpoint. */
-static int sl_surface_put(sl_surface_t *surface) {
-  if (!surface->tracking)
+/* Local scalar cell accounting never asks the terminal for a feed endpoint.
+ * Unicode cluster shaping and transcript reflow remain terminal-owned. */
+static int sl_surface_put_cells(sl_surface_t *surface, int cells) {
+  if (!surface->tracking || cells == 0)
     return 0;
-  if (surface->col >= surface->width) {
+  if (cells > surface->width)
+    cells = surface->width;
+  if (surface->col + cells > surface->width) {
     surface->col = 0;
     if (SL_ROW(surface) + 1 < surface->height)
       surface->producer_below--;
+    else
+      sl_surface_native_history_shift(surface, -1);
   }
-  surface->col++;
-  surface->line_cells++;
+  surface->col += cells;
+  surface->line_cells += (size_t)cells;
   if (surface->line_cells > surface->line_extent)
     surface->line_extent = surface->line_cells;
   surface->line_open = 1;
@@ -223,7 +230,7 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
     surface->utf8_len = 0;
     if (surface->tracking) {
       surface->ascii_line = 0;
-      surface->line_open = 1;
+      sl_surface_put_cells(surface, sl_codepoint_width(cp));
     }
     return 0;
   }
@@ -244,6 +251,8 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
       surface->line_open = 0;
       if (SL_ROW(surface) + 1 < surface->height)
         surface->producer_below--;
+      else
+        sl_surface_native_history_shift(surface, -1);
     }
     return 0;
   }
@@ -277,7 +286,7 @@ static int sl_surface_byte(sl_surface_t *surface, unsigned char byte,
   if (byte < 32u || byte == 127u)
     return -2;
   if (byte < 128u) {
-    return sl_surface_put(surface);
+    return sl_surface_put_cells(surface, 1);
   }
   if (byte >= 0xc2u && byte <= 0xdfu)
     surface->utf8_need = 2;
@@ -347,7 +356,7 @@ static int sl_surface_style(const sl_surface_t *surface, char *seq,
 }
 
 sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
-                                       int col) {
+                                       int col, int history_rows) {
   sl_surface_t *surface = sl_surface_create_validator();
   struct winsize terminal;
   char seq[128];
@@ -364,9 +373,16 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
     goto fail;
   surface->terminal_rows = terminal.ws_row;
   surface->terminal_columns = terminal.ws_col;
+  /* Row zero is only a fallback estimate of empty history, never proof: ED
+   * followed by CUP preserves real terminal scrollback. An input-owned resize
+   * observes the actual cursor; a feed cannot resolve this ambiguity without
+   * a terminal wait. See the unobserved retained-frame resize review exception
+   * in docs/softline-mdf-stream-design.md. No scrollback is kept here. */
+  surface->history_rows = history_rows < 0 && row == 0 ? 0 : history_rows;
   shift = row >= height ? row - height + 1 : 0;
   surface->producer_below = surface->terminal_rows - 1 - row + shift;
   if (shift > 0) {
+    sl_surface_native_history_shift(surface, -shift);
     count = snprintf(seq, sizeof(seq), "\033[r\033[%dS", shift);
     if (sl_surface_write_all(fd, seq, (size_t)count) != 0)
       goto fail;
@@ -412,6 +428,34 @@ void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows) {
     surface->producer_below += extra_rows;
 }
 
+int sl_surface_native_reflow_rows(const sl_surface_t *surface, int width) {
+  if (!sl_surface_is_native(surface) || !surface->ascii_line ||
+      surface->line_extent == 0 || width < 1)
+    return 0;
+  return (int)((surface->line_extent - 1) / (size_t)width) -
+         (int)((surface->line_extent - 1) / (size_t)surface->width);
+}
+
+int sl_surface_native_history_rows(const sl_surface_t *surface) {
+  return surface->history_rows;
+}
+
+int sl_surface_native_history_growth(const sl_surface_t *surface, int rows) {
+  return surface->history_rows >= 0 && surface->history_rows < rows
+             ? surface->history_rows
+             : rows;
+}
+
+void sl_surface_native_history_shift(sl_surface_t *surface, int rows) {
+  if (surface->history_rows < 0)
+    return;
+  surface->history_rows -= rows;
+  if (surface->history_rows < 0)
+    surface->history_rows = 0;
+  if (surface->history_rows > 65535)
+    surface->history_rows = 65535;
+}
+
 /* SGR alone must not consume a pending wrap, nor may a following LF wrap
  * twice. Find the first text character without modifying producer bytes. */
 static int sl_surface_continues_row(const char *bytes, size_t length) {
@@ -429,8 +473,7 @@ static int sl_surface_continues_row(const char *bytes, size_t length) {
 }
 
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length, int prompt_row, int prompt_col,
-                            int report_cursor) {
+                            size_t length, int prompt_row, int prompt_col) {
   struct iovec parts[3];
   sl_surface_t next;
   char prefix[192], suffix[64];
@@ -489,10 +532,6 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   count += style_count;
   memcpy(suffix, "\033[0m", 4);
   suffix_count = 4;
-  if (report_cursor && prompt_row >= 0) {
-    memcpy(suffix + suffix_count, "\033[6n", 4);
-    suffix_count += 4;
-  }
   if (prompt_row >= 0) {
     int position = sl_surface_cursor(
         suffix + suffix_count, sizeof(suffix) - (size_t)suffix_count,
@@ -535,6 +574,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   }
   surface->producer_cursor_live = prompt_row < 0;
   surface->producer_below = next.producer_below;
+  surface->history_rows = next.history_rows;
   surface->col = next.col;
   surface->line_cells = next.line_cells;
   surface->line_extent = next.line_extent;
@@ -568,6 +608,9 @@ int sl_surface_native_finish(sl_surface_t *surface, int prompt_row) {
   count += 6;
   if (sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
     return -1;
+  if (prompt_row < 0 && sl_surface_native_exit_advances(surface) &&
+      SL_ROW(surface) >= surface->terminal_rows - 1)
+    sl_surface_native_history_shift(surface, -1);
   surface->native_stream = 0;
   return 0;
 }
@@ -636,8 +679,8 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   surface->terminal_rows = terminal.ws_row;
   surface->terminal_columns = terminal.ws_col;
   if (surface->width != width) {
-    /* Deliberate opaque-feed limit: Unicode and tabs have no width or span
-     * model here. Keep the observed endpoint, clamping only an offscreen
+    /* Deliberate opaque-feed limit: Unicode and tabs have no span or reflow
+     * model here. Keep the tracked endpoint, clamping only an offscreen
      * column. Their reflow, and CR tails containing them, are terminal-owned.
      * See docs/softline-mdf-stream-design.md, "Review exception: opaque feed".
      */
@@ -668,6 +711,7 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
       if (count <= 0 || count >= (int)sizeof(seq) ||
           sl_surface_write_all(surface->fd, seq, (size_t)count) != 0)
         return -1;
+      sl_surface_native_history_shift(surface, -shift);
     }
     surface->producer_below += shift;
   }

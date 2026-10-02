@@ -62,7 +62,10 @@ def main():
     raw = ('\x1b[1m🇸🇪\x1b[0mXYZ\n', '\x1b[3m👩‍💻\x1b[0mXYZ\n',
            'éXYZ 中文.\n', '❤️XYZ 1️⃣.\n', 'a' * 35 + '🇸🇪XYZ\n',
            '🇸🇪👩‍💻\nnext line\n', '🄀中X\n', '中🄀X\n',
-           'a' * 29 + '🄀中X\n', 'é🄀中X\n')
+           'a' * 29 + '🄀中X\n', 'é🄀中X\n', '🆎🆑中X\n',
+           'a\u200cb\n', 'a🂡b\n', '🀄🃏⌚中X\n', 'a⚗🛠b\n',
+           'a\u2060b\n', 'a\ufeffb\n', 'a\u200eb\n', 'a\u0898b\n',
+           'a\u0600b\n', 'a\u1160b\n', 'a\u00adb\n', 'a\u20ddb\n')
     markdown = ('Hello **world** and `code`.\n', '**🇸🇪**XYZ\n',
                 '🇸🇪**XYZ**\n', '`👩‍💻`XYZ\n', 'éXYZ 中文.\n',
                 '❤️XYZ 1️⃣.\n')

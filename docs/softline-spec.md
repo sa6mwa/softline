@@ -275,19 +275,18 @@ scroll region for subsequent finite output or another stream; closing the handle
 always restores terminal state. Non-TTY sessions emit no teardown controls.
 Native feeds batch bounded chunks with cursor restoration and retry short
 writes as needed, without cursor visibility toggles or repainting unchanged
-frames. With a prompt frame present, complete bounded emissions containing
-Unicode request the actual producer cursor position before returning to the
-editor cursor in the same output batch. Replies use the existing 100 ms timeout
-and preserve concurrent user input. An unanswered report disables further
-probing and retains estimated positions. ASCII emissions do not request
-additional reports. This observes generic terminal behavior without grapheme
-buffering, renderer knowledge, or producer wrapping decisions.
+frames. Feed calls add no intentional delay and never request or wait for a
+terminal cursor reply, including on resize. Local scalar widths shared with
+prompt layout track advances. Terminal Unicode versions and cluster shaping
+can differ from the Unicode 16.0 accounting;
+producer bytes and wrapping remain unchanged. No producer text or grapheme
+lookahead is retained.
 An owner-thread watch callback can feed an external renderer and forward each
 sink emission directly while editing and queueing continue. Softline stores
 cursor geometry and bounded partial ANSI/UTF-8 state. Plain ASCII lines use a
-scalar cell count; producer Unicode and tabs have no width estimates or span
-tables. Reports record the actual terminal endpoint without assigning a width
-discrepancy to any character. Width resize retains that endpoint for an opaque
+scalar cell count; Unicode uses conventional scalar widths without glyph span
+tables. Cursor reports outside feed calls can record ownership boundaries.
+Width resize retains the tracked endpoint for an opaque
 line, clamping an offscreen column. Exact continuation after Unicode/tab reflow,
 including CR-overwritten tails, is deliberately outside the contract. It retains
 no producer text for resize. Carriage return preserves the visible tail of an
@@ -310,7 +309,9 @@ queued-notification diagnostic.
 For finite `print_above()` output on an ordinary readline prompt, rendering uses
 normal clear-and-redraw scrollback by default. Set `live_scroll_region = 1` in
 `sl_config_t` or call `sl_set_live_scroll_region()` to opt into a
-cursor-position probe once the prompt reaches the terminal bottom. When
+cursor-position probe at startup and between producer callbacks as output
+advances the prompt to the terminal bottom. Multiple feeds in one callback
+stay immediate; ownership is refreshed at the next input-owned boundary. When
 supported, softline temporarily scrolls the full-width region above the
 retained prompt, avoiding a prompt
 repaint while keeping queue, status, wrapping, and resize reflow aligned to the
@@ -508,8 +509,10 @@ single-owner rendering rule.
 
 `print_above()` and a persistent output session handle chunked output above the
 active prompt. Softline retains cursor geometry and bounded parser state, with
-scalar counts for plain ASCII lines. Unicode width/cluster layout belongs only
-to Softline-owned prompts. Producer output has no glyph-width or span model.
+scalar cell counts shared with prompt layout. Producer output has no glyph-span
+or cluster reconstruction model. A bounded counter of viewport shifts helps
+compute cursor deltas when growth restores only part of the terminal history;
+no transcript rows, cells or strings are kept by Softline.
 The terminal owns transcript cells and scrollback. Physical resizing leaves
 surviving output cells as the terminal reflowed them; changing the output
 margin does not scroll them again. Output clipped off the top is not recovered
@@ -524,6 +527,16 @@ input cursor to account for terminal movement and adjusts only owned prompt
 rows whose cells or placement changed. Fitted, unchanged rows are preserved.
 Width changes rebuild prompt layout. The editable prompt starts at the bottom
 and follows the terminal's native resize position when its layout is unchanged.
+
+A physical resize can race an in-flight VT batch and misplace even ASCII
+output. This accepted concurrency limit is documented with its reproducer in
+the stream design's concurrent physical resize exception. Regression gates
+test stable resize boundaries; the unpaused diagnostic remains available.
+An unobserved resize of a retained frame also has a deliberate immediate-feed
+fallback limit: earlier hard-ended ASCII reflow and unknown terminal history
+cannot be inferred from the current-line delta. This includes writes after
+readline returns. The stream design documents its reproducer and policy source;
+the active input loop observes resize before dispatching producer watches.
 
 Missing:
 

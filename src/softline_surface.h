@@ -6,17 +6,22 @@
 typedef struct sl_surface sl_surface_t;
 sl_surface_t *sl_surface_create_validator(void);
 sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
-                                       int col);
+                                       int col, int history_rows);
 int sl_surface_is_native(const sl_surface_t *surface);
 /* Apply the observed cursor delta to the producer; exclude prompt reflow
  * when the observed cursor belongs to an editor frame. */
 void sl_surface_native_prompt_reflow(sl_surface_t *surface, int extra_rows);
+/* Physical row change of the retained ASCII line under native width reflow. */
+int sl_surface_native_reflow_rows(const sl_surface_t *surface, int width);
+/* Count only viewport shifts, never transcript cells or glyph history. */
+int sl_surface_native_history_rows(const sl_surface_t *surface);
+int sl_surface_native_history_growth(const sl_surface_t *surface, int rows);
+void sl_surface_native_history_shift(sl_surface_t *surface, int rows);
 void sl_surface_native_position(const sl_surface_t *surface, int *row,
                                 int *col);
 int sl_surface_native_exit_advances(const sl_surface_t *surface);
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
-                            size_t length, int prompt_row, int prompt_col,
-                            int report_cursor);
+                            size_t length, int prompt_row, int prompt_col);
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row);
 void sl_surface_destroy(sl_surface_t *surface);
 /* Physical resize updates geometry without output. The next producer write

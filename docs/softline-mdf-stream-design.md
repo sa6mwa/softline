@@ -87,9 +87,8 @@ fit the new width keep their cached cells. The logical prompt frame survives
 successive width changes so a wrapped physical row does not become a new
 independent source row. Width resize rebuilds only prompt
 layout; transcript reflow remains owned by the terminal. Plain ASCII lines use
-scalar cell counts. Producer Unicode and tabs have no glyph-width estimates,
-span tables, or reflow reconstruction. Unicode layout belongs to Softline-owned
-prompts. For an opaque unfinished line, resize keeps the observed column and
+scalar cell counts. Unicode cursor advances share the prompt scalar width
+helpers, without glyph span tables or transcript reflow reconstruction. For an opaque unfinished line, resize keeps the tracked column and
 clamps it only if it is offscreen; exact continuation after its reflow is an
 accepted limitation below.
 Carriage return moves the producer cursor without discarding cells to its
@@ -103,15 +102,18 @@ Cursor reports refresh the producer's bottom-relative row and column at resize,
 first editor handoff, finite-output completion, and session close. At unchanged
 geometry, the handoff corrects the logical column used by later width changes
 as well as the current cursor position. A physical resize's viewport movement
-is not counted as emitted text. When an editor frame exists, bounded emissions
-containing Unicode request a report
-after the producer bytes and before returning to the editor cursor, in the
-same output batch. Reading that report leaves the cursor at the prompt and
-records the terminal's actual endpoint without correcting individual glyphs. ASCII
-emissions do not request additional reports. The existing 100 ms timeout and
-concurrent-input preservation apply; an unanswered report disables further
-probing and retains estimated positions. This is generic VT cursor observation,
-with no renderer-specific logic, grapheme buffering, or replay.
+is not counted as emitted text. Feed writes never request or read cursor reports,
+including Unicode writes and resize reconciliation invoked by a feed call.
+There is no sleep, timeout, timed coalescing or producer-tail delay. Unicode
+scalar advances are accounted locally; the original bytes reach the terminal
+unchanged. Cursor observation remains at non-feed ownership boundaries.
+A bounded viewport-shift estimate survives output-session boundaries. It contains
+no text, cells, glyph spans or Softline scrollback. It limits history restoration
+when growth exposes more rows than Softline's output has scrolled. Pre-existing
+terminal history is unknown; the fallback guesses no history for an initial
+row-zero cursor and otherwise assumes history can fill newly exposed space.
+Neither is a statement about the real terminal history. Resize while input owns
+the cursor observes the actual terminal position.
 Moving to an editor or temporary parked cursor releases
 producer ownership, so later writes use the stored output position. Rendering
 a prompt sets its actual margin.
@@ -123,7 +125,13 @@ LF is handled normally; no extra row advance is needed when LF comes next.
 Finite callbacks and live writes share the same native geometry reconciliation.
 Finite output reconciles the retained prompt before invoking its producer and
 again after each callback returns, including EOF. A resize during a callback
-uses the same observed cursor delta as a live write.
+uses the same tracked cursor delta as a live write. Input-owned resize
+reconciliation occurs before dispatching ready producer watches; feed calls
+never acquire a cursor report themselves.
+Ordinary readline's optional scroll-region ownership is checked at startup
+and retried between producer callbacks after finite output advances its prompt.
+Multiple feeds in a single callback remain immediate and defer acquisition
+until the next input-owned boundary.
 Physical resize updates internal geometry without homing or repositioning an
 unchanged prompt. Each batch that positions the producer cursor establishes
 its output margin alongside the producer bytes, cursor moves, and prompt return.
@@ -249,18 +257,76 @@ terminal's cursor in this offscreen case is outside the supported contract.
 
 Unicode/tab retained tails also have the opaque-feed limitation below.
 
+### Review exception: concurrent physical resize
+
+VT has one hardware cursor and no atomic operation combining a PTY size
+snapshot with a terminal write. A resize between those operations can apply
+an in-flight producer batch to a different row. This accepted tradeoff also
+affects ASCII, and was reproduced with the withdrawn v0.8.0 library: during
+the live example's mixed 97×24 → 45×24 → 30×18 → 80×28 → 40×12 → 97×24
+sequence, `single` can disappear from `A single line can be italic, bold, or
+code.` No transcript replay, feed wait or terminal-specific workaround is
+introduced to conceal this race.
+
+The standard VTE streaming resize check pauses only its private example
+worker at each resize boundary and drains pending writes before resizing.
+It verifies continuation, prompt placement and unchanged transcript cells
+once the terminal geometry agrees with the PTY. `--streaming-race` retains
+the unpaused diagnostic; passing that diagnostic does not prove race-free
+VT output. The separately paced tmux check has the same scope restriction.
+The themed width-sweep gate likewise pauses its private producer during each
+sweep; `check_chat_width_resize.py --resize-race` (after its normal arguments)
+retains the unpaused width diagnostic. Both use the same private-worker pause
+helper and leave the editable prompt live.
+
+### Review exception: unobserved retained-frame resize
+
+Policy source: the developer's hard zero-delay feed requirement and earlier
+decision to retain terminal-owned transcript reflow without replay or a
+Softline scrollback model. This applies only when a retained editor frame is
+resized without an input-owned cursor observation, including writes after
+`readline()` has returned and resizes performed inside a producer callback.
+The active chat loop observes resize before dispatching producer watches.
+
+The fallback uses bottom-relative deltas and current-line scalar geometry.
+It cannot infer reflow of earlier hard-ended lines, or distinguish empty history
+from a cleared and homed screen with preserved terminal history. Even a settled
+resize can therefore misplace ASCII continuation in this path. Row zero is not
+proof of empty history; the row counter is an estimate only. Do not add a feed
+cursor-report wait, transcript buffer, line/span reconstruction or replay to
+repair this ambiguity. The withdrawn 0.8.0 passed these cases by waiting for a
+cursor report inside the feed, which is the behavior being removed.
+
+Reproducers in VTE, initially 40×8: emit 80 ASCII `a`s followed by `\nABC`,
+retain a submitted prompt, grow to 80×8, then emit `Y`; the fallback may put `Y`
+on a separate row. Alternatively, fill terminal history, use ED+CUP to clear
+and home without erasing history, emit `ABC`, retain a submitted prompt, grow
+to 40×12, then emit `Y`; an empty-history estimate can address a history row.
+The native-output regression runs both scenarios with readline still active
+and asserts exact direct-terminal continuation. Feed latency checks assert no
+cursor requests even when a feed must reconcile resize itself.
+
+Reconsider only if the developer permits a feed cursor-report wait or a
+transcript reflow model, or introduces a terminal protocol that supplies resize
+coordinates without either. A missing input-owned observation is separate from
+the concurrent physical resize race above.
+
 ### Review exception: opaque feed
 
-On 2026-10-01 the production executive explicitly required removing producer
-Unicode width estimates, character-span tracking and span correction, keeping
-terminal output simple. The producer's bytes remain unchanged. UTF-8 validation
-is bounded parser state; it does not measure or segment glyphs. Existing cursor
-reports record only the terminal endpoint. Width/cluster layout is retained for
-Softline's own prompts.
+The production executive requires zero intentional feed latency, unchanged
+producer bytes, no transcript replay and no glyph-span reflow model. After
+withdrawing v0.8.0 for synchronous Unicode cursor round trips, local scalar
+cell accounting replaces those replies. UTF-8 validation is bounded parser
+state; no grapheme lookahead or full-message buffering is introduced. Prompt
+layout remains separate. Conventional scalar widths cover ordinary accents,
+combining marks, format controls, wide characters and table borders, using
+Unicode 16.0 scalar properties. Terminal Unicode versions and emoji
+shaping may differ and can misplace an active-prompt continuation. This limit
+must not be addressed by adding feed waits or changing producer bytes.
 
-After an unfinished Unicode/tab line reflows on width resize, its stored
+After an unfinished Unicode/tab line reflows on width resize, its tracked
 endpoint cannot identify the terminal's new logical position. Softline retains
-the observed column and clamps an offscreen column; continuation can land in
+the tracked column and clamps an offscreen column; continuation can land in
 a gap or overwrite text. This includes CR-overwritten tails, wide cells crossing
 a new margin, and tabs narrowed below their original span. A cursor report at
 the last physical column also cannot distinguish Unicode pending wrap from a
@@ -269,7 +335,7 @@ the last cell or lose a cluster attachment. Softline does not build a glyph/span
 model, add per-character probes, buffer graphemes, or replay the feed to recover
 these cases. This exception does not permit modifying producer bytes or clearing
 transcript cells during resize. Plain ASCII continuation, normal prompt layout,
-unresized Unicode rendering away from those right-edge ambiguities, byte fidelity
+ordinary scalar Unicode rendering away from those right-edge ambiguities, byte fidelity
 and terminal-state restoration remain tested requirements. Reconsider only if the production executive changes the
 opaque-feed/latency contract. The CR-tail diagnostic retains a reproducer.
 
@@ -354,9 +420,12 @@ opaque-feed/latency contract. The CR-tail diagnostic retains a reproducer.
 - The Unicode output matrix compares actual raw and libmdf sink emissions
   through direct PTYs and active native prompts. It checks complete producer
   byte equality, fragmented UTF-8, style transitions, width growth, pre-existing
-  scrollback, and input restoration after Ctrl-C. A private endpoint test also
-  checks that reports precede the return to the prompt in the output batch and
-  that a previous line's observed movement cannot shift a new line's column.
+  scrollback, and input restoration after Ctrl-C. A private endpoint test
+  checks that a previous line's observed movement cannot shift a new line's
+  column. The feed latency regression keeps terminal probing enabled, withholds
+  replies during tiny UTF-8/SGR writes, and rejects any feed cursor request. It
+  also covers physical resize, quoted output and concurrent typing, and fails
+  against the withdrawn v0.8.0 library.
 - First-handoff checks submit an empty prompt after producer-owned output,
   repeatedly shrink and grow width and height, and append output at each size.
   They compare against direct terminal bytes for ASCII, styled flags, joined

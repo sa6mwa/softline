@@ -8,6 +8,7 @@
 
 #include "softline_clipboard.h"
 #include "softline_internal.h"
+#include "softline_unicode.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -215,6 +216,7 @@ static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
 static int sl_write_cursor_pos(int fd, int row, int col);
 static int sl_wstr(int fd, const char *s);
 static int sl_try_pin_scroll_region(sl_t *self);
+static void sl_refresh_scroll_region(sl_t *self);
 static int sl_query_cursor_row(sl_t *self);
 static int sl_read_cursor_report(sl_t *self, int request);
 static int sl_cursor_report_begin(sl_t *self, struct termios *original);
@@ -222,7 +224,6 @@ static int sl_cursor_report_end(sl_t *self, const struct termios *original,
                                 int temporary);
 static int sl_enable_raw(sl_t *self);
 static void sl_disable_raw(sl_t *self);
-static int sl_codepoint_width(unsigned long cp);
 static int sl_output_write_validated(sl_t *self, const char *bytes,
                                      size_t length);
 
@@ -815,8 +816,9 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
               : 0;
     if (row < 0)
       row = 0;
-    impl->output_surface =
-        sl_surface_create_native(impl->output_fd, width, prompt_top, row, col);
+    impl->output_surface = sl_surface_create_native(
+        impl->output_fd, width, prompt_top, row, col,
+        impl->native_cursor_valid ? impl->native_history_rows : -1);
     if (!impl->output_surface && !was_raw)
       sl_disable_raw(self);
     return impl->output_surface ? 0 : -1;
@@ -1144,278 +1146,6 @@ static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
   if (codepoint)
     *codepoint = cp;
   return n;
-}
-
-static int sl_codepoint_is_combining(unsigned long cp) {
-  return (cp >= 0x0300UL && cp <= 0x036fUL) ||
-         (cp >= 0x0483UL && cp <= 0x0489UL) ||
-         (cp >= 0x0591UL && cp <= 0x05bdUL) || cp == 0x05bfUL ||
-         (cp >= 0x05c1UL && cp <= 0x05c2UL) ||
-         (cp >= 0x05c4UL && cp <= 0x05c5UL) || cp == 0x05c7UL ||
-         (cp >= 0x0610UL && cp <= 0x061aUL) ||
-         (cp >= 0x064bUL && cp <= 0x065fUL) || cp == 0x0670UL ||
-         (cp >= 0x06d6UL && cp <= 0x06dcUL) ||
-         (cp >= 0x06dfUL && cp <= 0x06e4UL) ||
-         (cp >= 0x06e7UL && cp <= 0x06e8UL) ||
-         (cp >= 0x06eaUL && cp <= 0x06edUL) ||
-         (cp >= 0x0711UL && cp <= 0x0711UL) ||
-         (cp >= 0x0730UL && cp <= 0x074aUL) ||
-         (cp >= 0x07a6UL && cp <= 0x07b0UL) ||
-         (cp >= 0x07ebUL && cp <= 0x07f3UL) ||
-         (cp >= 0x0816UL && cp <= 0x0819UL) ||
-         (cp >= 0x081bUL && cp <= 0x0823UL) ||
-         (cp >= 0x0825UL && cp <= 0x0827UL) ||
-         (cp >= 0x0829UL && cp <= 0x082dUL) ||
-         (cp >= 0x0859UL && cp <= 0x085bUL) ||
-         (cp >= 0x08d3UL && cp <= 0x08e1UL) ||
-         (cp >= 0x08e3UL && cp <= 0x0902UL) || cp == 0x093aUL ||
-         cp == 0x093cUL || (cp >= 0x0941UL && cp <= 0x0948UL) ||
-         cp == 0x094dUL || (cp >= 0x0951UL && cp <= 0x0957UL) ||
-         (cp >= 0x0962UL && cp <= 0x0963UL) ||
-         (cp >= 0x0981UL && cp <= 0x0981UL) || cp == 0x09bcUL ||
-         (cp >= 0x09c1UL && cp <= 0x09c4UL) || cp == 0x09cdUL ||
-         (cp >= 0x09e2UL && cp <= 0x09e3UL) ||
-         (cp >= 0x0a01UL && cp <= 0x0a02UL) || cp == 0x0a3cUL ||
-         (cp >= 0x0a41UL && cp <= 0x0a42UL) ||
-         (cp >= 0x0a47UL && cp <= 0x0a48UL) ||
-         (cp >= 0x0a4bUL && cp <= 0x0a4dUL) || cp == 0x0a51UL ||
-         (cp >= 0x0a70UL && cp <= 0x0a71UL) || cp == 0x0a75UL ||
-         (cp >= 0x0a81UL && cp <= 0x0a82UL) || cp == 0x0abcUL ||
-         (cp >= 0x0ac1UL && cp <= 0x0ac5UL) ||
-         (cp >= 0x0ac7UL && cp <= 0x0ac8UL) || cp == 0x0acdUL ||
-         (cp >= 0x0ae2UL && cp <= 0x0ae3UL) || cp == 0x0b01UL ||
-         cp == 0x0b3cUL || (cp >= 0x0b3fUL && cp <= 0x0b3fUL) ||
-         (cp >= 0x0b41UL && cp <= 0x0b44UL) || cp == 0x0b4dUL ||
-         (cp >= 0x0b56UL && cp <= 0x0b56UL) ||
-         (cp >= 0x0b62UL && cp <= 0x0b63UL) || cp == 0x0b82UL ||
-         cp == 0x0bc0UL || cp == 0x0bcdUL || cp == 0x0c00UL ||
-         (cp >= 0x0c3eUL && cp <= 0x0c40UL) ||
-         (cp >= 0x0c46UL && cp <= 0x0c48UL) ||
-         (cp >= 0x0c4aUL && cp <= 0x0c4dUL) ||
-         (cp >= 0x0c55UL && cp <= 0x0c56UL) ||
-         (cp >= 0x0c62UL && cp <= 0x0c63UL) || cp == 0x0c81UL ||
-         cp == 0x0cbcUL || (cp >= 0x0cbfUL && cp <= 0x0cbfUL) ||
-         cp == 0x0cc6UL || (cp >= 0x0cccUL && cp <= 0x0ccdUL) ||
-         (cp >= 0x0ce2UL && cp <= 0x0ce3UL) ||
-         (cp >= 0x0d00UL && cp <= 0x0d01UL) ||
-         (cp >= 0x0d41UL && cp <= 0x0d44UL) || cp == 0x0d4dUL ||
-         (cp >= 0x0d62UL && cp <= 0x0d63UL) || cp == 0x0dcaUL ||
-         (cp >= 0x0dd2UL && cp <= 0x0dd4UL) || cp == 0x0dd6UL ||
-         cp == 0x0e31UL || (cp >= 0x0e34UL && cp <= 0x0e3aUL) ||
-         (cp >= 0x0e47UL && cp <= 0x0e4eUL) || cp == 0x0eb1UL ||
-         (cp >= 0x0eb4UL && cp <= 0x0eb9UL) ||
-         (cp >= 0x0ebbUL && cp <= 0x0ebcUL) ||
-         (cp >= 0x0ec8UL && cp <= 0x0ecdUL) ||
-         (cp >= 0x0f18UL && cp <= 0x0f19UL) || cp == 0x0f35UL ||
-         cp == 0x0f37UL || cp == 0x0f39UL ||
-         (cp >= 0x0f71UL && cp <= 0x0f7eUL) ||
-         (cp >= 0x0f80UL && cp <= 0x0f84UL) ||
-         (cp >= 0x0f86UL && cp <= 0x0f87UL) ||
-         (cp >= 0x0f8dUL && cp <= 0x0f97UL) ||
-         (cp >= 0x0f99UL && cp <= 0x0fbcUL) || cp == 0x0fc6UL ||
-         (cp >= 0x102dUL && cp <= 0x1030UL) ||
-         (cp >= 0x1032UL && cp <= 0x1037UL) ||
-         (cp >= 0x1039UL && cp <= 0x103aUL) ||
-         (cp >= 0x103dUL && cp <= 0x103eUL) ||
-         (cp >= 0x1058UL && cp <= 0x1059UL) ||
-         (cp >= 0x105eUL && cp <= 0x1060UL) ||
-         (cp >= 0x1071UL && cp <= 0x1074UL) || cp == 0x1082UL ||
-         (cp >= 0x1085UL && cp <= 0x1086UL) || cp == 0x108dUL ||
-         cp == 0x109dUL || (cp >= 0x135dUL && cp <= 0x135fUL) ||
-         (cp >= 0x1712UL && cp <= 0x1714UL) ||
-         (cp >= 0x1732UL && cp <= 0x1734UL) ||
-         (cp >= 0x1752UL && cp <= 0x1753UL) ||
-         (cp >= 0x1772UL && cp <= 0x1773UL) ||
-         (cp >= 0x17b4UL && cp <= 0x17b5UL) ||
-         (cp >= 0x17b7UL && cp <= 0x17bdUL) || cp == 0x17c6UL ||
-         (cp >= 0x17c9UL && cp <= 0x17d3UL) || cp == 0x17ddUL ||
-         (cp >= 0x180bUL && cp <= 0x180dUL) || cp == 0x1885UL ||
-         cp == 0x1886UL || cp == 0x18a9UL ||
-         (cp >= 0x1920UL && cp <= 0x1922UL) ||
-         (cp >= 0x1927UL && cp <= 0x1928UL) || cp == 0x1932UL ||
-         (cp >= 0x1939UL && cp <= 0x193bUL) ||
-         (cp >= 0x1a17UL && cp <= 0x1a18UL) ||
-         (cp >= 0x1a1bUL && cp <= 0x1a1bUL) || cp == 0x1a56UL ||
-         (cp >= 0x1a58UL && cp <= 0x1a5eUL) || cp == 0x1a60UL ||
-         cp == 0x1a62UL || (cp >= 0x1a65UL && cp <= 0x1a6cUL) ||
-         (cp >= 0x1a73UL && cp <= 0x1a7cUL) || cp == 0x1a7fUL ||
-         (cp >= 0x1ab0UL && cp <= 0x1affUL) ||
-         (cp >= 0x1b00UL && cp <= 0x1b03UL) || cp == 0x1b34UL ||
-         (cp >= 0x1b36UL && cp <= 0x1b3aUL) || cp == 0x1b3cUL ||
-         cp == 0x1b42UL || (cp >= 0x1b6bUL && cp <= 0x1b73UL) ||
-         (cp >= 0x1b80UL && cp <= 0x1b81UL) ||
-         (cp >= 0x1ba2UL && cp <= 0x1ba5UL) ||
-         (cp >= 0x1ba8UL && cp <= 0x1ba9UL) ||
-         (cp >= 0x1babUL && cp <= 0x1badUL) || cp == 0x1be6UL ||
-         (cp >= 0x1be8UL && cp <= 0x1be9UL) || cp == 0x1bedUL ||
-         (cp >= 0x1befUL && cp <= 0x1bf1UL) ||
-         (cp >= 0x1c2cUL && cp <= 0x1c33UL) ||
-         (cp >= 0x1c36UL && cp <= 0x1c37UL) ||
-         (cp >= 0x1cd0UL && cp <= 0x1cd2UL) ||
-         (cp >= 0x1cd4UL && cp <= 0x1ce0UL) ||
-         (cp >= 0x1ce2UL && cp <= 0x1ce8UL) || cp == 0x1cedUL ||
-         cp == 0x1cf4UL || (cp >= 0x1cf8UL && cp <= 0x1cf9UL) ||
-         (cp >= 0x1dc0UL && cp <= 0x1dffUL) ||
-         (cp >= 0x20d0UL && cp <= 0x20ffUL) ||
-         (cp >= 0x2cefUL && cp <= 0x2cf1UL) || cp == 0x2d7fUL ||
-         (cp >= 0x2de0UL && cp <= 0x2dffUL) ||
-         (cp >= 0x302aUL && cp <= 0x302fUL) ||
-         (cp >= 0x3099UL && cp <= 0x309aUL) ||
-         (cp >= 0xa66fUL && cp <= 0xa672UL) ||
-         (cp >= 0xa674UL && cp <= 0xa67dUL) ||
-         (cp >= 0xa69eUL && cp <= 0xa69fUL) ||
-         (cp >= 0xa6f0UL && cp <= 0xa6f1UL) || cp == 0xa802UL ||
-         cp == 0xa806UL || cp == 0xa80bUL ||
-         (cp >= 0xa825UL && cp <= 0xa826UL) || cp == 0xa8c4UL ||
-         (cp >= 0xa8e0UL && cp <= 0xa8f1UL) ||
-         (cp >= 0xa926UL && cp <= 0xa92dUL) ||
-         (cp >= 0xa947UL && cp <= 0xa951UL) ||
-         (cp >= 0xa980UL && cp <= 0xa982UL) || cp == 0xa9b3UL ||
-         (cp >= 0xa9b6UL && cp <= 0xa9b9UL) ||
-         (cp >= 0xa9bcUL && cp <= 0xa9bdUL) ||
-         (cp >= 0xa9e5UL && cp <= 0xa9e5UL) ||
-         (cp >= 0xaa29UL && cp <= 0xaa2eUL) ||
-         (cp >= 0xaa31UL && cp <= 0xaa32UL) ||
-         (cp >= 0xaa35UL && cp <= 0xaa36UL) || cp == 0xaa43UL ||
-         cp == 0xaa4cUL || cp == 0xaa7cUL || cp == 0xaab0UL ||
-         (cp >= 0xaab2UL && cp <= 0xaab4UL) ||
-         (cp >= 0xaab7UL && cp <= 0xaab8UL) ||
-         (cp >= 0xaabeUL && cp <= 0xaabfUL) || cp == 0xaac1UL ||
-         (cp >= 0xaaecUL && cp <= 0xaaedUL) || cp == 0xaaf6UL ||
-         cp == 0xabe5UL || cp == 0xabe8UL || cp == 0xabedUL ||
-         (cp >= 0xfb1eUL && cp <= 0xfb1eUL) ||
-         (cp >= 0xfe00UL && cp <= 0xfe0fUL) ||
-         (cp >= 0xfe20UL && cp <= 0xfe2fUL) ||
-         (cp >= 0x101fdUL && cp <= 0x101fdUL) ||
-         (cp >= 0x102e0UL && cp <= 0x102e0UL) ||
-         (cp >= 0x10376UL && cp <= 0x1037aUL) ||
-         (cp >= 0x10a01UL && cp <= 0x10a03UL) ||
-         (cp >= 0x10a05UL && cp <= 0x10a06UL) ||
-         (cp >= 0x10a0cUL && cp <= 0x10a0fUL) ||
-         (cp >= 0x10a38UL && cp <= 0x10a3aUL) || cp == 0x10a3fUL ||
-         (cp >= 0x10ae5UL && cp <= 0x10ae6UL) ||
-         (cp >= 0x10d24UL && cp <= 0x10d27UL) ||
-         (cp >= 0x10f46UL && cp <= 0x10f50UL) ||
-         (cp >= 0x11001UL && cp <= 0x11001UL) ||
-         (cp >= 0x11038UL && cp <= 0x11046UL) ||
-         (cp >= 0x1107fUL && cp <= 0x11081UL) ||
-         (cp >= 0x110b3UL && cp <= 0x110b6UL) ||
-         (cp >= 0x110b9UL && cp <= 0x110baUL) ||
-         (cp >= 0x11100UL && cp <= 0x11102UL) ||
-         (cp >= 0x11127UL && cp <= 0x1112bUL) ||
-         (cp >= 0x1112dUL && cp <= 0x11134UL) ||
-         (cp >= 0x11173UL && cp <= 0x11173UL) ||
-         (cp >= 0x11180UL && cp <= 0x11181UL) ||
-         (cp >= 0x111b6UL && cp <= 0x111beUL) ||
-         (cp >= 0x111c9UL && cp <= 0x111ccUL) || cp == 0x1122fUL ||
-         (cp >= 0x11231UL && cp <= 0x11234UL) || cp == 0x11236UL ||
-         cp == 0x1123eUL || cp == 0x112dfUL ||
-         (cp >= 0x112e3UL && cp <= 0x112eaUL) ||
-         (cp >= 0x11300UL && cp <= 0x11301UL) ||
-         (cp >= 0x1133bUL && cp <= 0x1133cUL) || cp == 0x11340UL ||
-         cp == 0x11366UL || cp == 0x11367UL ||
-         (cp >= 0x11370UL && cp <= 0x11374UL) ||
-         (cp >= 0x11438UL && cp <= 0x1143fUL) ||
-         (cp >= 0x11442UL && cp <= 0x11444UL) || cp == 0x11446UL ||
-         (cp >= 0x1145eUL && cp <= 0x1145eUL) ||
-         (cp >= 0x114b3UL && cp <= 0x114b8UL) || cp == 0x114baUL ||
-         (cp >= 0x114bfUL && cp <= 0x114c0UL) || cp == 0x114c2UL ||
-         cp == 0x114c3UL || (cp >= 0x115b2UL && cp <= 0x115b5UL) ||
-         (cp >= 0x115bcUL && cp <= 0x115bdUL) || cp == 0x115bfUL ||
-         cp == 0x115c0UL || (cp >= 0x115dcUL && cp <= 0x115ddUL) ||
-         (cp >= 0x11633UL && cp <= 0x1163aUL) || cp == 0x1163dUL ||
-         (cp >= 0x1163fUL && cp <= 0x11640UL) ||
-         (cp >= 0x116abUL && cp <= 0x116abUL) || cp == 0x116adUL ||
-         (cp >= 0x116b0UL && cp <= 0x116b5UL) || cp == 0x116b7UL ||
-         (cp >= 0x1171dUL && cp <= 0x1171fUL) ||
-         (cp >= 0x11722UL && cp <= 0x11725UL) ||
-         (cp >= 0x11727UL && cp <= 0x1172bUL) ||
-         (cp >= 0x1182fUL && cp <= 0x11837UL) ||
-         (cp >= 0x11839UL && cp <= 0x1183aUL) ||
-         (cp >= 0x1193bUL && cp <= 0x1193cUL) || cp == 0x1193eUL ||
-         cp == 0x11943UL || (cp >= 0x119d4UL && cp <= 0x119d7UL) ||
-         cp == 0x119daUL || cp == 0x119dbUL || cp == 0x119e0UL ||
-         (cp >= 0x11a01UL && cp <= 0x11a0aUL) ||
-         (cp >= 0x11a33UL && cp <= 0x11a38UL) ||
-         (cp >= 0x11a3bUL && cp <= 0x11a3eUL) || cp == 0x11a47UL ||
-         (cp >= 0x11a51UL && cp <= 0x11a56UL) ||
-         (cp >= 0x11a59UL && cp <= 0x11a5bUL) ||
-         (cp >= 0x11a8aUL && cp <= 0x11a96UL) ||
-         (cp >= 0x11a98UL && cp <= 0x11a99UL) ||
-         (cp >= 0x11c30UL && cp <= 0x11c36UL) ||
-         (cp >= 0x11c38UL && cp <= 0x11c3dUL) ||
-         (cp >= 0x11c3fUL && cp <= 0x11c3fUL) ||
-         (cp >= 0x11c92UL && cp <= 0x11ca7UL) ||
-         (cp >= 0x11caaUL && cp <= 0x11cb0UL) ||
-         (cp >= 0x11cb2UL && cp <= 0x11cb3UL) ||
-         (cp >= 0x11cb5UL && cp <= 0x11cb6UL) ||
-         (cp >= 0x11d31UL && cp <= 0x11d36UL) || cp == 0x11d3aUL ||
-         (cp >= 0x11d3cUL && cp <= 0x11d3dUL) ||
-         (cp >= 0x11d3fUL && cp <= 0x11d45UL) || cp == 0x11d47UL ||
-         (cp >= 0x11d90UL && cp <= 0x11d91UL) || cp == 0x11d95UL ||
-         cp == 0x11d97UL || (cp >= 0x11ef3UL && cp <= 0x11ef4UL) ||
-         (cp >= 0x16af0UL && cp <= 0x16af4UL) ||
-         (cp >= 0x16b30UL && cp <= 0x16b36UL) ||
-         (cp >= 0x16f4fUL && cp <= 0x16f4fUL) ||
-         (cp >= 0x16f8fUL && cp <= 0x16f92UL) ||
-         (cp >= 0x1bc9dUL && cp <= 0x1bc9eUL) ||
-         (cp >= 0x1d167UL && cp <= 0x1d169UL) ||
-         (cp >= 0x1d17bUL && cp <= 0x1d182UL) ||
-         (cp >= 0x1d185UL && cp <= 0x1d18bUL) ||
-         (cp >= 0x1d1aaUL && cp <= 0x1d1adUL) ||
-         (cp >= 0x1d242UL && cp <= 0x1d244UL) ||
-         (cp >= 0x1da00UL && cp <= 0x1da36UL) ||
-         (cp >= 0x1da3bUL && cp <= 0x1da6cUL) ||
-         (cp >= 0x1da75UL && cp <= 0x1da75UL) ||
-         (cp >= 0x1da84UL && cp <= 0x1da84UL) ||
-         (cp >= 0x1da9bUL && cp <= 0x1da9fUL) ||
-         (cp >= 0x1daa1UL && cp <= 0x1daafUL) ||
-         (cp >= 0x1e000UL && cp <= 0x1e006UL) ||
-         (cp >= 0x1e008UL && cp <= 0x1e018UL) ||
-         (cp >= 0x1e01bUL && cp <= 0x1e021UL) ||
-         (cp >= 0x1e023UL && cp <= 0x1e024UL) ||
-         (cp >= 0x1e026UL && cp <= 0x1e02aUL) ||
-         (cp >= 0x1e130UL && cp <= 0x1e136UL) ||
-         (cp >= 0x1e2ecUL && cp <= 0x1e2efUL) ||
-         (cp >= 0x1e8d0UL && cp <= 0x1e8d6UL) ||
-         (cp >= 0x1e944UL && cp <= 0x1e94aUL) ||
-         (cp >= 0xe0100UL && cp <= 0xe01efUL);
-}
-
-static int sl_codepoint_is_wide(unsigned long cp) {
-  return (cp >= 0x1100UL &&
-          (cp <= 0x115fUL || cp == 0x2329UL || cp == 0x232aUL ||
-           (cp >= 0x2e80UL && cp <= 0xa4cfUL && cp != 0x303fUL) ||
-           (cp >= 0xac00UL && cp <= 0xd7a3UL) ||
-           (cp >= 0xf900UL && cp <= 0xfaffUL) ||
-           (cp >= 0xfe10UL && cp <= 0xfe19UL) ||
-           (cp >= 0xfe30UL && cp <= 0xfe6fUL) ||
-           (cp >= 0xff00UL && cp <= 0xff60UL) ||
-           (cp >= 0xffe0UL && cp <= 0xffe6UL) ||
-           (cp >= 0x20000UL && cp <= 0x3fffdUL))) ||
-         /* U+1F3F3 has neutral East Asian width within this emoji range. */
-         (cp >= 0x1f000UL && cp <= 0x1f9ffUL && cp != 0x1f3f3UL) ||
-         (cp >= 0x1fa70UL && cp <= 0x1faffUL);
-}
-
-static int sl_codepoint_is_regional_indicator(unsigned long cp) {
-  return cp >= 0x1f1e6UL && cp <= 0x1f1ffUL;
-}
-
-static int sl_codepoint_width(unsigned long cp) {
-  if (cp == 0)
-    return 0;
-  if (cp < 32UL || (cp >= 0x7fUL && cp < 0xa0UL))
-    return 0;
-  if (cp < 0x300UL)
-    return 1;
-  /* U+200B zero-width space and U+200D joiner do not advance the cursor. */
-  if (cp == 0x200bUL || cp == 0x200dUL || sl_codepoint_is_combining(cp))
-    return 0;
-  /* Terminals advance one cell per indicator and two per completed flag. */
-  if (sl_codepoint_is_regional_indicator(cp))
-    return 1;
-  return sl_codepoint_is_wide(cp) ? 2 : 1;
 }
 
 static int sl_codepoint_is_variation(unsigned long cp) {
@@ -3197,14 +2927,14 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
                                               int height) {
   sl_impl_t *impl = sl_impl(self);
   struct winsize size;
-  int span, height_only, old_prompt_rows, old_offset, offset, observed;
+  int span, height_only, old_offset, offset, observed;
   int column, editor_offset;
   int old_below;
   if (!sl_surface_is_native(impl->output_surface) || impl->rendered_rows == 0 ||
       (!sl_native_resize_pending(impl) && impl->rendered_width == width &&
        impl->rendered_height == height))
     return 0;
-  span = old_prompt_rows = impl->rendered_rows;
+  span = impl->rendered_rows;
   height_only = impl->rendered_width == width;
   offset = old_offset = impl->rendered_cursor_row;
   observed = impl->cursor_position_probe == 1 ? sl_query_cursor_row(self) : 0;
@@ -3225,13 +2955,47 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
     offset--;
   if (observed > 0) {
     int observed_below = height - observed;
+    if (height_only)
+      sl_surface_native_history_shift(
+          impl->output_surface, observed - 1 - offset - impl->rendered_top_row);
     sl_surface_native_prompt_reflow(
         impl->output_surface, observed_below - old_below + offset - old_offset);
     impl->rendered_top_row = observed - 1 - offset;
   } else {
+    /* No input-owned cursor observation is available in a feed. This is an
+     * endpoint estimate, not a model of the preceding transcript: earlier
+     * hard-ended lines may have reflowed as well. Do not retain those lines
+     * or wait here. See "Review exception: unobserved retained-frame resize"
+     * in docs/softline-mdf-stream-design.md. */
+    int line_rows = sl_surface_native_reflow_rows(impl->output_surface, width);
+    int top = impl->rendered_top_row + line_rows;
+    int space =
+        height - impl->rendered_height - line_rows - (offset - old_offset);
+    int available = height - 1 - (top + offset);
+    /* Native reflow adds rows before the prompt; viewport growth or row
+     * contraction can restore only available terminal history. Existing
+     * blank rows below the cursor are preserved. No cells are replayed. */
+    if (height < impl->rendered_height) {
+      /* Height shrink retains the old physical cursor row, clamped to the
+       * new screen, even when column reflow moves its logical row. */
+      top = impl->rendered_top_row + old_offset;
+      if (top >= height)
+        top = height - 1;
+      top -= offset;
+      space = 0;
+    }
+    if (space > available)
+      space = available;
+    if (space > 0)
+      top += sl_surface_native_history_growth(impl->output_surface, space);
+    if (top + offset >= height)
+      top -= top + offset - height + 1;
+    sl_surface_native_history_shift(impl->output_surface,
+                                    top - impl->rendered_top_row - line_rows);
     sl_surface_native_prompt_reflow(impl->output_surface,
-                                    span - old_prompt_rows);
-    impl->rendered_top_row = height - span;
+                                    height - impl->rendered_height +
+                                        impl->rendered_top_row - top);
+    impl->rendered_top_row = top;
   }
   if (!height_only &&
       sl_render_store_reflow(
@@ -3642,6 +3406,8 @@ static int sl_native_session_close(sl_t *self) {
     return -1;
   impl->native_cursor_below = sl_terminal_rows(impl) - 1 - row;
   impl->native_cursor_valid = 1;
+  impl->native_history_rows =
+      sl_surface_native_history_rows(impl->output_surface);
   impl->cursor_hidden = 0;
   sl_surface_destroy(impl->output_surface);
   impl->output_surface = NULL;
@@ -4016,8 +3782,8 @@ static int sl_print_above_surface(sl_t *self, sl_stream_callback_t callback,
   return result;
 }
 
-static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
-                                 void *userdata) {
+static int sl_print_above_method_impl(sl_t *self, sl_stream_callback_t callback,
+                                      void *userdata) {
   sl_impl_t *impl;
   int prompt_rows;
   int prompt_top;
@@ -4128,6 +3894,24 @@ static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
   return SL_OK;
 }
 
+/* Finite producer callbacks share the zero-wait feed contract, including
+ * surface setup, retained-frame resize and session teardown. */
+static int sl_print_above_method(sl_t *self, sl_stream_callback_t callback,
+                                 void *userdata) {
+  sl_impl_t *impl = sl_impl(self);
+  int previous, result;
+  if (!impl)
+    return SL_ERROR_INVALID;
+  previous = impl->output_write_active;
+  impl->output_write_active = 1;
+  result = sl_print_above_method_impl(self, callback, userdata);
+  impl->output_write_active = previous;
+  if (result == SL_OK && impl->active_prompt && impl->live_scroll_region &&
+      !sl_prompt_uses_absolute_rows(impl))
+    impl->scroll_region_probe_pending = 1;
+  return result;
+}
+
 static int sl_output_stream_begin_method(sl_t *self) {
   sl_impl_t *impl;
   sl_surface_t *previous_surface;
@@ -4213,7 +3997,7 @@ static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
  * only its output flags for this write, including when input and output share
  * a TTY temporarily acquired for a cursor report. Never flush queued input. */
 static int sl_output_write_native(sl_t *self, const char *bytes, size_t length,
-                                  int row, int report) {
+                                  int row) {
   sl_impl_t *impl = sl_impl(self);
   struct termios output;
   tcflag_t original_flags = 0;
@@ -4232,7 +4016,7 @@ static int sl_output_write_native(sl_t *self, const char *bytes, size_t length,
     }
   }
   result = sl_surface_native_write(impl->output_surface, bytes, length, row,
-                                   impl->rendered_cursor_col, report);
+                                   impl->rendered_cursor_col);
   if (changed) {
     output.c_oflag = original_flags;
     if (tcsetattr(impl->output_fd, TCSANOW, &output) != 0) {
@@ -4253,43 +4037,20 @@ static int sl_output_flush_redirected(sl_t *self, const char *bytes,
     return SL_OK;
   if (sl_surface_is_native(impl->output_surface)) {
     int row;
-    struct termios original;
-    int report = 0, temporary = 0, written;
-    size_t i;
+    int written;
     /* Validation may span a resize after the session was prepared. Use the
-     * current native geometry before addressing either output or input. */
+     * current native geometry before addressing either output or input.
+     * A physical resize can still race the subsequent VT write; this is an
+     * accepted limitation, including ASCII. See the concurrent physical
+     * resize exception in docs/softline-mdf-stream-design.md. */
     if (sl_native_resize_pending(impl) &&
         sl_prepare_native_output(self) != SL_OK)
       return SL_ERROR_IO;
     row = impl->rendered_rows > 0
               ? impl->rendered_top_row + impl->rendered_cursor_row
               : -1;
-    if (row >= 0 && impl->cursor_position_probe >= 0) {
-      for (i = 0; i < length; i++) {
-        if ((unsigned char)bytes[i] >= 128u) {
-          report = 1;
-          break;
-        }
-      }
-    }
-    if (report) {
-      temporary = sl_cursor_report_begin(self, &original);
-      if (temporary < 0)
-        return SL_ERROR_IO;
-    }
-    /* The terminal reports the producer endpoint, then immediately returns
-     * to the prompt in this same batch. Never wait with its cursor displaced.
-     */
-    written = sl_output_write_native(self, bytes, length, row, report);
-    if (written == 0 && report) {
-      int observed = sl_read_cursor_report(self, 0);
-      if (observed > 0 &&
-          !sl_surface_native_resize_pending(impl->output_surface))
-        sl_surface_native_observe_write(impl->output_surface, observed - 1,
-                                        impl->probed_cursor_col);
-    }
-    if (report && sl_cursor_report_end(self, &original, temporary) != 0)
-      return SL_ERROR_IO;
+    /* Feed writes have no terminal round trip, including Unicode chunks. */
+    written = sl_output_write_native(self, bytes, length, row);
     if (written != 0)
       return SL_ERROR_IO;
     impl->rendered_cursor_valid = row >= 0;
@@ -4363,6 +4124,7 @@ static int sl_output_write_validated(sl_t *self, const char *bytes,
 static int sl_output_stream_write_method(sl_t *self, const char *bytes,
                                          size_t length) {
   sl_impl_t *impl;
+  int result, previous;
   impl = sl_impl(self);
   if (!impl || !impl->output_stream_active || (!bytes && length > 0)) {
     sl_set_error(self, "live output write requires an open stream and bytes");
@@ -4370,14 +4132,15 @@ static int sl_output_stream_write_method(sl_t *self, const char *bytes,
   }
   if (length == 0)
     return SL_OK;
-  if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
-    return sl_output_write_validated(self, bytes, length);
-  {
-    int result = sl_prepare_native_output(self);
-    if (result != SL_OK)
-      return result;
-  }
-  return sl_output_write_validated(self, bytes, length);
+  previous = impl->output_write_active;
+  impl->output_write_active = 1;
+  result = isatty(impl->input_fd) && isatty(impl->output_fd)
+               ? sl_prepare_native_output(self)
+               : SL_OK;
+  if (result == SL_OK)
+    result = sl_output_write_validated(self, bytes, length);
+  impl->output_write_active = previous;
+  return result;
 }
 
 static int sl_quoted_prompt_styles(sl_impl_t *impl, char *prefix_style,
@@ -4504,8 +4267,8 @@ static int sl_quoted_prompt_next_row(sl_quote_output_t *output,
   return sl_quoted_prompt_begin_row(output, prefix, prefix_style, text_style);
 }
 
-static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
-                                                       const char *text) {
+static int sl_output_stream_write_quoted_prompt_impl(sl_t *self,
+                                                     const char *text) {
   sl_impl_t *impl = sl_impl(self);
   const char *prefix;
   char prefix_style[64];
@@ -4664,6 +4427,19 @@ static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
   if (result != SL_OK)
     return result;
   return sl_quote_output_flush(&output);
+}
+
+static int sl_output_stream_write_quoted_prompt_method(sl_t *self,
+                                                       const char *text) {
+  sl_impl_t *impl = sl_impl(self);
+  int previous, result;
+  if (!impl)
+    return SL_ERROR_INVALID;
+  previous = impl->output_write_active;
+  impl->output_write_active = 1;
+  result = sl_output_stream_write_quoted_prompt_impl(self, text);
+  impl->output_write_active = previous;
+  return result;
 }
 
 static int sl_output_stream_end_method(sl_t *self) {
@@ -4848,6 +4624,14 @@ static ssize_t sl_read_input_byte(sl_t *self, char *ch, int timeout_ms) {
   ready = poll(fds, (nfds_t)count, poll_timeout_ms);
   if (ready <= 0)
     return ready;
+  /* Reconcile an input-owned resize before handing ready data to producers.
+   * The feed call then uses that cursor ledger without its own round trip. */
+  if (impl->active_prompt && impl->rendered_rows > 0 &&
+      sl_native_resize_pending(impl) &&
+      sl_render_apply(self, impl->active_prompt) != 0) {
+    errno = EIO;
+    return -1;
+  }
   dispatched = 0;
   for (i = 1; i < count && dispatched < SL_WATCH_DISPATCH_BUDGET; i++) {
     sl_watch_t *watch;
@@ -4861,6 +4645,7 @@ static ssize_t sl_read_input_byte(sl_t *self, char *ch, int timeout_ms) {
     watch = sl_watch_find(impl, ids[i]);
     if (!watch)
       continue;
+    sl_refresh_scroll_region(self);
     callback = watch->callback;
     userdata = watch->userdata;
     event.id = watch->id;
@@ -5155,8 +4940,8 @@ static int sl_query_cursor_row(sl_t *self) {
   sl_impl_t *impl = sl_impl(self);
   struct termios original;
   int temporary, result;
-  if (!impl || impl->cursor_position_probe < 0 || !isatty(impl->input_fd) ||
-      !isatty(impl->output_fd))
+  if (!impl || impl->output_write_active || impl->cursor_position_probe < 0 ||
+      !isatty(impl->input_fd) || !isatty(impl->output_fd))
     return -1;
   temporary = sl_cursor_report_begin(self, &original);
   if (temporary < 0)
@@ -5184,7 +4969,20 @@ static int sl_try_pin_scroll_region(sl_t *self) {
   if (prompt_top < 0 || prompt_bottom < sl_terminal_height(impl) - 1)
     return 0;
   impl->auto_scroll_pinned = 1;
+  impl->rendered_top_row = prompt_top;
+  impl->rendered_height = sl_terminal_rows(impl);
   return 1;
+}
+
+/* Late ordinary-readline ownership is acquired between producer callbacks,
+ * never within a feed call. Multiple writes in one callback stay immediate. */
+static void sl_refresh_scroll_region(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl || impl->output_write_active || !impl->scroll_region_probe_pending)
+    return;
+  impl->scroll_region_probe_pending = 0;
+  if (impl->live_scroll_region && !sl_prompt_uses_absolute_rows(impl))
+    (void)sl_try_pin_scroll_region(self);
 }
 
 static int sl_read_utf8_input(sl_t *self, char first, char *buf, size_t *len) {
@@ -5872,6 +5670,11 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
+  /* Acquire optional scroll-region ownership before invoking producers.
+   * Feed callbacks themselves never perform a terminal round trip. */
+  impl->scroll_region_probe_pending = 0;
+  if (impl->live_scroll_region && !sl_prompt_uses_absolute_rows(impl))
+    (void)sl_try_pin_scroll_region(self);
   done = 0;
   eof = 0;
   cancelled = 0;
@@ -5887,6 +5690,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     sl_key_action_t action;
     render_prompt = search.active && search.prompt ? search.prompt : prompt;
     impl->active_prompt = render_prompt;
+    sl_refresh_scroll_region(self);
     paste_len = 0;
     if (impl->bracketed_paste)
       key = sl_read_paste_input(self, paste_bytes, &paste_len);
@@ -6432,6 +6236,11 @@ static int sl_set_live_scroll_region_method(sl_t *self, int enabled) {
     sl_set_error(self, "invalid live scroll region configuration");
     return SL_ERROR_INVALID;
   }
+  if (!enabled)
+    impl->scroll_region_probe_pending = 0;
+  else if (!impl->live_scroll_region && impl->active_prompt &&
+           !sl_prompt_uses_absolute_rows(impl))
+    impl->scroll_region_probe_pending = 1;
   if (!enabled && impl->auto_scroll_pinned) {
     if (sl_render_clear_active(self) != 0) {
       sl_set_error(self, "failed to leave live scroll region");

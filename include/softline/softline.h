@@ -463,6 +463,10 @@ struct sl {
    * next readline() call to classify a NULL return.
    * While raw mode is owned, kernel tab expansion (TAB3/OXTABS) is disabled;
    * OPOST/ONLCR are preserved and original flags are restored on release.
+   * Optional ordinary-readline scroll-region ownership is acquired at startup
+   * and retried between producer callbacks as output advances the prompt.
+   * Multiple feeds in one callback stay immediate; ownership is refreshed at
+   * the next input-owned boundary.
    * Ctrl-C restores terminal state before raising SIGINT. If the handler
    * returns, an existing native output session remains available.
    */
@@ -489,7 +493,8 @@ struct sl {
   int (*set_screen_width)(sl_t *self, int width);
   /** Enable or disable bottom-pinned scroll-region output for ordinary
    * readline. The setting applies to subsequent print_above() calls; native
-   * chat always uses its own scroll region. */
+   * chat always uses its own scroll region. Acquisition occurs at startup or
+   * between producer callbacks, without requesting cursor replies in feeds. */
   int (*set_live_scroll_region)(sl_t *self, int enabled);
   /** Register or clear the per-handle idle callback. */
   int (*set_idle_callback)(sl_t *self, sl_idle_callback_t callback,
@@ -518,6 +523,9 @@ struct sl {
    * and redraws by default, or uses an enabled live scroll region after
    * reaching the terminal bottom. Native chat retains its prompt frame and
    * reconciles physical resize before writing each callback-produced chunk.
+   * Feed calls have no intentional delay and never wait for cursor replies.
+   * The unobserved-resize limits documented for output_stream_write() also
+   * apply when resize occurs inside this producer callback.
    * Finite output cannot overlap an open live session. Failed native finite
    * output discards partial ANSI/UTF-8 bytes; later calls start cleanly. */
   int (*print_above)(sl_t *self, sl_stream_callback_t callback, void *userdata);
@@ -633,15 +641,21 @@ struct sl {
    * OXTABS) is temporarily disabled while Softline owns raw mode and restored
    * on exit; tabs reach the terminal unchanged. Native writes after raw-mode
    * release disable expansion for the write and restore it before returning,
-   * without flushing pending input. With a
-   * prompt frame present, complete Unicode emissions request the producer's
-   * terminal cursor position before returning to the editor cursor in the
-   * same output batch. Reply reads preserve user input and wait up to 100 ms;
-   * unanswered reports disable further probing. ASCII emissions add no
-   * reports. Reports record endpoints only; producer Unicode widths are not
-   * estimated or corrected and no character spans are retained. Softline-owned
-   * prompt layout is separate. Width reflow of an unfinished Unicode/tab line
-   * can misplace continuation, including CR tails; its observed column is
+   * without flushing pending input. Feed calls add no intentional delay and
+   * never request or wait for terminal cursor replies, including on resize.
+   * Cursor advances use local scalar cell widths shared with prompt layout;
+   * no producer transcript, glyph spans or grapheme tail is buffered.
+   * Terminal Unicode versions and cluster shaping can differ from the
+   * Unicode 16.0 scalar accounting.
+   * A physical resize can race a VT write and misplace even ASCII output;
+   * this accepted limit cannot be made atomic without a terminal protocol.
+   * A retained frame resized without an input-owned observation (including
+   * after readline returns) uses a delta estimate. Earlier hard-ended ASCII
+   * reflow and unknown terminal history can misplace continuation even after
+   * resize settles. The active input loop observes resize before dispatching
+   * producer watches; no feed wait or transcript model repairs this fallback.
+   * Wrapping remains producer/terminal-owned. Width reflow of a Unicode/tab
+   * line can misplace continuation, including CR tails; its tracked column is
    * retained and clamped only if offscreen. No grapheme buffering or
    * renderer-specific wrapping is used. With an active prompt, continuing after
    * a known ASCII write at the right edge advances a hard row; width growth may
@@ -785,8 +799,10 @@ int sl_history_load(sl_t *self, const char *filename);
 int sl_set_screen_width(sl_t *self, int width);
 
 /** Enable or disable bottom-pinned scroll-region output for ordinary readline.
- * Disabled by default; when enabled softline attempts it only after the active
- * prompt reaches the terminal bottom. Native chat uses its own scroll region
+ * Disabled by default. Ownership is checked at startup and between producer
+ * callbacks and acquired once the prompt reaches the terminal bottom.
+ * Multiple feeds within one callback remain immediate and acquire ownership
+ * at the next input-owned boundary. Native chat uses its own scroll region
  * regardless of this setting. */
 int sl_set_live_scroll_region(sl_t *self, int enabled);
 
@@ -959,8 +975,10 @@ int sl_cancel(sl_t *self);
  * enabled live scroll region once the prompt reaches the terminal bottom.
  * Native chat retains its prompt frame after a live session and reconciles
  * physical resize before writing each callback-produced chunk. Finite output
- * cannot overlap an open live session. Failed native finite output discards
- * partial ANSI/UTF-8 bytes; later calls start cleanly. */
+ * cannot overlap an open live session. The unobserved-resize limits documented
+ * for output_stream_write() also apply when resize occurs inside this producer
+ * callback. Feed calls never wait for cursor replies. Failed native finite
+ * output discards partial ANSI/UTF-8 bytes; later calls start cleanly. */
 int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
 
 /** Start a persistent output session on self's editor-owner thread. The
@@ -994,14 +1012,21 @@ int sl_output_stream_begin(sl_t *self);
  * while Softline owns raw mode and restored on exit; OPOST/ONLCR are preserved
  * and tabs reach the terminal unchanged. Native writes after raw-mode release
  * disable expansion for the write and restore it before returning, without
- * flushing pending input. With a prompt frame present, complete
- * Unicode emissions request the actual producer cursor before returning to
- * the editor cursor in the same output batch. Reply reads preserve concurrent
- * input and wait up to 100 ms; unanswered reports disable further probing.
- * ASCII emissions add no reports. Reports record endpoints only; producer
- * Unicode widths are not estimated or corrected and no character spans are
- * retained. Prompt Unicode layout is separate. Width reflow of an unfinished
- * Unicode/tab line can misplace continuation, including CR tails; its observed
+ * flushing pending input. Feed calls add no intentional delay and never
+ * request or wait for terminal cursor replies, including on resize. Cursor
+ * advances use local scalar cell widths shared with prompt layout, without
+ * retaining producer text, glyph spans or grapheme tails. Terminal Unicode
+ * versions and cluster shaping can differ from the Unicode 16.0 accounting.
+ * Wrapping remains
+ * producer/terminal-owned. A physical resize can race the VT write and
+ * misplace even ASCII output; this is an accepted concurrency limit.
+ * A retained frame resized without an input-owned observation, including after
+ * readline returns, uses a delta estimate. Earlier hard-ended ASCII reflow or
+ * unknown terminal history can misplace continuation even after resize settles.
+ * The active input loop observes resize before dispatching producer watches.
+ * No feed wait or transcript model is used to repair this fallback.
+ * Width reflow of an unfinished Unicode/tab line
+ * can misplace continuation, including CR tails; its tracked
  * column is retained and clamped only if offscreen. No grapheme buffering or
  * renderer-specific wrapping is used. At a known ASCII right edge with an
  * active prompt, a later printable continuation uses CR and IND after the

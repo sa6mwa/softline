@@ -547,6 +547,9 @@ static int softline_lua_set_screen_width(lua_State *L) {
       L, sl_set_screen_width(handle->sl, (int)luaL_checkinteger(L, 2)));
 }
 
+/** Lua editor:set_live_scroll_region(enabled): opt ordinary readline into a
+ * bottom scroll region. Ownership is checked at startup and between producer
+ * callbacks; feed calls never request or wait for cursor replies. */
 static int softline_lua_set_live_scroll_region(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -1278,13 +1281,19 @@ static int softline_lua_output_stream_begin(lua_State *L) {
  * original flags are restored when raw mode is released.
  * Native writes after release disable expansion for the write and restore it
  * before returning, without flushing pending input.
- * With a prompt frame present, complete Unicode emissions request the actual
- * producer cursor before returning to the editor cursor in the same batch.
- * Reply reads preserve concurrent input and wait up to 100 ms; unanswered
- * reports disable further probing. ASCII emissions add no reports. There is
- * no producer Unicode width estimates, span correction or grapheme buffering.
- * Reports record endpoints only; Unicode layout belongs to Softline-owned
- * prompts. Width resize keeps an opaque line's observed column and clamps it
+ * Feed calls add no intentional delay and never request or wait for terminal
+ * cursor replies, including on resize. Cursor advances use local scalar cell
+ * widths shared with prompt layout; no producer transcript, glyph spans or
+ * grapheme tails are buffered. Terminal Unicode versions and cluster shaping
+ * can differ from the Unicode 16.0 accounting;
+ * physical resize can race a VT write and misplace even ASCII output. This
+ * is an accepted concurrency limit, with no feed wait or transcript replay;
+ * a retained frame resized without an input-owned observation, including after
+ * readline returns, uses a delta estimate. Earlier hard-ended ASCII reflow or
+ * unknown terminal history can misplace continuation even after resize settles.
+ * The active input loop observes resize before dispatching producer watches.
+ * wrapping remains producer/terminal-owned. Width resize keeps the tracked
+ * column of an opaque line and clamps it
  * only if offscreen. Continuation after Unicode/tab reflow can land in a gap or
  * overwrite text, including CR tails. With an active prompt, a later printable
  * chunk after a known ASCII right-edge write uses a hard row advance; width

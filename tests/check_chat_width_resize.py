@@ -11,11 +11,12 @@ import time
 
 sys.dont_write_bytecode = True
 import check_terminal_native_output as terminal
+from terminal_producer import pause_producer
 
 vt = terminal.vt
 
 
-def case(example, build, theme):
+def case(example, build, theme, resize_race=False):
     widget, window = terminal.terminal()
     terminal.resize(widget, window, 97, 24)
     prior = ''.join(f'existing row {i:03}\r\n' for i in range(100)).encode()
@@ -90,15 +91,16 @@ def case(example, build, theme):
                 else:
                     widths = [96, 93, 97, 100, 95, 97] * 2
                     delay = 0.12
-                for width in widths:
-                    height = 24
-                    resize(width, height)
-                    end = time.monotonic() + delay
-                    while time.monotonic() < end:
-                        vt.pump()
-                        time.sleep(0.001)
-                    snapshots.append(f'== {index} {width}x{height} ioctl {struct.unpack("HHHH", fcntl.ioctl(master, termios.TIOCGWINSZ, bytes(8)))[:2]} cursor {terminal.rows(widget)[1]} ==\n' +
-                                     '\n'.join(text()[-height:]))
+                with pause_producer(child, vt.pump, not resize_race):
+                    for width in widths:
+                        height = 24
+                        resize(width, height)
+                        end = time.monotonic() + delay
+                        while time.monotonic() < end:
+                            vt.pump()
+                            time.sleep(0.001)
+                        snapshots.append(f'== {index} {width}x{height} ioctl {struct.unpack("HHHH", fcntl.ioctl(master, termios.TIOCGWINSZ, bytes(8)))[:2]} cursor {terminal.rows(widget)[1]} ==\n' +
+                                         '\n'.join(text()[-height:]))
             expected_prompt = '> draft' if index >= 1 else '> '
             wait(lambda rows: rows[-1] == expected_prompt and not any(
                 'Thinking' in row or 'Reasoning' in row for row in rows), 7)
@@ -161,5 +163,6 @@ def case(example, build, theme):
 
 if __name__ == '__main__':
     example, build, theme = sys.argv[1:4]
-    case(example, build, theme)
+    assert sys.argv[4:] in ([], ["--resize-race"])
+    case(example, build, theme, resize_race=sys.argv[4:] == ["--resize-race"])
     print(f'{theme}: typing, four response turns and prompt wrapping survive width resize.')

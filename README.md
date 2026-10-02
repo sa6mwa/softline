@@ -165,9 +165,13 @@ make run-chat-riced
 make run-chat-monogreen
 make run-chat-monochrome
 make run-chat-synthwave
+make run-chat-without-delay
+make run-chat-without-delay-riced
 ```
 
 The chat convenience targets build the C example before launching it.
+The two `without-delay` targets set `SOFTLINE_CHAT_CHAR_MS=0`, removing the
+example producer's simulated typing delay, with default and riced themes.
 `run-chat` uses Gruvbox by default; pass `THEME=...` to override it. Both C
 and Lua examples accept
 `SOFTLINE_PROMPT_THEME=default`, `plain`, `accent`, `dracula`, `gruvbox`, `monochrome`,
@@ -187,18 +191,29 @@ bytes, including libmdf styles and wrapping, pass through unchanged. Softline ke
 parser state and the output cursor; it does not cache, pad, rewrap, clear, or
 replay the native transcript.
 
+Physical resize can race an in-flight VT batch and misplace even ASCII output.
+This is an [accepted concurrency limit](docs/softline-mdf-stream-design.md#review-exception-concurrent-physical-resize).
+The unpaused VTE diagnostic remains available as `--streaming-race`; regression
+gates pause their private producer at resize boundaries.
+After readline returns, a retained prompt has no input-owned resize observation.
+The immediate feed fallback can misplace ASCII continuation when earlier lines
+reflow or preserved terminal history differs from its estimate. See the
+[unobserved resize limit](docs/softline-mdf-stream-design.md#review-exception-unobserved-retained-frame-resize).
+The active chat loop observes resize before dispatching producer watches.
+
 Before a prompt frame exists, output uses the full terminal and keeps the
 producer cursor in place between writes. Native autowrap and Unicode clusters
 survive chunk boundaries. Full-height output follows terminal resize without
 another margin command. Cursor reports refresh the producer position at
-resize and cursor handoffs. With a prompt frame present, complete emissions
-containing Unicode also request the producer's actual terminal endpoint.
-The report records a cursor position; it never assigns widths to characters.
-Unicode width and cluster layout are calculated only for Softline-owned prompts.
-ASCII emissions keep their existing cursor path. The report request and return
-to the editor cursor share one output batch; waiting for the reply leaves the
-cursor at the prompt. Replies use the existing 100 ms timeout and preserve
-concurrent user input. No grapheme or transcript buffering is introduced.
+resize and cursor handoffs outside feed calls. Feed writes have **no intentional
+latency**: no sleeps, timed coalescing or terminal cursor-position round trips,
+even during resize. Complete UTF-8/SGR units are emitted before the call returns;
+only an incomplete sequence is retained until its remaining bytes arrive.
+Cursor advances use local scalar cell widths shared with prompt layout.
+Terminal Unicode versions and emoji/cluster shaping can differ from the
+Unicode 16.0 scalar accounting.
+Producer bytes, wrapping and scrollback remain producer/terminal-owned; there
+is no transcript replay or glyph-span reconstruction.
 At a known ASCII right edge with an active prompt, a later chunk uses a hard
 row advance after the cursor handoff. This avoids overwriting the last cell,
 but that row may not join on width growth and a Unicode cluster split there
@@ -219,8 +234,8 @@ bottom; no terminal cursor save/restore sequences are used. Unchanged prompt
 rows that still fit are preserved. Width changes rebuild only prompt layout;
 transcript reflow belongs to the terminal. The prompt retains its logical row
 layout across successive resizes, even when a physical row temporarily wraps.
-A scalar cell counter handles plain ASCII lines. Producer Unicode and tabs have
-no width estimates, span tables, or reflow reconstruction. Their observed column
+A scalar cell counter handles plain ASCII lines. Unicode advances use local
+scalar widths; Unicode and tabs have no span tables or reflow reconstruction. Their tracked column
 is retained, clamping only an offscreen column after resize. Continuation after
 width reflow of an unfinished Unicode/tab line can therefore resume at a
 different cell, including a CR-overwritten tail. This is an intentional
@@ -257,7 +272,7 @@ newline or scroll. Set
 below the transcript instead. Ending a stream inside an active editor keeps
 the prompt and scroll region for later finite output or another stream;
 destroying the handle always closes native chat. Native feeds do not toggle
-cursor visibility. ASCII feeds do not wait for cursor-position replies on unchanged frames;
+cursor visibility. Feed calls do not wait for cursor-position replies;
 bounded chunks are batched with cursor restoration, retrying short writes as
 needed.
 
@@ -267,7 +282,10 @@ Softline never enters or leaves the alternate screen itself.
 
 For ordinary finite `print_above()` calls without a persistent output
 session, `sl_set_live_scroll_region()` remains available to configure the
-readline scrollback editor. Chat examples use the persistent session API.
+readline scrollback editor. It acquires ownership at startup and retries
+between producer callbacks as output reaches the bottom. Feed calls remain
+immediate, including multiple feeds in one callback. Chat examples use the
+persistent session API.
 
 ## Persistent output session
 
@@ -479,6 +497,7 @@ static int next_chunk(sl_t *sl, void *userdata,
 ```sh
 make build
 make test
+make test-terminal-cache
 make deps DEPENDENCY=libmdf
 make deps DEPENDENCY=lua PRESET=debug-lua
 make asan
@@ -487,6 +506,34 @@ make package-consumer-smoke
 make lua-test
 make prerelease
 ```
+
+On native x86_64 Linux, `make test` provisions checksum-pinned GTK/VTE,
+Xvfb, keyboard, font and clipboard test tools from the lifecycle's shared
+verified archive cache. `make deps-terminal-tests` prepares them independently.
+The cache is selected by `CPKT_DEPENDENCY_CACHE`, otherwise
+`${XDG_CACHE_HOME:-$HOME/.cache}/c.pkt.systems/deps`; every reused archive is
+hashed. Repository-local extraction and runtime staging are disposable under
+`.cache/deps-build/x86_64-linux-gnu/terminal-tests` and
+`.cache/deps/x86_64-linux-gnu/terminal-tests`. No package manager installation
+or maintainer scripts run, and none of these tools enter the shipped libraries.
+
+The pinned native tools use official Ubuntu package archives, an explicit
+source exception for test tools recorded with versions, URLs and SHA-256 hashes
+in `cmake/terminal-tests/archives.json`, including their libc, compiler runtime
+and desktop library closure. Provisioning verifies every ELF dependency and
+imported libc symbol version is staged. Host GTK/GLib/X11 installs are not
+required. Configured CTest tests retain the prepared environment, including for
+direct `ctest --preset debug` runs. Terminal tools and the test interpreter run
+through the cached loader;
+fixture children, host build tools and shell utilities retain their own runtime.
+The staged Xvfb keyboard compiler lookup is relocated to the staged `PATH`;
+the verified archive remains immutable. Font caches and temporary test workspaces
+live under `build/terminal-test-tools`. `make test-terminal-cache` checks offline
+reconstruction, corrupt archives, interrupted staging, runtime isolation and
+rejection of missing runtime libraries or libc symbol versions.
+Transient archive transfer failures are retried up to three times; partial or
+unverified downloads never become cache entries. Other hosts retain existing
+native test-tool discovery.
 
 Every project-owned C target is compiled as C89 with POSIX terminal APIs.
 Shared builds use `SOFTLINE_ABI_VERSION=0` for SONAME/SOVERSION during current

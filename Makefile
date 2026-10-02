@@ -73,6 +73,14 @@ run-chat-default: build-debug ## Run C chat example with the default ANSI theme
 run-chat-riced: build-debug ## Run C chat example with the riced theme
 	@SOFTLINE_PROMPT_THEME="riced" ./build/debug/examples/example_chat
 
+.PHONY: run-chat-without-delay
+run-chat-without-delay: build-debug ## Run default chat with no simulated producer delay
+	@SOFTLINE_CHAT_CHAR_MS=0 SOFTLINE_PROMPT_THEME=default ./build/debug/examples/example_chat
+
+.PHONY: run-chat-without-delay-riced
+run-chat-without-delay-riced: build-debug ## Run riced chat with no simulated producer delay
+	@SOFTLINE_CHAT_CHAR_MS=0 SOFTLINE_PROMPT_THEME=riced ./build/debug/examples/example_chat
+
 .PHONY: run-chat-plain
 run-chat-plain: build-debug ## Run C chat example with the uncoloured plain theme
 	@SOFTLINE_PROMPT_THEME="plain" ./build/debug/examples/example_chat
@@ -95,14 +103,30 @@ build-release: ## Build release target
 	@cmake --build --preset x86_64-linux-gnu-release
 
 .PHONY: test
-test: build-debug ## Run debug tests
+test: ## Run debug tests with cached native terminal tools
+	@sh ./scripts/terminal-test-env.sh $(MAKE) test-native
+
+.PHONY: test-native
+test-native: build-debug ## Run debug tests in the prepared test environment
 	@cd $(BUILD_DIR)/debug && ctest --output-on-failure
+
+.PHONY: deps-terminal-tests
+deps-terminal-tests: ## Cache pinned native GTK/VTE/Xvfb test tools without host installation
+	@sh ./scripts/terminal-test-env.sh
+
+.PHONY: test-terminal
+test-terminal: ## Run native debug tests with lifecycle-cached terminal test tools
+	@$(MAKE) test
 
 .PHONY: test-debug
 test-debug: test ## Run debug tests
 
 .PHONY: test-all
-test-all: test test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test test-tool-discovery test-toolchain-contract test-darwin-linker-route test-lifecycle-surface test-lua-artifact-privacy test-public-header-docs ## Run all deterministic local tests
+test-all: test test-terminal-cache test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test test-tool-discovery test-toolchain-contract test-darwin-linker-route test-lifecycle-surface test-lua-artifact-privacy test-public-header-docs ## Run all deterministic local tests
+
+.PHONY: test-terminal-cache
+test-terminal-cache: ## Verify offline reconstruction of cached terminal test tools
+	@python3 tests/check_terminal_test_cache.py
 
 .PHONY: test-lua-platform
 test-lua-platform: ## Verify local Lua builds with Darwin platform settings
@@ -123,7 +147,11 @@ test-runtime-config: ## Verify missing-runtime and archive cache failures
 	@python3 tests/check_runtime_config.py "$(ROOT_DIR)"
 
 .PHONY: asan
-asan: ## Run ASan+UBSan tests
+asan: ## Run ASan+UBSan tests with cached native terminal tools
+	@sh ./scripts/terminal-test-env.sh $(MAKE) asan-native
+
+.PHONY: asan-native
+asan-native: ## Run ASan+UBSan in the prepared test environment
 	@cmake --preset asan && cmake --build --preset asan && \
 		cd $(BUILD_DIR)/asan && ctest --output-on-failure
 
@@ -253,6 +281,7 @@ test-toolchain-contract: ## Verify toolchain provisioning and environment contra
 test-lifecycle-surface: ## Verify standard lifecycle command and preset surfaces
 	@./scripts/test_lifecycle_surface.sh
 	@python3 tests/test_deps_target.py "$(ROOT_DIR)"
+	@python3 tests/test_chat_targets.py "$(ROOT_DIR)"
 	@python3 tests/check_source_smoke_workspace.py "$(ROOT_DIR)"
 
 .PHONY: test-clangd

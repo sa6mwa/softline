@@ -16,6 +16,10 @@ import termios
 import time
 
 
+sys.dont_write_bytecode = True
+from terminal_producer import pause_producer
+
+
 PTR = ctypes.c_void_p
 LONG = ctypes.c_long
 INT = ctypes.c_int
@@ -89,7 +93,7 @@ def transcript(rows):
     return rows[first:last]
 
 
-def case(example, build, theme, height, streaming=False):
+def case(example, build, theme, height, streaming=False, resize_race=False):
     terminal, window = new_terminal(), new_window(0)
     add(window, terminal)
     size(terminal, 97, height)
@@ -163,9 +167,10 @@ def case(example, build, theme, height, streaming=False):
                     # Resize the actual window once. Calling set_size first
                     # briefly changes PTY geometry before GTK's allocation,
                     # creating extra resize events that no window requested.
-                    resize_window(window, pixels_x, pixels_y)
-                    wait(lambda frame: columns(terminal) == width and
-                         row_count(terminal) == rows and frame[-1] == "> draft")
+                    with pause_producer(child, pump, not resize_race):
+                        resize_window(window, pixels_x, pixels_y)
+                        wait(lambda frame: columns(terminal) == width and
+                             row_count(terminal) == rows and frame[-1] == "> draft")
                     deadline = time.monotonic() + 0.15
                     while time.monotonic() < deadline:
                         pump()
@@ -209,9 +214,10 @@ def case(example, build, theme, height, streaming=False):
 
 
 if __name__ == "__main__":
-    if sys.argv[3:] == ["--streaming"]:
+    if sys.argv[3:] in (["--streaming"], ["--streaming-race"]):
         for theme in ("plain", "gruvbox"):
-            case(sys.argv[1], sys.argv[2], theme, 24, streaming=True)
+            case(sys.argv[1], sys.argv[2], theme, 24, streaming=True,
+                 resize_race=sys.argv[3] == "--streaming-race")
     else:
         for theme in ("plain", "default", "gruvbox"):
             for height in (24, 40):

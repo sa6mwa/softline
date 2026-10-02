@@ -245,8 +245,48 @@ static int retained(const char *command_path, const char *reply_path,
   return state.result == SL_OK ? 0 : 1;
 }
 
+struct live_gate {
+  int command_fd;
+  int ack_fd;
+  int done;
+  int result;
+};
+
+static void live_gate_ack(struct live_gate *gate) {
+  struct winsize geometry;
+  unsigned short reply[2];
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &geometry) != 0) {
+    gate->result = SL_ERROR;
+    return;
+  }
+  reply[0] = geometry.ws_col;
+  reply[1] = geometry.ws_row;
+  if (write(gate->ack_fd, reply, sizeof(reply)) != (ssize_t)sizeof(reply))
+    gate->result = SL_ERROR;
+}
+
+static int live_gate_watch(sl_t *sl, const sl_watch_event_t *event,
+                           void *userdata) {
+  struct live_gate *gate = userdata;
+  char command;
+  (void)event;
+  if (read(gate->command_fd, &command, 1) != 1)
+    gate->result = SL_ERROR;
+  else if (command == 'p')
+    gate->result = sl_output_stream_write(sl, "Y", 1);
+  else if (command == 'x')
+    gate->done = 1;
+  else
+    gate->result = SL_ERROR;
+  if (gate->result != SL_OK || gate->done)
+    sl_cancel(sl);
+  else
+    live_gate_ack(gate);
+  return gate->result;
+}
+
 static int gated(const char *command_path, const char *ack_path,
-                 const char *text, const char *prompt) {
+                 const char *text, const char *prompt, int live_input) {
   sl_t *sl;
   int command_fd, ack_fd, result = SL_OK;
   char command = 'r';
@@ -279,7 +319,28 @@ static int gated(const char *command_path, const char *ack_path,
       if (result == SL_OK)
         result = sl_output_stream_begin(sl);
     } else if (command == 'i') {
-      char *input = sl_readline(sl, prompt);
+      char *input;
+      if (live_input) {
+        struct live_gate gate;
+        sl_watch_id_t watch;
+        gate.command_fd = command_fd;
+        gate.ack_fd = ack_fd;
+        gate.done = 0;
+        gate.result = SL_OK;
+        result = sl_watch_add(sl, command_fd, SL_WATCH_READ, live_gate_watch,
+                              &gate, &watch);
+        if (result != SL_OK)
+          break;
+        live_gate_ack(&gate);
+        input = sl_readline(sl, prompt);
+        sl_free_string(sl, input);
+        sl_watch_remove(sl, watch);
+        result = gate.done ? gate.result : SL_ERROR;
+        if (result == SL_OK)
+          result = sl_output_stream_end(sl);
+        break;
+      }
+      input = sl_readline(sl, prompt);
       result = input && !input[0] ? SL_OK : SL_ERROR;
       sl_free_string(sl, input);
     } else if (command == 'x') {
@@ -316,8 +377,10 @@ int main(int argc, char **argv) {
   if (argc == 4 && strcmp(argv[1], "--handoff") == 0)
     return stream_chunks(argv[2], argv[3], 1);
   if (argc == 5 && strcmp(argv[1], "--gated") == 0)
-    return gated(argv[2], argv[3], argv[4], "> ");
+    return gated(argv[2], argv[3], argv[4], "> ", 0);
   if (argc == 6 && strcmp(argv[1], "--gated") == 0)
-    return gated(argv[2], argv[3], argv[4], argv[5]);
+    return gated(argv[2], argv[3], argv[4], argv[5], 0);
+  if (argc == 5 && strcmp(argv[1], "--gated-live") == 0)
+    return gated(argv[2], argv[3], argv[4], "> ", 1);
   return 2;
 }

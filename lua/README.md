@@ -82,6 +82,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   Without an active readline, this hint does not move or resize native output.
 - `sl:set_live_scroll_region(enabled)` opts an ordinary readline prompt into
   bottom-pinned scroll-region output after it reaches the terminal bottom.
+  Ownership is acquired at readline startup and retried between producer
+  callbacks as output advances the prompt; multiple feeds in one callback
+  remain immediate and refresh ownership at the next input-owned boundary.
   It is disabled by default; native chat always uses its own scroll region.
 - `sl:set_image_paste_path_template(template)` copies an override path; pass
   `nil` to restore the default. A template contains exactly one `*` for a
@@ -212,22 +215,26 @@ live scroll regions, status lines, and spinners are off; the theme is
   pass through unchanged. Before the first frame, output uses the full terminal and
   leaves its cursor in place between writes, preserving native autowrap and
   Unicode clusters. Cursor reports occur at ownership and resize boundaries.
-  With a prompt frame present, complete emissions containing Unicode also
-  observe the producer's actual terminal endpoint. Reports record positions
-  without estimating Unicode widths or correcting character spans. Unicode
-  layout is computed only for Softline-owned prompts. The request and
-  return to the editor cursor share one output batch; waiting for a reply
-  leaves the cursor at the prompt. Replies use the existing 100 ms timeout,
-  preserving concurrent input; an unanswered report disables further probing
-  and retains estimated positions. ASCII emissions add no reports. There is
-  no grapheme buffering or renderer-specific behavior. Transcript reflow
+  Feed calls have no intentional delay and never request or wait for cursor
+  replies, including during resize. Local scalar cell widths, shared with prompt
+  layout, track cursor advances. Terminal Unicode versions and cluster shaping
+  can differ from the Unicode 16.0 accounting.
+  The delta fallback cannot infer earlier hard-ended ASCII reflow or unknown
+  terminal history if a retained prompt resizes without an input-owned observation,
+  including after readline returns. The active input loop observes resize
+  before dispatching producer watches. This delta fallback is deliberately
+  immediate; see the stream design's unobserved retained-frame resize exception.
+  No producer transcript, glyph spans or grapheme tails are buffered. Physical
+  resize can race an in-flight VT batch and misplace even ASCII output. This accepted
+  concurrency limit has an unpaused VTE diagnostic (`--streaming-race`);
+  there is no transcript replay or feed wait to conceal it. Reflow
   belongs to the terminal. With an active prompt, a known ASCII right-edge
   continuation advances a hard row after the cursor handoff. That row may not
   rejoin on width growth, and a split Unicode cluster can lose its attachment.
   At the bottom output margin, VTE and tmux can reflow that boundary
   differently on width growth; exact continuation there is not guaranteed.
   Unfinished Unicode/tab lines have no reflow model. Width resize retains the
-  observed column, clamping it only if offscreen; continuation can land in a gap
+  tracked column, clamping it only if offscreen; continuation can land in a gap
   or overwrite text, including CR tails. A last-column report cannot distinguish
   Unicode pending wrap from a cursor before the last cell. These are intentional
   opaque-feed limits; Softline never reconstructs or replays the transcript.

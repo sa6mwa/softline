@@ -332,8 +332,12 @@ def authenticated_server_case(fixture, base, payload):
             source = base / "authenticated-source.png"
             source.write_bytes(payload)
             owner_env = dict(os.environ, **child_env)
+            owner_command = [sys.executable, __file__, "--auth-owner", str(source)]
+            if os.environ.get("SOFTLINE_TERMINAL_TEST_ROOT"):
+                owner_command.insert(0, str(pathlib.Path(__file__).resolve().parents[1] /
+                                            "scripts/terminal-test-runtime.sh"))
             owner_process = subprocess.Popen(
-                [sys.executable, __file__, "--auth-owner", str(source)],
+                owner_command,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, env=owner_env)
             assert select.select([owner_process.stdout], [], [], 5)[0], (

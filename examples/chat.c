@@ -340,7 +340,8 @@ static int start_operation(struct chat_state *state) {
     for (i = 0; answer[i] != '\0'; i++) {
       if (write(pipe_fds[1], answer + i, 1) != 1)
         break;
-      wait_character(delay);
+      if (delay > 0)
+        wait_character(delay);
     }
     close(pipe_fds[1]);
     _exit(0);

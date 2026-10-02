@@ -49,6 +49,7 @@ static void ignore_signal(int signo) { (void)signo; }
   do {                                                                         \
     tests_run++;                                                               \
     printf("  %-58s", name);                                                   \
+    fflush(stdout);                                                            \
   } while (0)
 
 #define PASS()                                                                 \
@@ -10441,6 +10442,10 @@ static void test_live_output_error_resets_terminal_style(void) {
 int main(int argc, char **argv) {
   printf("softline unit tests\n");
   printf("===================\n\n");
+  if (argc == 2 && strcmp(argv[1], "reverse-search") == 0) {
+    test_live_output_preserves_reverse_search_prompt();
+    return tests_passed == tests_run ? 0 : 1;
+  }
   if (argc == 2 && strcmp(argv[1], "native") == 0) {
     test_native_output_preserves_source_bytes();
     test_native_tab_expansion();
