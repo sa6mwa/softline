@@ -48,6 +48,20 @@ Currently implemented:
   `Ctrl-P`/`Ctrl-N`), and delete keys operate across the whole multiline buffer.
 - `Ctrl-R` starts reverse incremental history search over the handle's current
   in-memory history, including entries loaded before `readline()`.
+  Enter leaves the displayed match in the normal prompt for editing; it does
+  not send or queue it. A subsequent Enter follows the normal submit/queue
+  keymap. Escape or `Ctrl-G` cancels search and restores the original draft.
+  Applications can opt into immediate submission by binding `SL_KEY_ENTER`
+  with `sl_bind_key()`; the callback sets `*action = SL_KEY_ACTION_SUBMIT`
+  and returns `SL_OK`.
+  Key callbacks run before built-in handling. Query
+  `sl->history_search_active(sl)` or `sl_history_search_active(sl)` (Lua:
+  `sl:history_search_active()`) to distinguish search selection from
+  submission. This read-only query is true even for a failed match and false
+  after selection, cancellation, or editor exit. Return `SL_KEY_ACTION_PASS`
+  during search to let Enter select an editable match. The chat examples defer
+  their shell/exit guards until normal editing resumes; actual shell
+  submissions remain blocked during generation.
 - `Ctrl-V` reads PNG or JPEG image data from the X11 `CLIPBOARD` selection and
   inserts the literal path to an owner-only cache image file at the cursor.
   It speaks X11 directly through `DISPLAY`, including an SSH-forwarded display,
@@ -93,9 +107,9 @@ Currently implemented:
   ordinary queued work or leave it for explicit host delivery. The renderer ships
   default, plain, accent, Dracula, Gruvbox, monochrome, monogreen, Outrun,
   Riced, and Synthwave prompt themes. Optional status lines use the selected
-  palette. The chat examples add sent nonempty prompts to their history, so
-  `Up`/`Down` and `Ctrl-P`/`Ctrl-N` recall sent prompts while Alt-E remains
-  reserved for unsent queued drafts.
+  palette. The chat examples load keyed history at startup and save accepted
+  nonempty prompts immediately, including queued and steered drafts.
+  `Up`/`Down` and `Ctrl-P`/`Ctrl-N` recall history while Alt-E edits queued drafts.
 - Interactive handles can watch application-owned file descriptors. Softline
   waits for terminal and watch readiness together, then invokes the watch
   callback on the editor owner thread so streamed output can redraw above a
@@ -122,9 +136,9 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` is the C streaming Markdown demo. It links libmdf only as an
-example dependency: libsoftline and its installed package remain independent
-of libmdf. The composer gives libmdf a two-column left margin and its default
+`example_chat` is the C streaming Markdown demo. It links pinned libmdf 0.14.0
+only as an example dependency: libsoftline and its installed package remain
+independent of libmdf. The composer gives libmdf a two-column left margin and its default
 ANSI palette for terminal output (escape-free when redirected), updating both
 renderers' geometry on resize and dropping the margin on very narrow terminals. Softline's quoted-prompt helper writes each
 submitted prompt directly into the output session as a literal, italic quote.
@@ -149,6 +163,26 @@ busy state. Escape or Ctrl-C returns cancellation to the application; the C chat
 example uses it to stop the active simulated operation, retain its queue, and keep the
 chat open. Automatic FIFO release stays stopped until the user submits a new
 turn or manually promotes a queued one.
+
+Both chat examples accept the exact, argument-free commands `!sh` and `/shell`
+between turns. Enter (or idle Alt-Enter) opens `$SHELL -i`, falling back to
+`/bin/sh -i` when `SHELL` is unset or empty. Commands are rejected while an
+operation is running, with the draft left editable; they cannot be queued or
+steered. Piped input and redirected output cannot open a shell. Other text,
+including `/shell arguments`, remains an ordinary chat turn.
+
+The examples end the output session before launching the shell, restoring
+terminal input and the full scroll region. After the shell exits, they begin a
+new session on the same handle: the prompt is built afresh at the current
+terminal size, the output cursor is probed again, and history, queue and
+settings survive. An unfinished external line restarts quote separation;
+otherwise known spacing remains.
+Clearing or resizing inside the shell is allowed. No
+transcript is replayed. A failed shell launch or nonzero exit is reported and
+returns to chat. Applications can use this same `output_stream_end()` / child
+process / `output_stream_begin()` sequence outside an active editor callback;
+shell execution belongs to the application.
+
 The queue UI, status line, and simulated operation stream activate only when
 both standard input and output are terminals; piped input or redirected output
 produces plain libmdf-rendered responses with Softline-quoted prompts. The
@@ -300,6 +334,16 @@ sl->output_stream_begin(sl);
 sl->output_stream_write(sl, bytes, length);
 sl->output_stream_end(sl);
 ```
+
+Ending the session between editor calls closes the native prompt and restores
+normal terminal input and the full scroll region. By default it clears only
+editable input rows, retains queue/status rows, and leaves the cursor at column
+zero on the current input row without adding a newline. Set
+`clear_prompt_on_exit = 1` to clear the whole prompt area and return below the
+transcript. Ending a stream while an editor is active keeps that editor, its
+prompt, and its scroll region running. Finish the external renderer first;
+an incomplete ANSI/UTF-8 sequence makes `output_stream_end()` fail with
+`SL_ERROR_INVALID` and leaves the session open for the missing bytes.
 
 Completed sessions retain their visible TTY rows. The next output starts on a
 fresh row if the previous session ended mid-row. Finite `print_above()` output
@@ -522,10 +566,11 @@ source exception for test tools recorded with versions, URLs and SHA-256 hashes
 in `cmake/terminal-tests/archives.json`, including their libc, compiler runtime
 and desktop library closure. Provisioning verifies every ELF dependency and
 imported libc symbol version is staged. Host GTK/GLib/X11 installs are not
-required. Configured CTest tests retain the prepared environment, including for
-direct `ctest --preset debug` runs. Terminal tools and the test interpreter run
-through the cached loader;
-fixture children, host build tools and shell utilities retain their own runtime.
+required. Configured CTest tests retain the prepared environment in the build's
+CMake cache, including after ordinary reconfiguration by `make build` or
+`make run-chat` and for direct `ctest --preset debug` runs. Terminal tools and
+the test interpreter run through the cached loader; fixture children, host
+build tools and shell utilities retain their own runtime.
 The staged Xvfb keyboard compiler lookup is relocated to the staged `PATH`;
 the verified archive remains immutable. Font caches and temporary test workspaces
 live under `build/terminal-test-tools`. `make test-terminal-cache` checks offline
@@ -534,6 +579,12 @@ rejection of missing runtime libraries or libc symbol versions.
 Transient archive transfer failures are retried up to three times; partial or
 unverified downloads never become cache entries. Other hosts retain existing
 native test-tool discovery.
+
+The compiled example-test runner uses a fresh private history directory under
+its configured build directory on every invocation, including direct and
+Valgrind runs. It overrides inherited `SOFTLINE_HISTORY_DIR` and does not touch
+the caller's normal chat history. These test stores remain available for
+diagnosis until `make clean`.
 
 Every project-owned C target is compiled as C89 with POSIX terminal APIs.
 Shared builds use `SOFTLINE_ABI_VERSION=0` for SONAME/SOVERSION during current
@@ -586,6 +637,11 @@ matrix may skip Darwin when osxcross is unavailable. `make release` is stricter:
 it requires the Darwin toolchain and a verified Darwin artifact, then creates
 and reconstructs the source archive; packaged Darwin artifacts require
 target-correct Mach-O inspection.
+
+osxcross discovery selects the newest complete `arm64-apple-darwin25.x`
+compiler prefix, including installations with only dotted executable names.
+`OSXCROSS_ROOT` selects the installation; `CPKT_OSXCROSS_HOST` pins an exact
+prefix and fails if its tools are missing instead of selecting another prefix.
 
 Linux clipboard protocol tests run without an X server. They check request and
 reply sequence wraparound, I/O failures, and byte preservation for a 17 MiB PNG
@@ -664,3 +720,61 @@ For a fuller status and gap list, see `docs/softline-spec.md`.
 softline no longer vendors linenoise as a separate source file, but its design
 and some code are derived from linenoise. The inherited BSD 2-Clause notice is
 included in `LICENSE`.
+
+## Persistent prompt history
+
+Persistence is opt-in per handle. Attach the native store with a stable,
+application-chosen key:
+
+```c
+int status = sl_history_open(sl, "my-app:project-id", NULL);
+/* Check status and report sl_last_error(sl) on failure. */
+/* Choose either manual history_add() or automatic editor recording. */
+sl_history_set_auto_add(sl, 1);
+```
+
+`history_open()` loads existing entries immediately and attaches synchronous
+append persistence. The exact nonempty key is hashed with SHA-256 into
+`$XDG_STATE_HOME/softline/history/<hash>.history`; an unset, empty or relative
+`XDG_STATE_HOME` falls back to `$HOME/.local/state`. Pass an absolute directory
+as the third argument to override the complete storage directory. Missing
+parents are created recursively with mode 0700; the store directory is private
+and files/lock files are 0600. Native store files must be regular, user-owned,
+not symlinks or hard links. No extra link dependency is required.
+
+Each prompt occupies one physical line: backslash, LF, CR and Tab are encoded
+as `\\`, `\n`, `\r` and `\t`; UTF-8 remains literal. Ctrl-J is LF, so it uses
+`\n`. Empty entries and consecutive duplicates are ignored. The retained cap
+bounds recall, not the append-only file. A zero cap disables recording entirely.
+
+`history_add()` appends immediately before returning. No exit-time save or
+per-entry fsync is performed. Same-key processes serialize writes through a
+stable flock lock file (also serializing independent handles in one process).
+An unfinished final record is ignored on load and removed
+before the next append. Other processes' writes appear on the next load, not
+live in another handle's recall list. `history_close()` detaches persistence
+without clearing recall. `history_compact()` explicitly retains the newest
+capped entries from the shared file under the same lock and replaces it
+atomically; it never writes a stale recall snapshot over another writer.
+
+For custom storage, call `history_set_backend(key, load, append, userdata)`.
+The optional load callback receives an emitter and supplies entries oldest
+first; the required append callback receives each accepted entry. Both return
+`SL_OK` or a negative status. Softline copies the key; userdata stays caller-owned
+until detach or destruction. Emitters and borrowed strings must not be retained.
+Imports bypass append. Attachment/load failure preserves the old backend and
+recall; append failure preserves recall, with external rollback owned by the
+backend. Do not reenter history methods or destroy the handle from either hook.
+The existing `history_load(filename)` also bypasses append; `history_save(filename)`
+is an explicit snapshot operation, not the native store's concurrency protocol.
+
+Automatic recording is disabled by default. `history_set_auto_add(1)` records
+accepted editor submissions and queue/steer drafts at acceptance. Queue delivery,
+promotion, Ctrl-R match selection, cancellation and rejected drafts do not
+append. Programmatic queue insert/replace needs explicit `history_add()`.
+Applications using auto-add must not add delivered queued entries again.
+
+Both C and Lua chat examples use the shared key `softline.examples.chat`, across
+all themes. `SOFTLINE_HISTORY_DIR` overrides their complete directory. Examples
+record accepted commands as well as ordinary prompts. For hooks and native
+storage in Lua, see [the Lua API](lua/README.md#persistent-history).

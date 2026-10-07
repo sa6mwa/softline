@@ -80,8 +80,39 @@ install_locked() {
   ready "$r" "$p" "$r/$sr" || die "incomplete extracted toolchain: $r"
 }
 ensure_linux() { local a n s p sr r; IFS='|' read -r a n s p sr r <<<"$(values "$1")"; ready "$r" "$p" "$r/$sr" || lock_run "$(cache_root)/locks/bootlin-$n.lock" install_locked "$1"; }
+darwin_tools_ready() {
+  local r=$1 p=$2 tool
+  for tool in clang clang++ ld ar ranlib strip nm otool install_name_tool; do
+    [[ -x "$r/bin/$p-$tool" ]] || return 1
+  done
+}
+darwin_prefix() {
+  local r=$1 cc p version
+  if [[ -n "${CPKT_OSXCROSS_HOST:-}" ]]; then
+    printf '%s\n' "$CPKT_OSXCROSS_HOST"
+    return
+  fi
+  # osxcross may provide only dotted, symlinked compiler names. Rank complete
+  # 25.x collections numerically; an unfinished newer install must not mask one.
+  for cc in "$r"/bin/arm64-apple-darwin25*-clang; do
+    p=${cc##*/}
+    p=${p%-clang}
+    version=${p#arm64-apple-darwin}
+    [[ "$version" =~ ^25(\.[0-9]+)*$ ]] || continue
+    if darwin_tools_ready "$r" "$p"; then
+      printf '%s\n' "$p"
+    fi
+  done | awk '{
+    version = $0
+    sub(/^arm64-apple-darwin/, "", version)
+    n = split(version, parts, ".")
+    key = ""
+    for (i = 1; i <= n; i++) key = key sprintf("%06d", parts[i])
+    print key "\t" $0
+  }' | sort -k1,1r | sed -n '1s/^[^\t]*\t//p'
+}
 darwin() {
-  local r="${OSXCROSS_ROOT:-${HOME:-}/.local/cross/osxcross}" p="${CPKT_OSXCROSS_HOST:-arm64-apple-darwin25}" tool sdk found_sdk=
+  local r="${OSXCROSS_ROOT:-${HOME:-}/.local/cross/osxcross}" p tool sdk found_sdk=
   local sdks=()
   printf 'target=arm64-apple-darwin\ncache=%s\nsource=osxcross\ndownloadable=no\n' "$(cache_root)"
   shopt -s nullglob
@@ -104,9 +135,14 @@ darwin() {
         sed -n '1s/^[^\t]*\t//p'
     )
   fi
-  if [[ -z "$found_sdk" ]]; then printf 'status=missing\nnote=Configure OSXCROSS_ROOT with a complete local osxcross SDK toolchain.\n'; return; fi
+  if [[ -z "$found_sdk" ]]; then printf 'status=missing\nnote=No MacOSX SDK found under %s/SDK.\n' "$r"; return; fi
+  p=$(darwin_prefix "$r")
+  if [[ -z "$p" ]]; then
+    printf 'status=missing\nnote=No complete Darwin 25.x compiler prefix found under %s/bin.\n' "$r"
+    return
+  fi
   for tool in clang clang++ ld ar ranlib strip nm otool install_name_tool; do
-    if [[ ! -x "$r/bin/$p-$tool" ]]; then printf 'status=missing\nnote=Configure OSXCROSS_ROOT with a complete local osxcross SDK toolchain.\n'; return; fi
+    if [[ ! -x "$r/bin/$p-$tool" ]]; then printf 'status=missing\nnote=Missing executable %s/bin/%s-%s.\n' "$r" "$p" "$tool"; return; fi
   done
   printf 'status=ready\nroot=%s\nprefix=%s\nsdk=%s\ncc=%s\ncxx=%s\nld=%s\nar=%s\nranlib=%s\nstrip=%s\nnm=%s\notool=%s\ninstall_name_tool=%s\n' "$r" "$p" "$found_sdk" "$r/bin/$p-clang" "$r/bin/$p-clang++" "$r/bin/$p-ld" "$r/bin/$p-ar" "$r/bin/$p-ranlib" "$r/bin/$p-strip" "$r/bin/$p-nm" "$r/bin/$p-otool" "$r/bin/$p-install_name_tool"
 }

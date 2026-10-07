@@ -27,6 +27,9 @@ typedef struct softline_lua_handle {
     int ref;
     int file_ref;
   } watches[SOFTLINE_LUA_MAX_WATCHES];
+  int history_callback_active;
+  lua_State *history_caller;
+  char history_callback_error[SOFTLINE_LUA_IDLE_ERROR_LEN];
   int idle_callback_ref;
   int idle_callback_active;
   int idle_callback_failed;
@@ -392,8 +395,11 @@ static int softline_lua_new(lua_State *L) {
   int i, rooted_template = 0;
   sl_config_init(&config);
   softline_lua_config(L, 1, &config, &rooted_template);
-  handle = (softline_lua_handle_t *)lua_newuserdatauv(L, sizeof(*handle), 0);
+  handle = (softline_lua_handle_t *)lua_newuserdatauv(L, sizeof(*handle), 1);
   handle->L = L;
+  handle->history_callback_active = 0;
+  handle->history_caller = NULL;
+  handle->history_callback_error[0] = '\0';
   for (i = 0; i < SOFTLINE_LUA_MAX_KEY_BINDINGS; i++) {
     handle->key_bindings[i].key = SL_KEY_NONE;
     handle->key_bindings[i].ref = LUA_NOREF;
@@ -422,7 +428,8 @@ static int softline_lua_gc(lua_State *L) {
   softline_lua_handle_t *handle;
   int i;
   handle = (softline_lua_handle_t *)luaL_checkudata(L, 1, SOFTLINE_LUA_HANDLE);
-  if (handle->idle_callback_active || handle->watch_callback_active)
+  if (handle->idle_callback_active || handle->watch_callback_active ||
+      handle->history_callback_active)
     return 0;
   for (i = 0; i < SOFTLINE_LUA_MAX_KEY_BINDINGS; i++) {
     if (handle->key_bindings[i].ref != LUA_NOREF) {
@@ -437,6 +444,8 @@ static int softline_lua_gc(lua_State *L) {
   for (i = 0; i < SOFTLINE_LUA_MAX_WATCHES; i++) {
     softline_lua_release_watch_ref(L, handle, i);
   }
+  lua_pushnil(L);
+  lua_setiuservalue(L, 1, 1);
   if (handle->sl) {
     sl_destroy(handle->sl);
     handle->sl = NULL;
@@ -447,7 +456,8 @@ static int softline_lua_gc(lua_State *L) {
 static int softline_lua_close(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = (softline_lua_handle_t *)luaL_checkudata(L, 1, SOFTLINE_LUA_HANDLE);
-  if (handle->idle_callback_active || handle->watch_callback_active)
+  if (handle->idle_callback_active || handle->watch_callback_active ||
+      handle->history_callback_active)
     return luaL_error(L, "cannot close softline handle from its callback");
   return softline_lua_gc(L);
 }
@@ -457,13 +467,18 @@ static int softline_lua_close(lua_State *L) {
  * preserving OPOST/ONLCR; original terminal flags are restored on release. */
 static int softline_lua_readline(lua_State *L) {
   softline_lua_handle_t *handle;
+  lua_State *previous;
   const char *prompt;
   char *line;
   handle = softline_lua_check(L, 1);
   prompt = luaL_optstring(L, 2, NULL);
   softline_lua_clear_idle_error(handle);
   softline_lua_clear_watch_error(handle);
+  handle->history_callback_error[0] = '\0';
+  previous = handle->history_caller;
+  handle->history_caller = L;
   line = sl_readline(handle->sl, prompt);
+  handle->history_caller = previous;
   if (handle->idle_callback_failed || handle->watch_callback_failed) {
     if (line)
       sl_free_string(handle->sl, line);
@@ -474,6 +489,10 @@ static int softline_lua_readline(lua_State *L) {
   if (!line) {
     lua_pushnil(L);
     lua_pushinteger(L, sl_last_readline_status(handle->sl));
+    if (handle->history_callback_error[0]) {
+      lua_pushstring(L, handle->history_callback_error);
+      return 3;
+    }
     return 2;
   }
   lua_pushstring(L, line);
@@ -483,6 +502,7 @@ static int softline_lua_readline(lua_State *L) {
 
 static int softline_lua_next_prompt(lua_State *L) {
   softline_lua_handle_t *handle;
+  lua_State *previous;
   const char *prompt;
   char *line;
   sl_prompt_source_t source;
@@ -490,8 +510,12 @@ static int softline_lua_next_prompt(lua_State *L) {
   prompt = luaL_optstring(L, 2, NULL);
   softline_lua_clear_idle_error(handle);
   softline_lua_clear_watch_error(handle);
+  handle->history_callback_error[0] = '\0';
   source = SL_PROMPT_SOURCE_NONE;
+  previous = handle->history_caller;
+  handle->history_caller = L;
   line = sl_next_prompt(handle->sl, prompt, &source);
+  handle->history_caller = previous;
   if (handle->idle_callback_failed || handle->watch_callback_failed) {
     if (line)
       sl_free_string(handle->sl, line);
@@ -502,6 +526,10 @@ static int softline_lua_next_prompt(lua_State *L) {
   if (!line) {
     lua_pushnil(L);
     lua_pushinteger(L, sl_last_readline_status(handle->sl));
+    if (handle->history_callback_error[0]) {
+      lua_pushstring(L, handle->history_callback_error);
+      return 3;
+    }
     return 2;
   }
   lua_pushstring(L, line);
@@ -510,13 +538,227 @@ static int softline_lua_next_prompt(lua_State *L) {
   return 2;
 }
 
-static int softline_lua_history_add(lua_State *L) {
-  softline_lua_handle_t *handle;
-  handle = softline_lua_check(L, 1);
-  return softline_lua_status(
-      L, sl_history_add(handle->sl, luaL_checkstring(L, 2)));
+static const char *softline_lua_history_string(lua_State *L, int index) {
+  size_t len;
+  const char *text = luaL_checklstring(L, index, &len);
+  luaL_argcheck(L, strlen(text) == len, index,
+                "history strings cannot contain NUL");
+  return text;
 }
 
+typedef struct softline_lua_history_emit {
+  sl_history_emit_t emit;
+  void *context;
+  int active;
+} softline_lua_history_emit_t;
+
+/* The emitter is rooted userdata, so a Lua backend retaining its closure gets
+ * a controlled error after load rather than a dangling C stack pointer. */
+static int softline_lua_history_emit(lua_State *L) {
+  softline_lua_history_emit_t *state;
+  const char *line;
+  size_t len;
+  state = (softline_lua_history_emit_t *)lua_touserdata(L, lua_upvalueindex(1));
+  if (!state->active)
+    return luaL_error(L, "history emitter is only valid during load");
+  line = luaL_checklstring(L, 1, &len);
+  if (strlen(line) != len)
+    return softline_lua_status(L, state->emit(state->context, NULL));
+  return softline_lua_status(L, state->emit(state->context, line));
+}
+
+static int softline_lua_history_call(softline_lua_handle_t *handle,
+                                     const char *key, const char *prompt,
+                                     sl_history_emit_t emit, void *context) {
+  lua_State *L = handle->history_caller;
+  softline_lua_history_emit_t *state;
+  int top, status;
+  if (!L)
+    return SL_ERROR_INVALID;
+  top = lua_gettop(L);
+  state = NULL;
+  if (emit) {
+    state =
+        (softline_lua_history_emit_t *)lua_newuserdatauv(L, sizeof(*state), 0);
+    state->emit = emit;
+    state->context = context;
+    state->active = 1;
+  }
+  /* The synchronous caller keeps its receiver at index one. Use its current
+   * coroutine, never the constructor's state (which may already be collected).
+   * Hooks live in the receiver's uservalue, so captured handles are
+   * collectable. Each entry point scopes/restores history_caller across nested
+   * facade calls.
+   */
+  lua_getiuservalue(L, 1, 1);
+  lua_getfield(L, -1, emit ? "load" : "append");
+  lua_remove(L, -2);
+  lua_pushstring(L, key);
+  if (emit) {
+    lua_pushvalue(L, top + 1);
+    lua_pushcclosure(L, softline_lua_history_emit, 1);
+  } else {
+    lua_pushstring(L, prompt);
+  }
+  /* Automatic recording can invoke another hook within the same editor call.
+   * Each invocation owns its diagnostic, including status-only failures. */
+  handle->history_callback_error[0] = '\0';
+  handle->history_callback_active = 1;
+  status = SL_OK;
+  if (lua_pcall(L, 2, 2, 0) != LUA_OK) {
+    const char *message = lua_tostring(L, -1);
+    snprintf(handle->history_callback_error,
+             sizeof(handle->history_callback_error), "%s",
+             message ? message : "history callback failed");
+    status = SL_ERROR;
+  } else if (!lua_isboolean(L, -2) || !lua_toboolean(L, -2)) {
+    status = lua_isinteger(L, -1) && lua_tointeger(L, -1) < 0
+                 ? (int)lua_tointeger(L, -1)
+                 : SL_ERROR;
+  }
+  handle->history_callback_active = 0;
+  if (state) {
+    state->active = 0;
+    state->context = NULL;
+  }
+  lua_settop(L, top);
+  return status;
+}
+
+static int softline_lua_history_load_hook(const char *key,
+                                          sl_history_emit_t emit, void *context,
+                                          void *userdata) {
+  return softline_lua_history_call((softline_lua_handle_t *)userdata, key, NULL,
+                                   emit, context);
+}
+
+static int softline_lua_history_append_hook(const char *key, const char *prompt,
+                                            void *userdata) {
+  return softline_lua_history_call((softline_lua_handle_t *)userdata, key,
+                                   prompt, NULL, NULL);
+}
+
+static int softline_lua_history_status(lua_State *L,
+                                       softline_lua_handle_t *handle,
+                                       int status) {
+  int results = softline_lua_status(L, status);
+  if (status != SL_OK && handle->history_callback_error[0]) {
+    lua_pushstring(L, handle->history_callback_error);
+    /* Lua owns the returned message. It must not also become the diagnostic
+     * for an enclosing editor's later cancellation, EOF or unrelated error. */
+    handle->history_callback_error[0] = '\0';
+    results++;
+  }
+  return results;
+}
+
+/** Lua history_set_backend(key, {load=function(key, emit), append=function(key,
+ * prompt)}): callbacks return true or nil, negative status. Load may be absent.
+ * Load is synchronous and transactional; append runs before history_add
+ * returns in the calling coroutine. Callback exceptions become nil, status,
+ * message, never escape C frames. Diagnostics belong to that hook invocation;
+ * later status-only failures do not repeat previously handled exceptions. */
+static int softline_lua_history_set_backend(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  const char *key;
+  lua_State *previous;
+  int has_load, status;
+  key = softline_lua_history_string(L, 2);
+  luaL_checktype(L, 3, LUA_TTABLE);
+  lua_getfield(L, 3, "load");
+  has_load = !lua_isnil(L, -1);
+  if (has_load)
+    luaL_checktype(L, -1, LUA_TFUNCTION);
+  lua_pop(L, 1);
+  lua_getfield(L, 3, "append");
+  luaL_checktype(L, -1, LUA_TFUNCTION);
+  lua_pop(L, 1);
+  if (handle->history_callback_active)
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  handle->history_callback_error[0] = '\0';
+  lua_getiuservalue(L, 1,
+                    1); /* Preserve the old hooks until attachment succeeds. */
+  lua_newtable(L);
+  lua_getfield(L, 3, "load");
+  lua_setfield(L, -2, "load");
+  lua_getfield(L, 3, "append");
+  lua_setfield(L, -2, "append");
+  lua_setiuservalue(L, 1, 1);
+  previous = handle->history_caller;
+  handle->history_caller = L;
+  status = sl_history_set_backend(
+      handle->sl, key, has_load ? softline_lua_history_load_hook : NULL,
+      softline_lua_history_append_hook, handle);
+  handle->history_caller = previous;
+  if (status == SL_OK)
+    lua_pop(L, 1);
+  else
+    lua_setiuservalue(L, 1, 1);
+  return softline_lua_history_status(L, handle, status);
+}
+
+/** Lua history_open(key, directory=nil): XDG state keyed append store; no
+ * auto-add unless explicitly enabled. Missing history is empty; torn tails
+ * are discarded, private files are locked, and errors return nil, status. */
+static int softline_lua_history_open(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  int status = sl_history_open(
+      handle->sl, softline_lua_history_string(L, 2),
+      lua_isnoneornil(L, 3) ? NULL : softline_lua_history_string(L, 3));
+  if (status == SL_OK) {
+    lua_pushnil(L);
+    lua_setiuservalue(L, 1, 1);
+  }
+  return softline_lua_status(L, status);
+}
+
+/** Lua history_close(): detach without an exit-time save; retained history
+ * and editor auto-add policy survive. */
+static int softline_lua_history_close(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  int status = sl_history_close(handle->sl);
+  if (status == SL_OK) {
+    lua_pushnil(L);
+    lua_setiuservalue(L, 1, 1);
+  }
+  return softline_lua_status(L, status);
+}
+
+/** Lua history_compact(): reread native shared storage under the key lock,
+ * retain the newest capped entries, and atomically replace its file. */
+static int softline_lua_history_compact(lua_State *L) {
+  return softline_lua_status(L,
+                             sl_history_compact(softline_lua_check(L, 1)->sl));
+}
+
+/** Lua history_set_auto_add(enabled): opt in to immediate recording of accepted
+ * editor/queued drafts; delivery, promotion and Ctrl-R selection do not append.
+ */
+static int softline_lua_history_set_auto_add(lua_State *L) {
+  return softline_lua_status(
+      L, sl_history_set_auto_add(softline_lua_check(L, 1)->sl,
+                                 lua_toboolean(L, 2)));
+}
+
+/** Lua history_add(prompt): immediate append on acceptance; empty/consecutive
+ * duplicates are skipped and a failed append leaves recall unchanged. */
+static int softline_lua_history_add(lua_State *L) {
+  softline_lua_handle_t *handle;
+  lua_State *previous;
+  const char *prompt;
+  int status;
+  handle = softline_lua_check(L, 1);
+  prompt = softline_lua_history_string(L, 2);
+  if (!handle->history_callback_active)
+    handle->history_callback_error[0] = '\0';
+  previous = handle->history_caller;
+  handle->history_caller = L;
+  status = sl_history_add(handle->sl, prompt);
+  handle->history_caller = previous;
+  return softline_lua_history_status(L, handle, status);
+}
+
+/** Lua history_set_max_len(cap): bound recall; zero disables recording. */
 static int softline_lua_history_set_max_len(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -524,6 +766,8 @@ static int softline_lua_history_set_max_len(lua_State *L) {
       L, sl_history_set_max_len(handle->sl, (int)luaL_checkinteger(L, 2)));
 }
 
+/** Lua history_save(filename): overwrite an escaped snapshot, independently
+ * of native locking. Do not overwrite an attached shared native store. */
 static int softline_lua_history_save(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -531,6 +775,8 @@ static int softline_lua_history_save(lua_State *L) {
       L, sl_history_save(handle->sl, luaL_checkstring(L, 2)));
 }
 
+/** Lua history_load(filename): import an escaped snapshot without append hooks.
+ * LF, CR, Tab and backslashes round-trip; Unicode stays literal UTF-8. */
 static int softline_lua_history_load(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -704,8 +950,16 @@ static int softline_lua_queue_clear(lua_State *L) {
 
 static int softline_lua_queue_draft(lua_State *L) {
   softline_lua_handle_t *handle;
+  lua_State *previous;
+  int status;
   handle = softline_lua_check(L, 1);
-  return softline_lua_status(L, sl_prompt_queue_enqueue_draft(handle->sl));
+  if (!handle->history_callback_active)
+    handle->history_callback_error[0] = '\0';
+  previous = handle->history_caller;
+  handle->history_caller = L;
+  status = sl_prompt_queue_enqueue_draft(handle->sl);
+  handle->history_caller = previous;
+  return softline_lua_history_status(L, handle, status);
 }
 
 static int softline_lua_set_queue_delivery(lua_State *L) {
@@ -977,6 +1231,17 @@ static int softline_lua_set_buffer(lua_State *L) {
                              sl_set_buffer(handle->sl, luaL_checkstring(L, 2)));
 }
 
+/** Lua history_search_active(): boolean editor search mode, also for failed
+ * matches. False after selection, cancellation or editor exit. Read-only on
+ * the editor-owner thread. Key callbacks run before built-in handling; return
+ * KEY_ACTION_PASS during search to allow editable selection before guarding
+ * submissions. */
+static int softline_lua_history_search_active(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  lua_pushboolean(L, sl_history_search_active(handle->sl));
+  return 1;
+}
+
 static int softline_lua_buffer(lua_State *L) {
   softline_lua_handle_t *handle;
   const char *buffer;
@@ -1012,6 +1277,9 @@ static int softline_lua_cancel(lua_State *L) {
   return softline_lua_status(L, sl_cancel(handle->sl));
 }
 
+/** Lua editor:bind_key(key, callback) overrides built-in handling. An Enter
+ * callback returning KEY_ACTION_SUBMIT submits a reverse-search match
+ * immediately; the default Enter accepts it into the editable prompt. */
 static int softline_lua_bind_key(lua_State *L) {
   softline_lua_handle_t *handle;
   sl_key_t key;
@@ -1257,6 +1525,9 @@ static int softline_lua_print_above(lua_State *L) {
 }
 
 /** Lua editor:output_stream_begin(): open one renderer-agnostic session.
+ * Reopening a closed native session probes the cursor again. A nonzero column
+ * restarts quote separation for an unfinished externally written line;
+ * otherwise known spacing remains. An editor retains its continuation state.
  * The transcript starts at the original cursor; the prompt starts at the
  * bottom and follows native resize. Its actual position sets the output margin.
  * A clipped unfinished line resumes at the first visible output row without
@@ -1324,8 +1595,15 @@ static int softline_lua_output_stream_write_quoted_prompt(lua_State *L) {
 
 /** Lua editor:output_stream_end(): end the producer session without finishing
  * an external renderer document. An active editor retains its prompt and
- * scroll region. Otherwise native chat closes using clear_prompt_on_exit.
- * Incomplete ANSI/UTF-8 fails and leaves the session open. */
+ * scroll region. Otherwise native chat closes and releases terminal input.
+ * By default, clear editable input rows, retain queue/status rows and return
+ * at column zero on the current input row without a newline or scroll.
+ * clear_prompt_on_exit=true clears the whole prompt area and returns below
+ * output. Between editor calls, outside callbacks, a foreground child may
+ * run before output_stream_begin() probes a fresh cursor and builds a new
+ * prompt, retaining handle history and settings. The application owns child
+ * execution. Incomplete ANSI/UTF-8 returns nil, ERROR_INVALID and leaves the
+ * session open for the missing bytes. */
 static int softline_lua_output_stream_end(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = softline_lua_check(L, 1);
@@ -1339,6 +1617,11 @@ static const luaL_Reg softline_lua_methods[] = {
     {"history_set_max_len", softline_lua_history_set_max_len},
     {"history_save", softline_lua_history_save},
     {"history_load", softline_lua_history_load},
+    {"history_set_backend", softline_lua_history_set_backend},
+    {"history_open", softline_lua_history_open},
+    {"history_close", softline_lua_history_close},
+    {"history_compact", softline_lua_history_compact},
+    {"history_set_auto_add", softline_lua_history_set_auto_add},
     {"set_screen_width", softline_lua_set_screen_width},
     {"set_live_scroll_region", softline_lua_set_live_scroll_region},
     {"set_image_paste_path_template",
@@ -1376,6 +1659,7 @@ static const luaL_Reg softline_lua_methods[] = {
     {"insert", softline_lua_insert},
     {"set_buffer", softline_lua_set_buffer},
     {"buffer", softline_lua_buffer},
+    {"history_search_active", softline_lua_history_search_active},
     {"cursor", softline_lua_cursor},
     {"set_cursor", softline_lua_set_cursor},
     {"submit", softline_lua_submit},

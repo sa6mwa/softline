@@ -4113,18 +4113,28 @@ static void test_ctrl_r_searches_memory_history(void) {
   history[1] = "beta build";
   history[2] = "gamma deploy";
   TEST("Ctrl-R searches in-memory history newest first");
-  ASSERT_TRUE(run_pty_history_case("\022deploy\r", history, 3, terminal,
-                                   sizeof(terminal), result, sizeof(result),
-                                   &status) == 0,
+  ASSERT_TRUE(run_pty_history_case("\022deploy\r edited\r", history, 3,
+                                   terminal, sizeof(terminal), result,
+                                   sizeof(result), &status) == 0,
               "history search case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child editor failed");
-  ASSERT_TRUE(strcmp(result, "gamma deploy") == 0,
-              "newest matching history entry was not submitted");
+  ASSERT_TRUE(strcmp(result, "gamma deploy edited") == 0,
+              "history match was submitted before it could be edited");
   ASSERT_TRUE(contains_bytes(terminal, "(r-search)`deploy': "),
               "reverse search prompt missing");
   ASSERT_TRUE(contains_bytes(terminal, "gamma deploy"),
               "matching history entry was not rendered");
+  PASS();
+
+  TEST("Ctrl-R accepts history for editing with prompt queue enabled");
+  ASSERT_TRUE(run_pty_history_case_with_options(
+                  "\022deploy\r!\r", history, 3, NULL, 20, 0, 1, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
+              "queued history search case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  strcmp(result, "gamma deploy!") == 0,
+              "queue-enabled search submitted history before editing");
   PASS();
 }
 
@@ -4139,7 +4149,7 @@ static void test_ctrl_r_repeats_and_wraps_matches(void) {
   history[1] = "beta deploy";
   history[2] = "gamma deploy";
   TEST("Ctrl-R repeats cycle older matches and wrap");
-  ASSERT_TRUE(run_pty_history_case("\022deploy\022\r", history, 3, terminal,
+  ASSERT_TRUE(run_pty_history_case("\022deploy\022\r\r", history, 3, terminal,
                                    sizeof(terminal), result, sizeof(result),
                                    &status) == 0,
               "repeat history search case failed");
@@ -4148,7 +4158,7 @@ static void test_ctrl_r_repeats_and_wraps_matches(void) {
   ASSERT_TRUE(strcmp(result, "beta deploy") == 0,
               "repeat did not select older match");
 
-  ASSERT_TRUE(run_pty_history_case("\022deploy\022\022\022\r", history, 3,
+  ASSERT_TRUE(run_pty_history_case("\022deploy\022\022\022\r\r", history, 3,
                                    terminal, sizeof(terminal), result,
                                    sizeof(result), &status) == 0,
               "wrapped repeat history search case failed");
@@ -4159,7 +4169,7 @@ static void test_ctrl_r_repeats_and_wraps_matches(void) {
 
   single_history[0] = "alpha deploy";
   single_history[1] = "beta build";
-  ASSERT_TRUE(run_pty_history_case("\022deploy\022\r", single_history, 2,
+  ASSERT_TRUE(run_pty_history_case("\022deploy\022\r\r", single_history, 2,
                                    terminal, sizeof(terminal), result,
                                    sizeof(result), &status) == 0,
               "single-match repeat history search case failed");
@@ -4178,15 +4188,15 @@ static void test_ctrl_r_no_match_and_cancel_restore_draft(void) {
 
   history[0] = "alpha";
   history[1] = "beta";
-  TEST("Ctrl-R no-match submit preserves draft");
-  ASSERT_TRUE(run_pty_history_case("draft\022zzz\r", history, 2, terminal,
-                                   sizeof(terminal), result, sizeof(result),
-                                   &status) == 0,
+  TEST("Ctrl-R no-match accept leaves draft editable");
+  ASSERT_TRUE(run_pty_history_case("draft\022zzz\r edited\r", history, 2,
+                                   terminal, sizeof(terminal), result,
+                                   sizeof(result), &status) == 0,
               "no-match history search case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "no-match child editor failed");
-  ASSERT_TRUE(strcmp(result, "draft") == 0,
-              "no-match search did not preserve draft");
+  ASSERT_TRUE(strcmp(result, "draft edited") == 0,
+              "no-match search did not preserve an editable draft");
   ASSERT_TRUE(contains_bytes(terminal, "(failed)`zzz': "),
               "failed reverse search prompt missing");
   PASS();
@@ -4199,6 +4209,16 @@ static void test_ctrl_r_no_match_and_cancel_restore_draft(void) {
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "cancel child editor failed");
   ASSERT_TRUE(strcmp(result, "draft") == 0, "cancel did not restore draft");
+  PASS();
+
+  TEST("Ctrl-R with empty history leaves draft editable after Enter");
+  ASSERT_TRUE(run_pty_history_case("draft\022\r edited\r", NULL, 0, terminal,
+                                   sizeof(terminal), result, sizeof(result),
+                                   &status) == 0,
+              "empty history search case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  strcmp(result, "draft edited") == 0,
+              "empty history search submitted the draft");
   PASS();
 }
 
@@ -4219,14 +4239,14 @@ static void test_ctrl_r_searches_loaded_history_file(void) {
               "write history file failed");
   close(fd);
   history[0] = "memory deploy";
-  ASSERT_TRUE(run_pty_history_case_with_file("\022file\r", history, 1, file,
-                                             terminal, sizeof(terminal), result,
-                                             sizeof(result), &status) == 0,
+  ASSERT_TRUE(run_pty_history_case_with_file(
+                  "\022file\r edited\r", history, 1, file, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0,
               "loaded history search case failed");
   unlink(file);
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "loaded history child editor failed");
-  ASSERT_TRUE(strcmp(result, "file deploy") == 0,
+  ASSERT_TRUE(strcmp(result, "file deploy edited") == 0,
               "loaded file history match mismatch");
   PASS();
 }
@@ -4246,23 +4266,23 @@ static void test_ctrl_r_searches_unicode_and_multiline_history(void) {
   ASSERT_TRUE(write(fd, data, strlen(data)) == (ssize_t)strlen(data),
               "write unicode history file failed");
   close(fd);
-  ASSERT_TRUE(run_pty_history_case_with_file("\022\303\244\r", NULL, 0, file,
+  ASSERT_TRUE(run_pty_history_case_with_file("\022\303\244\r!\r", NULL, 0, file,
                                              terminal, sizeof(terminal), result,
                                              sizeof(result), &status) == 0,
               "unicode history search case failed");
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "unicode history child editor failed");
-  ASSERT_TRUE(strcmp(result, "unicode \303\245\303\244\303\266") == 0,
+  ASSERT_TRUE(strcmp(result, "unicode \303\245\303\244\303\266!") == 0,
               "unicode history match mismatch");
 
-  ASSERT_TRUE(run_pty_history_case_with_file("\022tail\r", NULL, 0, file,
+  ASSERT_TRUE(run_pty_history_case_with_file("\022tail\r!\r", NULL, 0, file,
                                              terminal, sizeof(terminal), result,
                                              sizeof(result), &status) == 0,
               "multiline history search case failed");
   unlink(file);
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "multiline history child editor failed");
-  ASSERT_TRUE(strcmp(result, "head\ntail") == 0,
+  ASSERT_TRUE(strcmp(result, "head\ntail!") == 0,
               "multiline history match mismatch");
   PASS();
 }
@@ -9166,7 +9186,26 @@ static void test_multiline_stream_end_preserves_transcript_position(void) {
   PASS();
 }
 
-static void test_live_output_preserves_reverse_search_prompt(void) {
+struct history_search_key_state {
+  int enter_count;
+  int submit_binding;
+};
+
+static int history_search_enter_key(sl_t *sl, sl_key_t key, void *userdata,
+                                    sl_key_action_t *action) {
+  struct history_search_key_state *state =
+      (struct history_search_key_state *)userdata;
+  (void)key;
+  if (sl_history_search_active(sl) != (state->enter_count == 0) ||
+      sl->history_search_active(sl) != (state->enter_count == 0))
+    return SL_ERROR;
+  state->enter_count++;
+  *action = state->submit_binding ? SL_KEY_ACTION_SUBMIT : SL_KEY_ACTION_PASS;
+  return SL_OK;
+}
+
+static void
+test_live_output_preserves_reverse_search_prompt(int submit_binding) {
   struct winsize ws;
   struct vt_screen screen;
   int master_fd;
@@ -9184,7 +9223,9 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
   int status;
   int tries;
 
-  TEST("live output preserves reverse-search prompt and stable history");
+  TEST(submit_binding
+           ? "Enter binding can submit a live history match immediately"
+           : "live history match stays editable after Enter");
   memset(&ws, 0, sizeof(ws));
   ws.ws_col = 16;
   ws.ws_row = 6;
@@ -9199,6 +9240,7 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
     sl_t *sl;
     sl_watch_id_t watch_id;
     struct live_output_test_state state;
+    struct history_search_key_state key_state;
     char *line;
     close(master_fd);
     close(wake_pipe[1]);
@@ -9210,13 +9252,21 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
     if (!sl || sl_history_add(sl, "alpha") != SL_OK ||
         sl_output_stream_begin(sl) != SL_OK)
       _exit(2);
+    key_state.enter_count = 0;
+    key_state.submit_binding = submit_binding;
+    if (sl_history_search_active(NULL) || sl_history_search_active(sl) ||
+        sl->history_search_active(sl) ||
+        sl_bind_key(sl, SL_KEY_ENTER, history_search_enter_key, &key_state) !=
+            SL_OK)
+      _exit(6);
     state.fd = wake_pipe[0];
     watch_id = 0;
     if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ, live_output_test_watch,
                      &state, &watch_id) != SL_OK)
       _exit(3);
     line = sl_readline(sl, "chat> ");
-    if (!line)
+    if (!line || sl_history_search_active(sl) ||
+        key_state.enter_count != (submit_binding ? 1 : 2))
       _exit(4);
     (void)write(result_pipe[1], line, strlen(line));
     sl_free_string(sl, line);
@@ -9270,7 +9320,27 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
   vt_apply(&screen, terminal);
   ASSERT_TRUE(screen.history_count == history_before,
               "live output moved or replaced the reverse-search prompt");
-  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "search submit failed");
+  output_mark = terminal_len;
+  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "search accept failed");
+  if (!submit_binding) {
+    for (tries = 0;
+         tries < 10 && !contains_bytes(terminal + output_mark, "chat> ");
+         tries++) {
+      n = read_some_with_timeout(master_fd, chunk, sizeof(chunk));
+      ASSERT_TRUE(n > 0, "ordinary prompt missing after accepting history");
+      append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), chunk,
+                            n);
+    }
+    ASSERT_TRUE(contains_bytes(terminal + output_mark, "chat> "),
+                "history accept did not restore the ordinary prompt");
+    ASSERT_TRUE(read_some_with_timeout_ms(result_pipe[0], result,
+                                          sizeof(result), 50) == 0,
+                "history accept submitted the prompt");
+    ASSERT_TRUE(
+        write(master_fd, "\001edited \005!\r", strlen("\001edited \005!\r")) ==
+            (ssize_t)strlen("\001edited \005!\r"),
+        "editing accepted history failed");
+  }
   n = read_some_with_timeout(result_pipe[0], result, sizeof(result) - 1);
   ASSERT_TRUE(n > 0, "search result missing");
   result[n] = '\0';
@@ -9281,7 +9351,8 @@ static void test_live_output_preserves_reverse_search_prompt(void) {
   ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "search child wait failed");
   close(master_fd);
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
-                  strcmp(result, "alpha") == 0,
+                  strcmp(result, submit_binding ? "alpha" : "edited alpha!") ==
+                      0,
               "reverse search result changed after live output");
   PASS();
 }
@@ -10012,7 +10083,9 @@ static void test_live_output_clears_promptless_scroll_row(void) {
 }
 
 #else
-static void test_live_output_preserves_reverse_search_prompt(void) {
+static void
+test_live_output_preserves_reverse_search_prompt(int submit_binding) {
+  (void)submit_binding;
   TEST("live output preserves reverse-search prompt and stable history");
   printf("SKIP\n");
   tests_passed++;
@@ -10443,7 +10516,13 @@ int main(int argc, char **argv) {
   printf("softline unit tests\n");
   printf("===================\n\n");
   if (argc == 2 && strcmp(argv[1], "reverse-search") == 0) {
-    test_live_output_preserves_reverse_search_prompt();
+    test_ctrl_r_searches_memory_history();
+    test_ctrl_r_repeats_and_wraps_matches();
+    test_ctrl_r_no_match_and_cancel_restore_draft();
+    test_ctrl_r_searches_loaded_history_file();
+    test_ctrl_r_searches_unicode_and_multiline_history();
+    test_live_output_preserves_reverse_search_prompt(0);
+    test_live_output_preserves_reverse_search_prompt(1);
     return tests_passed == tests_run ? 0 : 1;
   }
   if (argc == 2 && strcmp(argv[1], "native") == 0) {
@@ -10577,7 +10656,8 @@ int main(int argc, char **argv) {
   test_unbounded_stream_then_readline_preserves_transcript();
   test_finite_output_then_readline_preserves_transcript();
   test_multiline_stream_end_preserves_transcript_position();
-  test_live_output_preserves_reverse_search_prompt();
+  test_live_output_preserves_reverse_search_prompt(0);
+  test_live_output_preserves_reverse_search_prompt(1);
   test_live_output_after_readline_submit_clears_editor();
   test_retained_stream_tracks_readline_scrollback();
   test_retained_stream_survives_prompt_growth();

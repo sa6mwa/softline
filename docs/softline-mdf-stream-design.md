@@ -10,7 +10,7 @@ Only the chat examples and integration tests depend on libmdf. A released
 libsoftline, its Lua facade, headers, CMake exports, and package metadata have
 no libmdf dependency.
 
-libmdf 0.13.0 has incremental feed, a bound sink, and in-document width and
+libmdf 0.14.0 has incremental feed, a bound sink, and in-document width and
 margin changes through `set_geometry()`. The chat composer updates both
 renderer geometries on the Softline owner thread before feeding later
 Markdown; Softline reads the terminal dimensions for its native prompt.
@@ -20,7 +20,7 @@ Softline nor the examples recreate or replay an unfinished Markdown document.
 Softline never infers libmdf margins. The example supplies its borrowed stdout
 fd to libmdf's destination-aware ANSI AUTO policy: terminal output is themed,
 and redirected output is escape-free. Renderer handles are rebuilt against
-libmdf 0.13.0's options layout; this private example dependency does not change
+libmdf 0.14.0's options layout; this private example dependency does not change
 Softline ABI 0.
 
 ## Generic Softline output session
@@ -268,16 +268,26 @@ sequence, `single` can disappear from `A single line can be italic, bold, or
 code.` No transcript replay, feed wait or terminal-specific workaround is
 introduced to conceal this race.
 
-The standard VTE streaming resize check pauses only its private example
-worker at each resize boundary and drains pending writes before resizing.
+The standard VTE streaming resize check pauses its private example worker
+and freezes the editor at an acknowledged idle poll while the physical
+resize is applied. It drains the completed frame, then resumes the editor
+before asserting prompt reconciliation; the worker stays paused until that
+check passes. The spinner is also a terminal writer, so pausing only the
+worker did not establish a settled resize boundary: a status repaint could
+cross GTK allocation and overwrite the input row. No production timing,
+buffering or repaint behavior is changed by this fixture coordination.
 It verifies continuation, prompt placement and unchanged transcript cells
 once the terminal geometry agrees with the PTY. `--streaming-race` retains
 the unpaused diagnostic; passing that diagnostic does not prove race-free
 VT output. The separately paced tmux check has the same scope restriction.
 The themed width-sweep gate likewise pauses its private producer during each
-sweep; `check_chat_width_resize.py --resize-race` (after its normal arguments)
-retains the unpaused width diagnostic. Both use the same private-worker pause
-helper and leave the editable prompt live.
+sweep and freezes the editor only for each physical allocation, resuming it
+before checking prompt updates. `check_chat_width_resize.py --resize-race`
+(after its normal arguments) retains the unpaused width diagnostic. Both
+diagnostic modes leave the worker and editor running. The shared coordination
+helper has explicit stop/poll and input barriers, including pending replies
+needed to finish a frame, with resume checks after resize/drain failures.
+Input responsiveness is tested with the editor running.
 
 ### Review exception: unobserved retained-frame resize
 

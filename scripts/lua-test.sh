@@ -49,6 +49,13 @@ export CC LD AR RANLIB SOFTLINE_LUA_CC
 
 SOFTLINE_LUA_ENV="$("${ROOT_DIR}/scripts/lua-env.sh")"
 eval "${SOFTLINE_LUA_ENV}"
+mkdir -p "${ROOT_DIR}/build/lua-test-history"
+SOFTLINE_HISTORY_DIR="${ROOT_DIR}/build/lua-test-history"
+export SOFTLINE_HISTORY_DIR
+lua "${ROOT_DIR}/tests/lua_history.lua" "${ROOT_DIR}/build"
+printf 'auto\nreadline\n' | lua "${ROOT_DIR}/tests/lua_history_auto.lua"
+python3 "${ROOT_DIR}/tests/lua_history_editor.py" "$(command -v lua)"
+python3 "${ROOT_DIR}/tests/check_chat_history.py" lua "$(command -v lua)" "${ROOT_DIR}/build"
 lua "${ROOT_DIR}/tests/lua_runtime.lua"
 lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
 lua "${ROOT_DIR}/tests/lua_smoke.lua"
@@ -67,6 +74,7 @@ esac
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_ctrl_c.py" "${ROOT_DIR}"
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_mixed_tty.py" "${ROOT_DIR}"
 SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_watch.py" "${ROOT_DIR}"
+python3 "${ROOT_DIR}/tests/check_chat_shell.py" lua "$(command -v lua)" "${ROOT_DIR}/build"
 python3 "${ROOT_DIR}/tests/lua_live_output.py" "${ROOT_DIR}"
 python3 "${ROOT_DIR}/tests/lua_idle_callback.py" "${ROOT_DIR}"
 python3 "${ROOT_DIR}/tests/lua_watch_file_gc.py" "${ROOT_DIR}"

@@ -39,6 +39,13 @@ eval "${SOFTLINE_LUA_ENV}"
 
 case "${MODE}" in
   test)
+    mkdir -p "${ROOT_DIR}/build/lua-debug-history"
+    SOFTLINE_HISTORY_DIR="${ROOT_DIR}/build/lua-debug-history"
+    export SOFTLINE_HISTORY_DIR
+    lua "${ROOT_DIR}/tests/lua_history.lua" "${ROOT_DIR}/build"
+    printf 'auto\nreadline\n' | lua "${ROOT_DIR}/tests/lua_history_auto.lua"
+    python3 "${ROOT_DIR}/tests/lua_history_editor.py" "$(command -v lua)"
+    python3 "${ROOT_DIR}/tests/check_chat_history.py" lua "$(command -v lua)" "${ROOT_DIR}/build"
     lua "${ROOT_DIR}/tests/lua_runtime.lua"
     lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
     lua "${ROOT_DIR}/tests/lua_smoke.lua"

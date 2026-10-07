@@ -93,13 +93,16 @@ typedef enum sl_key {
   SL_KEY_CTRL_J = 10,
   /** Ctrl-K, delete from cursor to end of buffer. */
   SL_KEY_CTRL_K = 11,
-  /** Enter or carriage return. */
+  /** Enter or carriage return. During reverse history search, accept the match
+   * into the normal editable prompt without submitting or queueing it. */
   SL_KEY_ENTER = 13,
   /** Ctrl-N, recall the next history entry. */
   SL_KEY_CTRL_N = 14,
   /** Ctrl-P, recall the previous history entry. */
   SL_KEY_CTRL_P = 16,
-  /** Ctrl-R, reverse incremental history search unless rebound. */
+  /** Ctrl-R, reverse incremental history search unless rebound. Enter returns
+   * the displayed match to normal editing; Escape or Ctrl-G restores the draft.
+   * An explicit Enter binding may request SL_KEY_ACTION_SUBMIT instead. */
   SL_KEY_CTRL_R = 18,
   /** Ctrl-U, delete from beginning of buffer to cursor. */
   SL_KEY_CTRL_U = 21,
@@ -371,6 +374,26 @@ typedef struct sl_quote_style {
   sl_quote_color_t text;
 } sl_quote_style_t;
 
+/** Import one borrowed, NUL-terminated history entry. Valid only during the
+ * load callback. Return its status to stop loading on an invalid entry. */
+typedef int (*sl_history_emit_t)(void *context, const char *prompt);
+
+/** Load entries oldest first by calling emit(context, prompt). Return SL_OK
+ * on success or a negative status. key is copied by Softline; userdata remains
+ * caller-owned. Do not retain emit/context or mutate/destroy the same handle
+ * during a history callback. Imported entries never invoke the append hook. */
+typedef int (*sl_history_load_callback_t)(const char *key,
+                                          sl_history_emit_t emit, void *context,
+                                          void *userdata);
+
+/** Persist one newly accepted history entry before history_add returns.
+ * Return SL_OK or a negative status. Failure leaves in-memory history
+ * unchanged; external storage rollback is the backend's responsibility. Prompt
+ * and key are borrowed for the call; do not mutate/destroy the same handle
+ * here. */
+typedef int (*sl_history_append_callback_t)(const char *key, const char *prompt,
+                                            void *userdata);
+
 /** Maximum number of retained status-line elements. Excess bulk elements end
  * in a final `...` element. */
 #define SL_STATUS_MAX_ELEMENTS 32
@@ -476,15 +499,17 @@ struct sl {
   /** Release strings returned by softline with the handle's allocator; NULL is
    * ignored. */
   void (*free_string)(sl_t *self, char *ptr);
-  /** Add one non-NULL entry to this handle's in-memory history. */
+  /** Add one entry and synchronously persist through any attached append hook.
+   * Empty/consecutive duplicates and a zero cap do not append; hook failure
+   * preserves recall. */
   int (*history_add)(sl_t *self, const char *line);
   /** Set the maximum retained history length; zero clears and disables history.
    */
   int (*history_set_max_len)(sl_t *self, int max_len);
-  /** Save this handle's history to a private owner-only history file. */
+  /** Overwrite a private snapshot file using escaped records; does not lock or
+   * compact an attached native store. */
   int (*history_save)(sl_t *self, const char *filename);
-  /** Load history entries from a history file into this handle's current
-   * history. */
+  /** Import a snapshot into current bounded history, bypassing append hooks. */
   int (*history_load)(sl_t *self, const char *filename);
   /** Set ordinary readline wrapping width; zero follows the terminal.
    * Native chat always uses physical terminal width. Updates active prompt
@@ -499,7 +524,9 @@ struct sl {
   /** Register or clear the per-handle idle callback. */
   int (*set_idle_callback)(sl_t *self, sl_idle_callback_t callback,
                            void *userdata);
-  /** Bind one decoded key to a per-handle callback. */
+  /** Bind one decoded key to a per-handle callback. An Enter callback
+   * requesting SL_KEY_ACTION_SUBMIT can submit reverse-search matches
+   * immediately. */
   int (*bind_key)(sl_t *self, sl_key_t key, sl_key_callback_t callback,
                   void *userdata);
   /** Insert text bytes at the active cursor position. UTF-8 text is kept
@@ -629,7 +656,10 @@ struct sl {
    * preserved. Rapid tmux resizes can leave its grid ahead of the reported
    * PTY size while output is emitted; exact output during that interval is
    * not guaranteed. With either descriptor off-TTY, output is validated and
-   * forwarded without terminal controls. */
+   * forwarded without terminal controls. Reopening a closed native session
+   * probes the cursor again. A nonzero column restarts quote separation for
+   * an unfinished externally written line; otherwise known spacing remains.
+   * A session retained by an active editor keeps its continuation. */
   int (*output_stream_begin)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
@@ -673,6 +703,11 @@ struct sl {
    * are cleared, queue and status rows remain, and the cursor stays at column
    * zero on the current input row without a newline. clear_prompt_on_exit
    * selects clearing the whole prompt area and returning below the transcript.
+   * Closing outside an active editor releases terminal input ownership. A
+   * foreground child may run before output_stream_begin() probes a fresh
+   * cursor and builds a new prompt; handle history and settings are retained.
+   * Run this handoff between editor calls, outside active editor callbacks;
+   * the application owns child execution.
    * Incomplete ANSI/UTF-8 leaves it open and returns SL_ERROR_INVALID so the
    * caller may supply the missing bytes. */
   int (*output_stream_end)(sl_t *self);
@@ -709,6 +744,30 @@ struct sl {
    * `{{XDG_CACHE_HOME}}`, and `{{xdg_cache_home}}`. The handle copies the
    * string. Appends `.png` or `.jpeg` after substituting a 20-character xid. */
   int (*set_image_paste_path_template)(sl_t *self, const char *path_template);
+  /** Attach custom load/append hooks and load immediately. See
+   * sl_history_set_backend() for ownership and failure semantics. */
+  int (*history_set_backend)(sl_t *self, const char *key,
+                             sl_history_load_callback_t load,
+                             sl_history_append_callback_t append,
+                             void *userdata);
+  /** Load and attach the native keyed store; see sl_history_open(). */
+  int (*history_open)(sl_t *self, const char *key, const char *directory);
+  /** Detach persistence, retaining in-memory history and auto-add policy. */
+  int (*history_close)(sl_t *self);
+  /** Compact the native store under its lock; see sl_history_compact(). */
+  int (*history_compact)(sl_t *self);
+  /** Opt into recording accepted editor submissions and queued drafts. Zero
+   * (default) keeps application-controlled history_add(). Queue delivery,
+   * promotion, search selection, cancellation and rejected drafts are not
+   * recorded. Programmatic queue insert/replace requires explicit history_add.
+   * Empty and consecutive duplicate entries are suppressed. */
+  int (*history_set_auto_add)(sl_t *self, int enabled);
+  /** Return nonzero while reverse history search is active, including a
+   * failed match. Zero after selection, cancellation or editor exit. Key
+   * callbacks run before built-in handling: return SL_KEY_ACTION_PASS during
+   * search to let Enter select an editable match before submission guards run.
+   * Read-only; call on the editor-owner thread. */
+  int (*history_search_active)(const sl_t *self);
 };
 
 /**
@@ -761,7 +820,7 @@ char *sl_readline(sl_t *self, const char *prompt);
  * queued-turns Alt-Enter promotion sets *source to SL_PROMPT_SOURCE_PROMOTED.
  * Otherwise submitted editor text is direct. On interactive handles,
  * next_prompt() retains terminal input ownership between results; sl_destroy()
- * restores the terminal.
+ * or closing an idle native output session restores the terminal.
  * source may be NULL.
  */
 char *sl_next_prompt(sl_t *self, const char *prompt,
@@ -778,19 +837,74 @@ void sl_destroy(sl_t *self);
 /** Release a string returned by softline; NULL ptr is ignored. */
 void sl_free_string(sl_t *self, char *ptr);
 
-/** Add one non-NULL entry to this handle's in-memory history. */
+/** Add one non-NULL entry, invoking the attached append hook synchronously.
+ * Empty and consecutive duplicate entries are ignored. A zero history cap
+ * disables recording and persistence. Hook failure leaves memory unchanged. */
 int sl_history_add(sl_t *self, const char *line);
 
 /** Set the maximum retained history length; zero clears and disables history.
  */
 int sl_history_set_max_len(sl_t *self, int max_len);
 
-/** Save history to filename using owner-only file permissions. */
+/** Overwrite filename with a private snapshot. Escape backslash, LF, CR and
+ * Tab; UTF-8 stays literal. This API does not use native store locking. */
 int sl_history_save(sl_t *self, const char *filename);
 
-/** Load history entries from filename into existing history, dropping old
- * entries if capped. */
+/** Import snapshot records into existing bounded history, bypassing append.
+ * Decode backslash, LF, CR and Tab escapes; accept CRLF separators and an
+ * unterminated final record. Invalid/oversized records are skipped with error.
+ */
 int sl_history_load(sl_t *self, const char *filename);
+
+/** Attach a backend and load entries oldest first into the existing bounded
+ * history. key must be nonempty and is copied. load may be NULL; append is
+ * required. Callbacks return SL_OK or a negative status and may not reenter
+ * history methods or destroy this handle. On failure the previous backend and
+ * history remain intact. Caller-owned userdata must outlive the attachment.
+ * Loading, including history_load(), bypasses append. No automatic editor
+ * recording is enabled; use history_add() or history_set_auto_add(). */
+int sl_history_set_backend(sl_t *self, const char *key,
+                           sl_history_load_callback_t load,
+                           sl_history_append_callback_t append, void *userdata);
+
+/** Load and attach the native append-only store. Nonempty key's exact bytes
+ * map to a lowercase SHA-256 filename with .history suffix. directory overrides
+ * the complete storage directory and must be absolute; NULL uses
+ * $XDG_STATE_HOME/softline/history, falling back to $HOME/.local/state when
+ * XDG_STATE_HOME is empty or relative. Missing directories are recursively
+ * created (0700); leaf directory and regular files must be owned by this user.
+ * Files and lock files are 0600, with symlinks rejected. Missing history is
+ * empty. Records escape backslash, LF, CR and Tab; UTF-8 stays literal. Each
+ * accepted entry is appended immediately under a stable per-key flock lock,
+ * also serializing independent handles in one process. Incomplete final records
+ * are ignored on load and removed before append. No exit-time save, automatic
+ * compaction or per-entry fsync is performed. Failures preserve the previous
+ * attachment/history; last_error() explains. Same-key handles/processes share
+ * storage, not live in-memory recall. */
+int sl_history_open(sl_t *self, const char *key, const char *directory);
+
+/** Detach persistence without changing retained entries or auto-add policy.
+ * No callbacks or final save are performed. Idempotent outside callbacks. */
+int sl_history_close(sl_t *self);
+
+/** Explicitly compact an attached native store to the newest history_max_len
+ * entries by rereading the shared file under its stable lock and replacing it
+ * atomically. Does not overwrite other writers using a stale memory snapshot
+ * or change this handle's recall list. Zero cap retains no entries. Custom or
+ * detached backends return SL_ERROR_INVALID. */
+int sl_history_compact(sl_t *self);
+
+/** Enable automatic recording at editor submission and queue acceptance.
+ * Disabled by default. See the receiver method for excluded operations.
+ * Applications enabling this must not record delivered queued prompts again. */
+int sl_history_set_auto_add(sl_t *self, int enabled);
+
+/** Return nonzero while the editor is in reverse history search, including
+ * when there is no match. Zero outside search or for NULL. Key callbacks run
+ * before built-in key handling: return SL_KEY_ACTION_PASS during search to
+ * allow Enter to select an editable match. Returns zero after selection,
+ * cancellation or editor exit. Read-only; call on the editor-owner thread. */
+int sl_history_search_active(const sl_t *self);
 
 /** Set ordinary readline wrapping width; zero follows the terminal.
  * Native chat always uses physical terminal width. Updates active prompt
@@ -942,7 +1056,9 @@ int sl_watch_remove(sl_t *self, sl_watch_id_t id);
 /** Remove every registered watch from this handle. */
 int sl_watch_clear(sl_t *self);
 
-/** Bind key to callback for this handle; NULL callback removes the binding. */
+/** Bind key to callback for this handle; NULL callback removes the binding.
+ * Bind SL_KEY_ENTER with SL_KEY_ACTION_SUBMIT to submit a reverse-search match
+ * immediately instead of accepting it into the editable prompt. */
 int sl_bind_key(sl_t *self, sl_key_t key, sl_key_callback_t callback,
                 void *userdata);
 
@@ -999,7 +1115,11 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
  * prompt; existing scrollback cells and spacing are preserved.
  * Rapid tmux resizes can leave its grid ahead of the reported PTY size while
  * output is emitted; exact output during that interval is not guaranteed.
- * Returns SL_ERROR_INVALID if a session is already open. */
+ * Returns SL_ERROR_INVALID if a session is already open.
+ * Reopening a closed native session probes the cursor again. A nonzero column
+ * restarts quote separation for an unfinished externally written line;
+ * otherwise known spacing remains. An active editor keeps its
+ * continuation state. */
 int sl_output_stream_begin(sl_t *self);
 
 /** Forward length bytes immediately to the live output session. Zero length
@@ -1047,8 +1167,13 @@ int sl_output_stream_write(sl_t *self, const char *bytes, size_t length);
  * cleared, queue and status rows remain visible, and the TTY cursor returns at
  * column zero on the current input row without a newline or scroll.
  * clear_prompt_on_exit selects clearing the whole prompt area and returning
- * below output instead. Without a prompt, return below output. Incomplete
- * ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open.
+ * below output instead. Without a prompt, return below output.
+ * Closing an idle native session also releases terminal input ownership.
+ * Applications may run a foreground child and then output_stream_begin() to
+ * probe its final cursor and create a fresh prompt, keeping handle history
+ * and settings. This handoff must run outside active editor callbacks.
+ * The application owns child execution.
+ * Incomplete ANSI/UTF-8 returns SL_ERROR_INVALID and leaves the session open.
  */
 int sl_output_stream_end(sl_t *self);
 

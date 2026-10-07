@@ -68,8 +68,17 @@ The editor supports these built-in behaviors:
 - Up and Down navigate visual rows first, then history where applicable.
   `Ctrl-P` and `Ctrl-N` navigate previous and next history entries directly.
 - `Ctrl-R` starts reverse incremental search over the handle's current history.
+  `history_search_active()` reports this mode, including a failed match, and
+  returns false after selection, cancellation or editor exit. It is a read-only
+  query on the editor-owner thread, exposed in both C and Lua. Key callbacks
+  run before built-in handling; submission guards should pass search keys
+  through so Enter selects an editable match. The chat examples do this for
+  shell and exit guards, retaining their restrictions on actual submissions.
   Typing updates the query, repeated `Ctrl-R` cycles older matches and wraps,
-  Enter accepts the displayed match, and Escape or `Ctrl-G` restores the draft.
+  Enter accepts the displayed match into the normal editable prompt without
+  submitting or queueing it; a subsequent Enter follows the normal keymap.
+  Escape or `Ctrl-G` restores the draft. An explicit Enter binding requesting
+  `SL_KEY_ACTION_SUBMIT` can opt into immediate submission during search.
 - `Ctrl-V` in the TTY editor saves PNG or JPEG data from the X11 `CLIPBOARD`
   selection to an owner-only cache file and inserts its visible absolute path
   at the cursor. The image file persists after the handle closes. On Linux,
@@ -197,6 +206,19 @@ write, and end, and the C chat example composes libmdf externally. See
 [the composition contract](softline-mdf-stream-design.md). Softline does not
 link libmdf or own its document lifecycle.
 
+The C and Lua chat examples support exact `!sh` and `/shell` submissions
+without arguments on interactive terminals, only between operations. Enter or
+idle Alt-Enter launches `$SHELL -i`, falling back to `/bin/sh -i` when unset or
+empty. Busy submissions and attempts to queue or steer these commands are
+rejected while leaving the draft editable. Argument-bearing text remains an
+ordinary chat turn. The application closes its idle output session, runs the
+shell with ordinary terminal input and full scrolling, then begins a fresh
+session at its final cursor and current geometry. Clear and resize inside the
+shell are allowed. History, queue and configuration survive on the same handle;
+transcript replay is unnecessary. Failed launches and nonzero exits report an
+error and return to chat. This uses existing output-session APIs and adds no
+library shell-execution API or ABI change.
+
 The C and Lua APIs also expose a quoted-prompt writer for an open output
 session. It wraps literal submitted text, repeats a configurable prefix on
 each visible row, and adds only the line breaks needed for one empty row on
@@ -273,6 +295,17 @@ setting it to one clears the whole prompt area and returns below the transcript.
 Ending a producer session inside an active editor retains the native prompt and
 scroll region for subsequent finite output or another stream; closing the handle
 always restores terminal state. Non-TTY sessions emit no teardown controls.
+Closing an idle native output session also releases terminal input ownership.
+Applications may run a foreground child before beginning another session to
+probe its final cursor and build a fresh prompt, retaining history and settings.
+This handoff belongs between editor calls, outside active editor callbacks;
+the application owns child execution. Ending the stream does not finish an
+external renderer document. Incomplete ANSI/UTF-8 returns `SL_ERROR_INVALID`
+(Lua: `nil, softline.ERROR_INVALID`) and leaves the session open for the missing
+bytes.
+Reopening a closed native session probes the cursor again. A nonzero column
+restarts quote separation for an unfinished externally written line; otherwise
+known spacing remains. An editor-retained session keeps its continuation state.
 Native feeds batch bounded chunks with cursor restoration and retry short
 writes as needed, without cursor visibility toggles or repainting unchanged
 frames. Feed calls add no intentional delay and never request or wait for a
@@ -329,18 +362,21 @@ History is per handle.
 
 Supported behavior:
 
-- add entries manually
+- add entries manually or opt into recording accepted editor/queue drafts
 - cap history length
 - navigate history during editing
 - preserve an edited draft while moving through history
 - reverse incremental search over manually added or explicitly loaded entries
-- save and load history files
+- save and load history snapshots, bypassing append on imports
+- attach synchronous custom load/append hooks in C and Lua
+- load/append native keyed XDG state files with shared-process locking
+- recover incomplete final records and explicitly compact under the same lock
 - encode multiline history entries
 - reject oversized history records without splitting them
 - force saved history files to owner-only permissions
 
 softline does not currently provide a global history registry, timestamped
-history, duplicate suppression policy, forward search, history expansion, or
+history, configurable duplicate suppression, forward search, history expansion, or
 shell-style history metadata.
 
 ## Current Error And Cleanup Behavior
@@ -563,20 +599,52 @@ Any styling API must preserve byte ownership and terminal reset safety.
 
 ### Persistence And History Policy
 
-Current history persistence is intentionally simple.
+History persistence is opt-in. `history_set_backend()` copies a nonempty key,
+loads oldest-first through a scoped emitter, and attaches the append hook only
+on success. Loading is staged: an invalid import or failed hook preserves the
+prior backend and retained entries. Imports, including `history_load()`, bypass
+append. Append hooks run synchronously before a newly accepted history entry is
+committed to recall; failure leaves recall unchanged. Custom backend rollback
+and userdata lifetime belong to the application. History callbacks cannot
+reenter history operations or destroy the handle. C receiver/free APIs and Lua
+methods expose the same behavior; Lua emitters reject use outside their load.
 
-Missing:
+`history_open(key, directory)` attaches the native backend. Exact key bytes map
+to a SHA-256 filename under `$XDG_STATE_HOME/softline/history`, falling back to
+`$HOME/.local/state` for absent, empty or relative XDG values. An absolute override
+selects the complete directory. Missing directories are recursively created
+0700; the store directory is private. Files and stable per-key lock files are
+0600, regular, user-owned and not symlinks/hard links. No additional link library
+or terminal I/O is involved.
 
-- append-only history save
-- atomic save/rename option
-- lock policy for shared history files
-- configurable permissions
-- duplicate filtering
-- timestamp or metadata records
-- migration/version marker for richer history files
+The format has one physical LF-terminated record per prompt. Backslash, LF,
+CR and Tab escape as `\\`, `\n`, `\r`, `\t`; other UTF-8 bytes are literal.
+Native load ignores an incomplete final record, and native append truncates it
+under the key lock before writing the next complete record. Records exceeding
+line_max_len or containing NUL are rejected. Legacy snapshot loading still
+accepts an unterminated final record and CRLF line endings. Snapshot saving is
+an explicit overwrite and does not participate in native shared-file locking.
 
-The current encoded line format is enough for multiline entries but not a rich
-history database.
+Each append completes immediately; no save is deferred to exit and no per-entry
+fsync is promised. Same-key processes serialize load, append and explicit
+compaction through a separate stable flock lock file, including independent handles in
+one process. Compaction rereads the shared
+file with bounded retained entries and atomically renames a private replacement,
+so a stale handle cannot discard unseen committed prompts. No automatic
+compaction or metadata/version marker is added. Recall is per handle, bounded
+by its cap and updated by explicit loading; a zero cap disables recording.
+Empty and consecutive duplicate entries are suppressed.
+
+`history_set_auto_add()` is disabled by default. When enabled, accepted direct
+editor submissions and queue/steer drafts enter history immediately. Queue
+release/promotion, cancelled/rejected drafts and Ctrl-R selection do not append.
+Programmatic queue insertion/replacement stays application-controlled. Both chat
+examples enable auto-add and attach the shared `softline.examples.chat` key at
+startup; their `SOFTLINE_HISTORY_DIR` override keeps tests repository-local.
+`history_close()` retains recall and recording policy, detaching without saves.
+
+Timestamped metadata, configurable duplicate policy and power-loss durability
+are outside this simple prompt store.
 
 ### Diagnostics
 
@@ -609,7 +677,7 @@ Areas that need continued hardening:
 - repeated resize storms
 - callback reentrancy policy
 - signal interaction beyond Ctrl-C
-- file permission and atomicity policy for history
+- explicit history snapshot overwrite semantics outside native store locking
 
 ### Compatibility With Readline Expectations
 

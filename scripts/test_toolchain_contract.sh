@@ -35,7 +35,8 @@ if grep -Eq '(^|[[:space:]])(mapfile|readarray)([[:space:]]|$)|\$\{[A-Za-z_][A-Z
   exit 1
 fi
 
-tmp_osxcross="$(mktemp -d)"
+mkdir -p "${ROOT_DIR}/build"
+tmp_osxcross="$(mktemp -d "${ROOT_DIR}/build/toolchain-contract.XXXXXX")"
 stale_build="${ROOT_DIR}/build/toolchain-contract-stale-cache"
 cleanup() {
   rm -rf "${tmp_osxcross}" "${stale_build}"
@@ -80,6 +81,52 @@ OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST="${darwin_host}" \
     >/dev/null
 if [ "$(cat "${cmake_probe}/build/sdk.txt")" != "${darwin_sdk}" ]; then
   echo "ERROR: Darwin CMake toolchain must select the resolver SDK" >&2
+  exit 1
+fi
+
+# Installed osxcross tools are symlinks and may have only a dotted prefix,
+# without any major-version aliases. Discovery must rank complete collections.
+printf '#!/bin/sh\nexit 0\n' > "${darwin_bin}/fixture-wrapper"
+chmod +x "${darwin_bin}/fixture-wrapper"
+for version in 25.4 25.9 25.10 25.11; do
+  for tool in clang clang++ ld ar ranlib strip nm otool install_name_tool; do
+    if [ "$version" = 25.11 ] && [ "$tool" = install_name_tool ]; then
+      continue
+    fi
+    ln -s fixture-wrapper "${darwin_bin}/arm64-apple-darwin${version}-${tool}"
+  done
+done
+description="$(OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST= \
+  "$RESOLVER" discover arm64-apple-darwin)"
+if ! grep -qx 'status=ready' <<<"${description}" ||
+   ! grep -qx 'prefix=arm64-apple-darwin25.10' <<<"${description}"; then
+  echo "ERROR: auto-discovery must select the newest complete dotted prefix" >&2
+  printf '%s\n' "$description" >&2
+  exit 1
+fi
+description="$(OSXCROSS_ROOT="${tmp_osxcross}" \
+  CPKT_OSXCROSS_HOST=arm64-apple-darwin25.4 "$RESOLVER" env arm64-apple-darwin)"
+if ! grep -q 'arm64-apple-darwin25.4-clang' <<<"${description}"; then
+  echo "ERROR: exact prefix overrides must take precedence over discovery" >&2
+  exit 1
+fi
+if OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST=arm64-apple-darwin25.11 \
+     "$RESOLVER" ensure arm64-apple-darwin >/dev/null 2>&1; then
+  echo "ERROR: an incomplete exact override must not fall back to another prefix" >&2
+  exit 1
+fi
+description="$(OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST=arm64-apple-darwin25 \
+  "$RESOLVER" discover arm64-apple-darwin)"
+if ! grep -qx 'status=missing' <<<"${description}"; then
+  echo "ERROR: a missing exact override must not fall back to a dotted prefix" >&2
+  exit 1
+fi
+OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST= \
+  cmake -S "${cmake_probe}" -B "${cmake_probe}/auto-build" \
+    -DCMAKE_TOOLCHAIN_FILE="${ROOT_DIR}/cmake/toolchains/osxcross-darwin.cmake" \
+    >/dev/null
+if ! grep -q 'arm64-apple-darwin25.10-clang' "${cmake_probe}/auto-build/CMakeCache.txt"; then
+  echo "ERROR: CMake must consume the automatically discovered compiler prefix" >&2
   exit 1
 fi
 

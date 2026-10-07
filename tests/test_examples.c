@@ -773,6 +773,7 @@ static void
 test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
   int fd;
   int note_row;
+  int note_last_row;
   int quote_row;
   int answer_row;
   pid_t pid;
@@ -791,12 +792,13 @@ test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "response heading missing");
   note_row = term_row_of(&t, "Enter sends or queues");
+  note_last_row = term_row_of(&t, "between turns.");
   quote_row = term_row_of(&t, "> hello");
   answer_row = term_row_of(&t, "A short answer");
   ASSERT_TRUE(strstr(t.raw + output_mark, "\033[1;1H") == NULL,
               "submission repainted the full terminal viewport");
-  ASSERT_TRUE(note_row >= 0 && quote_row == note_row + 2 &&
-                  answer_row == quote_row + 2,
+  ASSERT_TRUE(note_row >= 0 && note_last_row >= note_row &&
+                  quote_row == note_last_row + 2 && answer_row == quote_row + 2,
               "visible transcript or prompt spacing was lost");
   ASSERT_TRUE(t.cells[quote_row][0] == '>' && t.cells[quote_row][1] == ' ',
               "quoted prompt prefix is indented");
@@ -1818,6 +1820,24 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
   PASS();
 }
 
+/* Direct runs (including Valgrind) must not inherit a user's history store.
+ * Keep a fresh private store under this build, regardless of the caller's cwd
+ * or SOFTLINE_HISTORY_DIR; retain it for diagnostics until make clean. */
+static int isolate_example_history(void) {
+  const char suffix[] = "/example-history.XXXXXX";
+  char *directory;
+  int result;
+  directory = (char *)malloc(strlen(SL_TEST_WORK_DIR) + sizeof(suffix));
+  if (!directory)
+    return -1;
+  strcpy(directory, SL_TEST_WORK_DIR);
+  strcat(directory, suffix);
+  result =
+      mkdtemp(directory) ? setenv("SOFTLINE_HISTORY_DIR", directory, 1) : -1;
+  free(directory);
+  return result;
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   if (argc == 2 && strcmp(argv[1], "frames") == 0) {
@@ -1831,6 +1851,10 @@ int main(int argc, char **argv) {
   }
   if (argc != 3 && argc != 4)
     return 2;
+  if (isolate_example_history() != 0) {
+    perror("could not isolate example history under the build directory");
+    return 1;
+  }
   if (setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) != 0)
     return 1;
   printf("softline example integration tests\n");

@@ -43,6 +43,38 @@ struct chat_state {
 
 static int start_operation(struct chat_state *state);
 static int dispatch_next_turn(struct chat_state *state);
+static int sync_geometry(struct chat_state *state);
+
+static int is_shell_command(const char *line) {
+  return strcmp(line, "!sh") == 0 || strcmp(line, "/shell") == 0;
+}
+
+/* Run only in the idle owner loop, after next_prompt() has returned. Ending
+ * the session releases termios and the scroll region; beginning a new one
+ * discards the old prompt frame and probes the shell's final cursor position.
+ * system() handles parent SIGINT/SIGQUIT while the interactive shell runs. */
+static int run_shell(struct chat_state *state) {
+  int status;
+  if (sl_output_stream_end(state->sl) != SL_OK)
+    return -1;
+  /* Quoted expansion treats SHELL as one executable, without parsing its
+   * contents as shell syntax. The POSIX shell supplies the unset/empty default.
+   */
+  status = system("exec \"${SHELL:-/bin/sh}\" -i");
+  if (status == -1)
+    perror("could not start shell");
+  else if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+    fprintf(stderr, "shell exited unsuccessfully (exit %d)\n",
+            WEXITSTATUS(status));
+  else if (WIFSIGNALED(status))
+    fprintf(stderr, "shell exited unsuccessfully (signal %d)\n",
+            WTERMSIG(status));
+  return sync_geometry(state) == 0 &&
+                 sl_output_stream_begin(state->sl) == SL_OK &&
+                 sl_set_status_message(state->sl, NULL) == SL_OK
+             ? 0
+             : -1;
+}
 
 static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
   struct chat_state *state;
@@ -178,8 +210,14 @@ static int deliver_steers(struct chat_state *state, int at_seam) {
       state->exit_requested = 1;
       return show_goodbye(state) == 0 && sl_cancel(state->sl) == SL_OK ? 0 : -1;
     }
-    if (sl_history_add(state->sl, line) != SL_OK ||
-        render_user_prompt(state, line) != 0) {
+    if (is_shell_command(line)) {
+      sl_free_string(state->sl, line);
+      if (render_note(state, "Shell commands cannot be queued or steered.") !=
+          0)
+        return -1;
+      continue;
+    }
+    if (render_user_prompt(state, line) != 0) {
       sl_free_string(state->sl, line);
       return -1;
     }
@@ -362,7 +400,7 @@ static int start_operation(struct chat_state *state) {
 
 static int dispatch_next_turn(struct chat_state *state) {
   char *line;
-  if (sl_prompt_queue_count(state->sl) > 0) {
+  while (sl_prompt_queue_count(state->sl) > 0) {
     line = NULL;
     if (sl_prompt_queue_take(state->sl, 0, &line) != SL_OK)
       return -1;
@@ -371,12 +409,19 @@ static int dispatch_next_turn(struct chat_state *state) {
       state->exit_requested = 1;
       return show_goodbye(state) == 0 && sl_cancel(state->sl) == SL_OK ? 0 : -1;
     }
-    if (sl_history_add(state->sl, line) != SL_OK ||
-        render_user_prompt(state, line) != 0 || start_operation(state) != 0) {
+    if (is_shell_command(line)) {
+      sl_free_string(state->sl, line);
+      if (render_note(state, "Shell commands cannot be queued or steered.") !=
+          0)
+        return -1;
+      continue;
+    }
+    if (render_user_prompt(state, line) != 0 || start_operation(state) != 0) {
       sl_free_string(state->sl, line);
       return -1;
     }
     sl_free_string(state->sl, line);
+    break;
   }
   return 0;
 }
@@ -402,6 +447,16 @@ static int exit_editor_key(sl_t *sl, sl_key_t key, void *userdata,
   char *queued = NULL;
   int leaving = key == SL_KEY_CTRL_D && text[0] == '\0';
   *action = SL_KEY_ACTION_PASS;
+  /* Search keys edit/select a match; they do not submit, queue or steer it. */
+  if (sl->history_search_active(sl))
+    return SL_OK;
+  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER || key == SL_KEY_TAB) &&
+      is_shell_command(text) && (state->busy || key == SL_KEY_TAB)) {
+    *action = SL_KEY_ACTION_HANDLED;
+    return sl_set_status_message(
+        sl, state->busy ? "Shell is available only between turns."
+                        : "Use Enter to open the shell; it cannot be queued.");
+  }
   if (!state->busy && (key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER)) {
     if (key == SL_KEY_ALT_ENTER && text[0] == '\0' &&
         sl_prompt_queue_count(sl) > 0) {
@@ -483,6 +538,13 @@ int main(void) {
     fprintf(stderr, "failed to create softline\n");
     return 1;
   }
+  if (sl_history_open(state.sl, "softline.examples.chat",
+                      getenv("SOFTLINE_HISTORY_DIR")) != SL_OK ||
+      sl_history_set_auto_add(state.sl, 1) != SL_OK) {
+    report_failure(&state, "history setup");
+    sl_destroy(state.sl);
+    return 1;
+  }
   state.columns = mdf_terminal_width(STDOUT_FILENO, 80);
   if ((interactive &&
        (sl_set_prompt_queue(state.sl, 1, 64, 3) != SL_OK ||
@@ -500,6 +562,7 @@ int main(void) {
         sl_bind_key(state.sl, SL_KEY_ENTER, exit_editor_key, &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_ALT_ENTER, exit_editor_key, &state) !=
             SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_TAB, exit_editor_key, &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_CTRL_D, exit_editor_key, &state) !=
             SL_OK)) ||
       state.sl->output_stream_begin(state.sl) != SL_OK ||
@@ -514,8 +577,8 @@ int main(void) {
     if (set_busy(&state, 0) != 0 ||
         render_note(&state,
                     "Enter sends or queues; Alt-Enter steers or promotes; "
-                    "Alt-E edits queue. Esc/Ctrl-C cancels; `/quit` leaves.") !=
-            0) {
+                    "Alt-E edits queue. Esc/Ctrl-C cancels; `/quit` leaves. "
+                    "`!sh` or `/shell` opens your shell between turns.") != 0) {
       report_failure(&state, "initial output");
       exit_code = 1;
       goto cleanup;
@@ -562,8 +625,25 @@ int main(void) {
       }
       continue;
     }
-    if (sl_history_add(state.sl, line) != SL_OK ||
-        render_user_prompt(&state, line) != 0) {
+    if (is_shell_command(line)) {
+      int failed = 0;
+      if (!interactive || state.busy || source != SL_PROMPT_SOURCE_DIRECT) {
+        failed = render_note(
+            &state, !interactive ? "Shell requires an interactive terminal."
+                                 : "Shell is available only between turns.");
+      } else {
+        failed =
+            render_user_prompt(&state, line) != 0 || run_shell(&state) != 0;
+      }
+      sl_free_string(state.sl, line);
+      if (failed) {
+        report_failure(&state, "shell handoff");
+        exit_code = 1;
+        break;
+      }
+      continue;
+    }
+    if (render_user_prompt(&state, line) != 0) {
       sl_free_string(state.sl, line);
       report_failure(&state, "prompt render");
       exit_code = 1;

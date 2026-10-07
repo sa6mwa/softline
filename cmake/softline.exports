@@ -63,3 +63,9 @@ sl_watch_add
 sl_watch_clear
 sl_watch_modify
 sl_watch_remove
+sl_history_set_backend
+sl_history_open
+sl_history_close
+sl_history_compact
+sl_history_set_auto_add
+sl_history_search_active

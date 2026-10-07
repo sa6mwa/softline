@@ -2,6 +2,7 @@
 #define SOFTLINE_INTERNAL_H
 
 #include "softline/softline.h"
+#include "softline_history.h"
 #include "softline_surface.h"
 
 #include <signal.h>
@@ -126,6 +127,14 @@ typedef struct sl_impl {
   tcflag_t original_output_oflag;
   int output_oflag_changed;
   sl_history_t history;
+  /* Sole reverse-search mode flag; readable by application key bindings. */
+  int history_search_active;
+  char *history_key;
+  sl_history_append_callback_t history_append;
+  void *history_userdata;
+  sl_history_store_t *history_store;
+  int history_busy;
+  int history_auto_add;
   sl_prompt_queue_t prompt_queue;
   sl_prompt_theme_t prompt_theme;
   char *quoted_prompt_prefix;

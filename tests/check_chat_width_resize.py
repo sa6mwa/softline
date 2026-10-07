@@ -11,7 +11,7 @@ import time
 
 sys.dont_write_bytecode = True
 import check_terminal_native_output as terminal
-from terminal_producer import pause_producer
+from terminal_producer import pause_idle_editor, pause_producer
 
 vt = terminal.vt
 
@@ -94,7 +94,8 @@ def case(example, build, theme, resize_race=False):
                 with pause_producer(child, vt.pump, not resize_race):
                     for width in widths:
                         height = 24
-                        resize(width, height)
+                        with pause_idle_editor(child, vt.pump, not resize_race):
+                            resize(width, height)
                         end = time.monotonic() + delay
                         while time.monotonic() < end:
                             vt.pump()

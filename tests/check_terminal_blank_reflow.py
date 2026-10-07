@@ -17,7 +17,7 @@ import time
 
 
 sys.dont_write_bytecode = True
-from terminal_producer import pause_producer
+from terminal_producer import pause_idle_editor, pause_producer
 
 
 PTR = ctypes.c_void_p
@@ -168,7 +168,10 @@ def case(example, build, theme, height, streaming=False, resize_race=False):
                     # briefly changes PTY geometry before GTK's allocation,
                     # creating extra resize events that no window requested.
                     with pause_producer(child, pump, not resize_race):
-                        resize_window(window, pixels_x, pixels_y)
+                        with pause_idle_editor(child, pump, not resize_race):
+                            resize_window(window, pixels_x, pixels_y)
+                            wait(lambda frame: columns(terminal) == width and
+                                 row_count(terminal) == rows)
                         wait(lambda frame: columns(terminal) == width and
                              row_count(terminal) == rows and frame[-1] == "> draft")
                     deadline = time.monotonic() + 0.15

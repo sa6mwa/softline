@@ -29,6 +29,26 @@ local watch_id
 local dispatch_next_queued
 local stream_open = false
 
+local function is_shell_command(line)
+  return line == "!sh" or line == "/shell"
+end
+
+-- Only the idle owner loop may hand the terminal to another process. End the
+-- session to release input/scrolling, then begin a fresh frame at the shell's
+-- final cursor position (including after clear or resize). Keep the handle,
+-- history and queue. Quote SHELL as one executable, never as shell commands.
+local function run_shell()
+  assert(sl:output_stream_end())
+  stream_open = false
+  local ok, reason, status = os.execute('exec "${SHELL:-/bin/sh}" -i')
+  if not ok then
+    io.stderr:write("shell exited unsuccessfully (", tostring(reason), " ", tostring(status), ")\n")
+  end
+  assert(sl:output_stream_begin())
+  stream_open = true
+  assert(sl:set_status_message(nil))
+end
+
 local function operation_step_seconds()
   local value = tonumber(os.getenv("SOFTLINE_CHAT_OPERATION_STEP_MS"))
   if value and value >= 0 and value <= 60000 then
@@ -49,6 +69,7 @@ end
 local function set_chat_busy(value)
   assert(sl:set_status_spinner(value))
   assert(sl:set_status_busy(value))
+  assert(sl:set_status_message(nil))
   busy = value
 end
 
@@ -66,8 +87,11 @@ local function consume_steers()
         assert(sl:cancel())
         return
       end
-      assert(sl:history_add(line))
-      consume_active_operation_input(line)
+      if is_shell_command(line) then
+        print_message({ "Shell commands cannot be queued or steered.\n" })
+      else
+        consume_active_operation_input(line)
+      end
     else
       index = index + 1
     end
@@ -144,7 +168,8 @@ local function start_operation()
 end
 
 dispatch_next_queued = function()
-  for index = 1, sl:queue_count() do
+  local index = 1
+  while index <= sl:queue_count() do
     if sl:queue_mode(index) == softline.QUEUE_MODE_QUEUED then
       local line = assert(sl:queue_take(index))
       if line == "/quit" then
@@ -152,16 +177,23 @@ dispatch_next_queued = function()
         assert(sl:cancel())
         return
       end
-      assert(sl:history_add(line))
-      print_message({ "[queued] ", line, "\n" })
-      start_operation()
-      return
+      if is_shell_command(line) then
+        print_message({ "Shell commands cannot be queued or steered.\n" })
+      else
+        print_message({ "[queued] ", line, "\n" })
+        start_operation()
+        return
+      end
+    else
+      index = index + 1
     end
   end
 end
 
 local function run()
   sl = softline.new()
+  assert(sl:history_open("softline.examples.chat", os.getenv("SOFTLINE_HISTORY_DIR")))
+  assert(sl:history_set_auto_add(true))
   if interactive then
     assert(themes[theme_name], "invalid SOFTLINE_PROMPT_THEME: " .. theme_name)
     assert(sl:set_prompt_theme(themes[theme_name]))
@@ -183,10 +215,24 @@ local function run()
     assert(sl:bind_key(softline.KEY_ESCAPE, function()
       return softline.KEY_ACTION_CANCEL
     end))
+    for _, key in ipairs({ softline.KEY_ENTER, softline.KEY_ALT_ENTER, softline.KEY_TAB }) do
+      assert(sl:bind_key(key, function(pressed)
+        -- Search selection must return to editing before submission guards run.
+        if sl:history_search_active() then
+          return softline.KEY_ACTION_PASS
+        end
+        if is_shell_command(sl:buffer()) and (busy or pressed == softline.KEY_TAB) then
+          assert(sl:set_status_message(busy and "Shell is available only between turns."
+              or "Use Enter to open the shell; it cannot be queued."))
+          return softline.KEY_ACTION_HANDLED
+        end
+        return softline.KEY_ACTION_PASS
+      end))
+    end
     set_chat_busy(false)
     assert(sl:output_stream_begin())
     stream_open = true
-    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation; /quit leaves.\n" })
+    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation; /quit leaves. !sh or /shell opens your shell between turns.\n" })
   else
     assert(sl:output_stream_begin())
     stream_open = true
@@ -201,10 +247,18 @@ local function run()
       if line == "/quit" then
         break
       end
-      if line == "" then
+      if is_shell_command(line) then
+        if not interactive then
+          print_message({ "Shell requires an interactive terminal.\n" })
+        elseif busy or source_or_status ~= softline.PROMPT_SOURCE_DIRECT then
+          print_message({ "Shell is available only between turns.\n" })
+        else
+          assert(sl:output_stream_write_quoted_prompt(line))
+          run_shell()
+        end
+      elseif line == "" then
         print_message({ "[empty turn ignored]\n" })
       else
-        assert(sl:history_add(line))
         local prefix = source_or_status == softline.PROMPT_SOURCE_PROMOTED
             and "[promoted] " or source_or_status == softline.PROMPT_SOURCE_QUEUED
             and "[queued] " or "[turn] "

@@ -1,9 +1,24 @@
+find_package(Threads REQUIRED)
+add_executable(test_history test_history.c)
+target_link_libraries(test_history PRIVATE softline Threads::Threads)
+softline_apply_warnings(test_history)
+softline_local_runtime(test_history)
+add_test(NAME softline_history COMMAND test_history "${PROJECT_BINARY_DIR}")
+set_tests_properties(softline_history PROPERTIES LABELS "unit;history" TIMEOUT 30)
+
 add_executable(test_softline test_softline.c)
 target_link_libraries(test_softline PRIVATE softline)
 softline_apply_warnings(test_softline)
 softline_local_runtime(test_softline)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  if(TARGET example_chat)
+    add_test(NAME softline_chat_history COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_history.py" c
+      "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
+    set_tests_properties(softline_chat_history PROPERTIES
+      LABELS "integration;history;example-smoke" TIMEOUT 20)
+  endif()
   if(TARGET example_chat AND NOT CMAKE_C_FLAGS MATCHES "sanitize")
     add_library(chat_no_sleep_guard SHARED chat_no_sleep_guard.c)
     softline_apply_warnings(chat_no_sleep_guard)
@@ -165,6 +180,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(softline_native_resize PROPERTIES
     LABELS "integration;streaming" TIMEOUT 10)
   add_executable(test_examples test_examples.c)
+  target_compile_definitions(test_examples PRIVATE
+    SL_TEST_WORK_DIR="${PROJECT_BINARY_DIR}")
   target_link_libraries(test_examples PRIVATE util softline)
   softline_apply_warnings(test_examples)
   softline_local_runtime(test_examples)
@@ -179,9 +196,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET examp
     $<TARGET_FILE:example_chat>
   )
   set_tests_properties(softline_examples PROPERTIES LABELS "integration" TIMEOUT 60)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME softline_example_history_isolation COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/check_example_history_isolation.py"
+    "$<TARGET_FILE:test_examples>" "$<TARGET_FILE:example_simple>"
+    "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
+  set_tests_properties(softline_example_history_isolation PROPERTIES
+    LABELS "integration;history;example-smoke" TIMEOUT 65)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME softline_terminal_resize_coordination COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize_coordination.py"
+    "${PROJECT_BINARY_DIR}")
+  set_tests_properties(softline_terminal_resize_coordination PROPERTIES
+    LABELS "integration;streaming" TIMEOUT 15)
+  add_test(NAME softline_chat_shell COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_shell.py" c
+    "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
+  set_tests_properties(softline_chat_shell PROPERTIES LABELS "integration" TIMEOUT 60)
   # A second real terminal engine catches erased blank-cell extent that tmux's
   # grid drops. Keep these host-only test dependencies out of the library.
   find_program(SOFTLINE_TEST_XVFB_RUN xvfb-run)
@@ -190,15 +224,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   if(SOFTLINE_TEST_XVFB_RUN AND SOFTLINE_TEST_VTE)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     set(terminal_python "${Python3_EXECUTABLE}")
-    if(DEFINED ENV{SOFTLINE_TERMINAL_TEST_ROOT})
-      # xvfb-run's host shell utilities keep their own runtime. The terminal
-      # test interpreter loads staged GTK/VTE; fixture children keep their runtime.
-      set(terminal_python "${PROJECT_SOURCE_DIR}/scripts/terminal-test-runtime.sh"
-        "${Python3_EXECUTABLE}")
+    if(DEFINED ENV{SOFTLINE_TERMINAL_TEST_ROOT} AND
+       NOT "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}" STREQUAL "")
       set(terminal_test_environment "SOFTLINE_TERMINAL_TEST_ROOT=$ENV{SOFTLINE_TERMINAL_TEST_ROOT}")
       foreach(variable PATH FONTCONFIG_PATH FONTCONFIG_FILE XKB_CONFIG_ROOT NO_AT_BRIDGE TMPDIR)
         list(APPEND terminal_test_environment "${variable}=$ENV{${variable}}")
       endforeach()
+      # Cached tool discovery survives ordinary CMake/Ninja regeneration, so
+      # retain its matching runtime as well. Do not depend on make test's
+      # temporary parent environment on every configure.
+      set(SOFTLINE_TERMINAL_TEST_ROOT "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}"
+        CACHE INTERNAL "Prepared terminal test runtime" FORCE)
+      set(SOFTLINE_TERMINAL_TEST_ENVIRONMENT "${terminal_test_environment}"
+        CACHE INTERNAL "Prepared terminal test environment" FORCE)
+    endif()
+    if(SOFTLINE_TERMINAL_TEST_ROOT)
+      # xvfb-run's host shell utilities keep their own runtime. The terminal
+      # test interpreter loads staged GTK/VTE; fixture children keep their runtime.
+      set(terminal_python "${PROJECT_SOURCE_DIR}/scripts/terminal-test-runtime.sh"
+        "${Python3_EXECUTABLE}")
+      set(terminal_test_environment "${SOFTLINE_TERMINAL_TEST_ENVIRONMENT}")
     endif()
     function(softline_add_terminal_test name)
       add_test(NAME "${name}"
@@ -225,7 +270,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     if(terminal_test_environment)
       add_test(NAME softline_terminal_test_environment COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_test_environment.py"
-        "${PROJECT_BINARY_DIR}" "${CMAKE_CTEST_COMMAND}")
+        "${PROJECT_BINARY_DIR}" "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}")
       set_tests_properties(softline_terminal_test_environment PROPERTIES
         LABELS "integration;dependency" TIMEOUT 45)
     endif()
@@ -328,3 +373,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       LABELS "integration;streaming" TIMEOUT 90)
   endif()
 endif()
+
+get_property(_softline_tests DIRECTORY PROPERTY TESTS)
+foreach(_softline_test IN LISTS _softline_tests)
+  set_property(TEST "${_softline_test}" APPEND PROPERTY ENVIRONMENT
+    "SOFTLINE_HISTORY_DIR=${PROJECT_BINARY_DIR}/test-history/${_softline_test}")
+endforeach()

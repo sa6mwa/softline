@@ -62,6 +62,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   cancellation, interrupt, or error. Ctrl-C restores terminal state before
   raising SIGINT; if a handler returns, an existing native output session
   remains available.
+  Ctrl-R searches history. Enter accepts the displayed match into the normal
+  editable prompt without submitting or queueing it; a subsequent Enter follows
+  the normal keymap. Escape or Ctrl-G restores the original draft.
 - While terminal raw mode is owned, kernel tab expansion (`TAB3`/`OXTABS`) is
   disabled so the terminal handles tabs. OPOST/ONLCR and other output flags are
   preserved; original flags are restored on release.
@@ -72,11 +75,27 @@ live scroll regions, status lines, and spinners are off; the theme is
   `PROMPT_SOURCE_PROMOTED`. On interactive handles it retains terminal input
   ownership between results; `close()` restores the terminal. On no result it
   returns `nil, status`.
-- `sl:history_add(line)` adds one history entry.
+- `sl:history_add(line)` adds one history entry and synchronously calls the
+  attached append hook; empty and consecutive duplicate entries are ignored.
 - `sl:history_set_max_len(max_len)` changes the retained history cap; `0`
   clears and disables history.
 - `sl:history_save(filename)` writes history with owner-only permissions.
-- `sl:history_load(filename)` loads history entries into the handle.
+- `sl:history_load(filename)` imports history entries, bypassing append hooks.
+- `sl:history_set_backend(key, hooks)` loads and attaches custom `load`/`append`
+  callbacks; see [persistent history](#persistent-history).
+- `sl:history_open(key, directory)` loads and attaches native keyed storage;
+  omit `directory` for the XDG state default.
+- `sl:history_close()` detaches storage without clearing recall or saving on exit.
+- `sl:history_compact()` atomically retains the newest capped entries from the
+  native shared file under its stable lock; unavailable for custom backends.
+- `sl:history_set_auto_add(enabled)` opts into immediate recording at editor
+  and queue acceptance. Disabled by default; delivery, promotion, Ctrl-R
+  selection, cancellation and rejected drafts do not append.
+- `sl:history_search_active()` returns a boolean indicating reverse-search
+  mode, including a failed match. It is false after selection, cancellation,
+  or editor exit. The query is read-only and runs on the editor-owner thread.
+  Key callbacks run before built-in handling; submission guards should return
+  `softline.KEY_ACTION_PASS` during search so Enter selects an editable match.
 - `sl:set_screen_width(width)` sets ordinary readline wrapping width; `0`
   returns to terminal-width probing. Native chat uses physical terminal width.
   Without an active readline, this hint does not move or resize native output.
@@ -191,6 +210,9 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:bind_key(key, callback)` binds a decoded key to a callback. The callback
   receives the key code and returns a `softline.KEY_ACTION_*` value, or `nil`
   to mark the key handled. Passing `nil` as the callback removes the binding.
+  Binding `softline.KEY_ENTER` to return `softline.KEY_ACTION_SUBMIT` opts into
+  immediate submission of a reverse-search match instead of accepting it for
+  editing.
   The default `softline.KEY_CTRL_V` action saves a PNG or JPEG from the Linux
   X11 clipboard and inserts its persistent cache path; a binding overrides
   that action. It uses `DISPLAY`, including one forwarded by `ssh -Y`, and a
@@ -273,14 +295,23 @@ live scroll regions, status lines, and spinners are off; the theme is
   theme colours; `nil` restores theme defaults. The prefix stays faded and the
   text stays italic.
 - `sl:output_stream_end()` ends the producer session without finishing an
-  external renderer document. Inside an active editor callback it retains the
+  external renderer document. While an editor is active it retains the
   prompt and scroll region for later finite output or another stream. Otherwise
   native chat closes using `clear_prompt_on_exit`: by default it clears only
   input rows, keeps queue/status rows, and leaves the cursor at column zero on
-  the current input row without a newline or scroll. With no rendered prompt
-  it returns below output. Non-TTY output adds no teardown controls. If the
-  last write left an ANSI or UTF-8 sequence incomplete, it returns
-  `nil, status` and keeps the session
+  the current input row without a newline or scroll. Setting
+  `clear_prompt_on_exit = true` clears the whole prompt area and returns below
+  the transcript. With no rendered prompt it returns below output.
+  Closing an idle native session also releases terminal
+  input ownership. Reopening a closed native session probes the cursor again.
+  A nonzero column restarts quote separation for an unfinished externally
+  written line; otherwise known spacing remains. A caller may run a foreground
+  child between editor calls, then call
+  `output_stream_begin()` to probe its final cursor and build a fresh prompt
+  without replacing the handle or its history/settings. Do this outside
+  editor callbacks; child execution belongs to the application. Non-TTY output
+  adds no teardown controls. If the last write left an ANSI or UTF-8 sequence
+  incomplete, it returns `nil, softline.ERROR_INVALID` and keeps the session
   open so the missing bytes can be supplied. Only one session may be open per
   editor. Output-session and quoted-prompt methods run on the Lua/editor owner
   thread; foreign producers should notify a watched descriptor instead of
@@ -404,7 +435,16 @@ without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 ## Examples
 
 The repository ships Lua examples for simple prompts and queued chat turns.
-The Lua chat example demonstrates queue delivery without libmdf:
+The Lua chat example demonstrates queue delivery without libmdf.
+
+The exact commands `!sh` and `/shell` open `$SHELL -i` (`/bin/sh -i` when
+unset or empty), only between turns on an interactive terminal. Enter or idle
+Alt-Enter launches the shell; busy submissions and attempts to queue/steer it
+are blocked, keeping the draft editable. Arguments are not interpreted as shell
+commands. The example ends its output session before `os.execute()` and begins
+a new session on return. Clear and resize inside the shell are allowed; history,
+queue and settings survive, and the transcript is never replayed. Failed launches
+and nonzero exits report an error and return to chat.
 
 ```sh
 make lua-test
@@ -428,3 +468,74 @@ make lua-debug-test
 make lua-debug-simple
 make lua-debug-chat
 ```
+
+## Persistent history
+
+```lua
+local sl = softline.new()
+assert(sl:history_open("my-app:project-id"))
+assert(sl:history_set_auto_add(true))
+```
+
+The key is a nonempty string copied by Softline. Native storage uses
+`$XDG_STATE_HOME/softline/history/<sha256-of-key>.history`, falling back to
+`$HOME/.local/state` when the XDG value is absent, empty or relative. An absolute
+`directory` overrides the complete directory. Parents are recursively created
+with mode 0700; the store directory and regular, user-owned files are private
+(files and lock files 0600; file symlinks/hard links are rejected).
+
+One physical line holds one escaped prompt: `\\`, `\n`, `\r`, `\t` represent
+backslash, LF (including Ctrl-J), CR and Tab. Unicode remains UTF-8. Entries
+are appended before the accepting call returns, without exit-time saves or
+per-entry fsync. Same-key processes and independent handles use a stable flock lock. Loading ignores a torn
+final record; appending removes it first. Recall is bounded by `history_max_len`;
+the file grows until explicit compaction. Zero cap disables recording. Same-key
+handles share storage, but refresh recall only when they load it.
+
+Custom storage uses the same acceptance boundary:
+
+```lua
+assert(sl:history_set_backend("my-app:project-id", {
+  load = function(key, emit)
+    -- Iterate your storage oldest first; emit entries individually.
+    for prompt in storage:prompts(key) do
+      assert(emit(prompt))
+    end
+    return true
+  end,
+  append = function(key, prompt)
+    return storage:append(key, prompt) -- true or nil, negative status
+  end,
+}))
+```
+
+`load` is optional; `append` is required. Hooks return `true` or `nil, status`,
+where status is a negative Softline error. Exceptions return `nil, status,
+message` to the caller. Hooks run synchronously in the coroutine calling the
+history/editor method, even if another coroutine created the handle. They
+cannot yield across the C call. Automatic recording failures return `nil,
+softline.READLINE_ERROR` from readline/next_prompt, with an additional message
+for a Lua callback exception. Exception messages belong to the current hook
+invocation; a later status-only failure does not repeat an earlier handled
+exception. The emitter works only during load; retaining and
+calling it later raises an error. Imports never call append. Attachment failure
+preserves the previous hooks and recall; append failure preserves recall.
+External storage rollback is the backend's responsibility. Do not reenter
+history operations or close the handle from a hook. Callback closures are owned
+by the handle and can be garbage-collected even when they capture that handle.
+An explicit `queue_draft()` append failure returns `nil, status` (and the
+callback exception message when present), retaining the editable draft without
+admitting a queue entry. Once an explicit history call returns an exception
+message, that message is consumed: a later cancellation, EOF, or unrelated
+editor error does not return it again. An unhandled automatic recording
+exception still supplies the message for its `READLINE_ERROR` result.
+
+Manual `history_add()` remains the default recording policy. With auto-add,
+programmatic queue insertion/replacement still requires an explicit add;
+applications must not add delivered queued entries again. The explicit
+`history_save(filename)` snapshot API does not participate in native locking or
+compaction and should not rewrite an active shared native file.
+
+The C and Lua chat examples attach `softline.examples.chat` at startup and enable
+auto-add for accepted prompts/commands, including queued and steered drafts.
+All themes use the same key. `SOFTLINE_HISTORY_DIR` overrides their directory.

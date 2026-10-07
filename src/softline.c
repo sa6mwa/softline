@@ -816,6 +816,13 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
               : 0;
     if (row < 0)
       row = 0;
+    /* Native close leaves column zero. A nonzero startup report therefore
+     * identifies an unfinished line written outside Softline between sessions.
+     * Restart quote separation instead of trusting the old newline count.
+     * This uses the existing startup probe; feed positioning stays unchanged.
+     */
+    if (impl->native_cursor_valid && col > 0)
+      impl->output_trailing_newlines = 0;
     impl->output_surface = sl_surface_create_native(
         impl->output_fd, width, prompt_top, row, col,
         impl->native_cursor_valid ? impl->native_history_rows : -1);
@@ -1295,7 +1302,7 @@ static int sl_history_set_max(sl_t *self, int max_len) {
   int start;
   int i;
   impl = sl_impl(self);
-  if (!impl || max_len < 0) {
+  if (!impl || impl->history_busy || max_len < 0) {
     sl_set_error(self, "invalid history length");
     return SL_ERROR_INVALID;
   }
@@ -1325,7 +1332,7 @@ static int sl_history_set_max(sl_t *self, int max_len) {
   return SL_OK;
 }
 
-static int sl_history_add_impl(sl_t *self, const char *line) {
+static int sl_history_add_memory(sl_t *self, const char *line) {
   sl_impl_t *impl;
   sl_history_t *history;
   char *copy;
@@ -1357,6 +1364,22 @@ static int sl_history_add_impl(sl_t *self, const char *line) {
     sl_set_error(self, "out of memory while adding history entry");
     return SL_ERROR_NOMEM;
   }
+  if (impl->history_append && !impl->history_busy) {
+    int status;
+    impl->history_busy = 1;
+    status =
+        impl->history_append(impl->history_key, line, impl->history_userdata);
+    impl->history_busy = 0;
+    if (status != SL_OK) {
+      free(copy);
+      if (impl->history_store && status == SL_ERROR_IO)
+        snprintf(impl->error, sizeof(impl->error),
+                 "native history append failed: %s", strerror(errno));
+      else
+        sl_set_error(self, "history backend append failed");
+      return status < 0 ? status : SL_ERROR;
+    }
+  }
   if (history->len == history->max_len) {
     free(history->items[0]);
     for (i = 1; i < history->len; i++)
@@ -1366,6 +1389,151 @@ static int sl_history_add_impl(sl_t *self, const char *line) {
   history->items[history->len] = copy;
   history->len++;
   return SL_OK;
+}
+
+/* Loading uses a staged receiver with no append hook. Public mutations are
+ * rejected during callbacks, including reentrant calls from custom backends. */
+static int sl_history_add_impl(sl_t *self, const char *line) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl || impl->history_busy) {
+    sl_set_error(self, "history callback cannot reenter history methods");
+    return SL_ERROR_INVALID;
+  }
+  return sl_history_add_memory(self, line);
+}
+
+static int sl_history_close_impl(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl || impl->history_busy) {
+    sl_set_error(self, "cannot detach history during its callback");
+    return SL_ERROR_INVALID;
+  }
+  free(impl->history_key);
+  impl->history_key = NULL;
+  impl->history_append = NULL;
+  impl->history_userdata = NULL;
+  sl_history_store_destroy(impl->history_store);
+  impl->history_store = NULL;
+  return SL_OK;
+}
+
+struct sl_history_import {
+  sl_t receiver;
+  sl_impl_t impl;
+  int status;
+};
+
+static int sl_history_emit(void *context, const char *prompt) {
+  struct sl_history_import *import = (struct sl_history_import *)context;
+  if (import->status == SL_OK)
+    import->status = sl_history_add_memory(&import->receiver, prompt);
+  return import->status;
+}
+
+static int sl_history_set_backend_impl(sl_t *self, const char *key,
+                                       sl_history_load_callback_t load,
+                                       sl_history_append_callback_t append,
+                                       void *userdata) {
+  sl_impl_t *impl = sl_impl(self);
+  struct sl_history_import import;
+  char *copy;
+  int i, status;
+  if (!impl || impl->history_busy || !key || !*key || !append) {
+    sl_set_error(self,
+                 "history backend requires a nonempty key and append hook");
+    return SL_ERROR_INVALID;
+  }
+  copy = sl_strdup(key);
+  if (!copy)
+    return SL_ERROR_NOMEM;
+  memset(&import, 0, sizeof(import));
+  import.receiver.impl = &import.impl;
+  import.impl.line_max_len = impl->line_max_len;
+  import.impl.history.max_len = impl->history.max_len;
+  status = SL_OK;
+  for (i = 0; i < impl->history.len && status == SL_OK; i++)
+    status = sl_history_emit(&import, impl->history.items[i]);
+  if (status == SL_OK && load) {
+    impl->history_busy = 1;
+    status = load(copy, sl_history_emit, &import, userdata);
+    impl->history_busy = 0;
+    if (status == SL_OK)
+      status = import.status;
+  }
+  if (status != SL_OK) {
+    free(copy);
+    sl_history_clear(&import.impl.history);
+    if (load == sl_history_store_load && status == SL_ERROR_IO)
+      snprintf(impl->error, sizeof(impl->error),
+               "native history load failed: %s", strerror(errno));
+    else if (load == sl_history_store_load && status == SL_ERROR_INVALID)
+      sl_set_error(self, "invalid or oversized native history record");
+    else
+      sl_set_error(self, "history backend load failed");
+    return status < 0 ? status : SL_ERROR;
+  }
+  (void)sl_history_close_impl(self);
+  sl_history_clear(&impl->history);
+  impl->history = import.impl.history;
+  impl->history_key = copy;
+  impl->history_append = append;
+  impl->history_userdata = userdata;
+  return SL_OK;
+}
+
+static int sl_history_open_impl(sl_t *self, const char *key,
+                                const char *directory) {
+  sl_impl_t *impl = sl_impl(self);
+  sl_history_store_t *store;
+  int status;
+  if (!impl || impl->history_busy)
+    return SL_ERROR_INVALID;
+  status = sl_history_store_create(key, directory, impl->line_max_len, &store);
+  if (status != SL_OK) {
+    if (status == SL_ERROR_INVALID)
+      sl_set_error(self,
+                   "history store requires a nonempty key and an absolute "
+                   "directory or XDG_STATE_HOME/HOME");
+    else if (status == SL_ERROR_IO)
+      snprintf(impl->error, sizeof(impl->error),
+               "cannot create private history directory: %s", strerror(errno));
+    else
+      sl_set_error(self, "out of memory setting up history store");
+    return status;
+  }
+  status = sl_history_set_backend_impl(self, key, sl_history_store_load,
+                                       sl_history_store_append, store);
+  if (status == SL_OK)
+    impl->history_store = store;
+  else
+    sl_history_store_destroy(store);
+  return status;
+}
+
+static int sl_history_compact_impl(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  int status;
+  if (!impl || impl->history_busy || !impl->history_store) {
+    sl_set_error(self, "history compaction requires an attached native store");
+    return SL_ERROR_INVALID;
+  }
+  status = sl_history_store_compact(impl->history_store, impl->history.max_len);
+  if (status != SL_OK)
+    sl_set_error(self, "native history compaction failed");
+  return status;
+}
+
+static int sl_history_set_auto_add_impl(sl_t *self, int enabled) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl || impl->history_busy)
+    return SL_ERROR_INVALID;
+  impl->history_auto_add = enabled != 0;
+  return SL_OK;
+}
+
+static int sl_history_search_active_impl(const sl_t *self) {
+  const sl_impl_t *impl = sl_impl_const(self);
+  return impl ? impl->history_search_active : 0;
 }
 
 static sl_key_binding_t *sl_find_key_binding(sl_impl_t *impl, sl_key_t key) {
@@ -1414,26 +1582,13 @@ static int sl_bind_key_method(sl_t *self, sl_key_t key,
   return SL_OK;
 }
 
-static int sl_history_save_char(FILE *fp, int ch) {
-  if (ch == '\n') {
-    if (fputc('\\', fp) == EOF || fputc('n', fp) == EOF)
-      return -1;
-  } else if (ch == '\\') {
-    if (fputc('\\', fp) == EOF || fputc('\\', fp) == EOF)
-      return -1;
-  } else if (fputc(ch, fp) == EOF) {
-    return -1;
-  }
-  return 0;
-}
-
 static int sl_history_save_impl(sl_t *self, const char *filename) {
   sl_impl_t *impl;
   FILE *fp;
   int fd;
   int i;
   impl = sl_impl(self);
-  if (!impl || !filename)
+  if (!impl || impl->history_busy || !filename)
     return SL_ERROR_INVALID;
   fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
   if (fd < 0) {
@@ -1452,17 +1607,7 @@ static int sl_history_save_impl(sl_t *self, const char *filename) {
     return SL_ERROR_IO;
   }
   for (i = 0; i < impl->history.len; i++) {
-    const char *p;
-    p = impl->history.items[i];
-    while (*p) {
-      if (sl_history_save_char(fp, (unsigned char)*p) != 0) {
-        fclose(fp);
-        sl_set_error(self, "failed to write history file");
-        return SL_ERROR_IO;
-      }
-      p++;
-    }
-    if (fputc('\n', fp) == EOF) {
+    if (sl_history_write_record(fp, impl->history.items[i]) != SL_OK) {
       fclose(fp);
       sl_set_error(self, "failed to write history file");
       return SL_ERROR_IO;
@@ -1475,66 +1620,16 @@ static int sl_history_save_impl(sl_t *self, const char *filename) {
   return SL_OK;
 }
 
-static int sl_history_load_record(FILE *fp, char *line, size_t line_cap,
-                                  int *too_long) {
-  size_t n;
-  int ch;
-  n = 0;
-  *too_long = 0;
-  while ((ch = fgetc(fp)) != EOF) {
-    if (ch == '\n')
-      break;
-    if (ch == '\\') {
-      ch = fgetc(fp);
-      if (ch == EOF)
-        ch = '\\';
-      else if (ch == 'n')
-        ch = '\n';
-      else if (ch != '\\') {
-        if (n + 1 < line_cap)
-          line[n] = '\\';
-        n++;
-      }
-    } else if (ch == '\r') {
-      ch = fgetc(fp);
-      if (ch == '\n')
-        break;
-      if (ch != EOF)
-        ungetc(ch, fp);
-      ch = '\n';
-    }
-    if (n + 1 >= line_cap)
-      *too_long = 1;
-    else
-      line[n] = (char)ch;
-    n++;
-    if (*too_long) {
-      while ((ch = fgetc(fp)) != EOF && ch != '\n') {
-      }
-      break;
-    }
-  }
-  if (ch == EOF && n == 0)
-    return 0;
-  if (line_cap > 0) {
-    if (n >= line_cap)
-      line[line_cap - 1] = '\0';
-    else
-      line[n] = '\0';
-  }
-  return 1;
-}
-
 static int sl_history_load_impl(sl_t *self, const char *filename) {
   sl_impl_t *impl;
   FILE *fp;
   char *line;
   int had_too_long;
-  int too_long;
+  int record;
   if (!self || !filename)
     return SL_ERROR_INVALID;
   impl = sl_impl(self);
-  if (!impl)
+  if (!impl || impl->history_busy)
     return SL_ERROR_INVALID;
   fp = fopen(filename, "r");
   if (!fp) {
@@ -1548,16 +1643,29 @@ static int sl_history_load_impl(sl_t *self, const char *filename) {
     return SL_ERROR_NOMEM;
   }
   had_too_long = 0;
-  while (sl_history_load_record(fp, line, impl->line_max_len + 1, &too_long)) {
-    if (too_long) {
-      had_too_long = 1;
-      sl_set_error(self, "history entry exceeds configured maximum length");
-      continue;
-    }
-    if (sl_history_add_impl(self, line) != SL_OK) {
+  while ((record = sl_history_read_record(fp, line, impl->line_max_len + 1,
+                                          0)) != 0) {
+    if (record == SL_ERROR_IO) {
       free(line);
       fclose(fp);
-      return SL_ERROR;
+      sl_set_error(self, "failed to read history file");
+      return SL_ERROR_IO;
+    }
+    if (record == SL_ERROR_INVALID) {
+      had_too_long = 1;
+      sl_set_error(self, "invalid or oversized history record");
+      continue;
+    }
+    {
+      int status;
+      impl->history_busy = 1;
+      status = sl_history_add_memory(self, line);
+      impl->history_busy = 0;
+      if (status != SL_OK) {
+        free(line);
+        fclose(fp);
+        return status;
+      }
     }
   }
   free(line);
@@ -5239,6 +5347,11 @@ static char *sl_readline_plain(sl_t *self, const char *prompt) {
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
+  if (impl->history_auto_add && sl_history_add_impl(self, result) != SL_OK) {
+    free(result);
+    sl_set_readline_status(self, SL_READLINE_ERROR);
+    return NULL;
+  }
   sl_set_readline_status(self, SL_READLINE_SUBMITTED);
   return result;
 }
@@ -5283,7 +5396,6 @@ static void sl_history_nav(sl_t *self, int dir) {
 }
 
 typedef struct sl_history_search {
-  int active;
   char *saved;
   char *query;
   size_t query_len;
@@ -5293,7 +5405,10 @@ typedef struct sl_history_search {
   char *prompt;
 } sl_history_search_t;
 
-static void sl_history_search_cleanup(sl_history_search_t *search) {
+static void sl_history_search_cleanup(sl_t *self, sl_history_search_t *search) {
+  sl_impl_t *impl = sl_impl(self);
+  if (impl)
+    impl->history_search_active = 0;
   if (!search)
     return;
   free(search->saved);
@@ -5420,7 +5535,7 @@ static int sl_history_search_refresh(sl_t *self, sl_history_search_t *search,
   sl_impl_t *impl;
   int found;
   impl = sl_impl(self);
-  if (!impl || !search || !search->active)
+  if (!impl || !search || !impl->history_search_active)
     return -1;
   found = sl_history_search_find(impl, search, repeat);
   if (found >= 0) {
@@ -5442,8 +5557,8 @@ static int sl_history_search_start(sl_t *self, sl_history_search_t *search) {
   impl = sl_impl(self);
   if (!impl || !search)
     return -1;
-  if (!search->active) {
-    sl_history_search_cleanup(search);
+  if (!impl->history_search_active) {
+    sl_history_search_cleanup(self, search);
     search->saved = sl_strdup(impl->buf);
     if (!search->saved)
       return -1;
@@ -5452,7 +5567,7 @@ static int sl_history_search_start(sl_t *self, sl_history_search_t *search) {
     search->query[0] = '\0';
     search->query_len = 0;
     search->match_index = -1;
-    search->active = 1;
+    impl->history_search_active = 1;
   }
   return sl_history_search_refresh(self, search, search->has_match);
 }
@@ -5460,14 +5575,14 @@ static int sl_history_search_start(sl_t *self, sl_history_search_t *search) {
 static int sl_history_search_cancel(sl_t *self, sl_history_search_t *search) {
   int rc;
   rc = 0;
-  if (search && search->active)
+  if (search && sl_history_search_active_impl(self))
     rc = sl_buf_set(self, search->saved ? search->saved : "");
-  sl_history_search_cleanup(search);
+  sl_history_search_cleanup(self, search);
   return rc;
 }
 
-static int sl_history_search_accept(sl_history_search_t *search) {
-  sl_history_search_cleanup(search);
+static int sl_history_search_accept(sl_t *self, sl_history_search_t *search) {
+  sl_history_search_cleanup(self, search);
   return 0;
 }
 
@@ -5576,6 +5691,15 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
           sl_set_error(self, "failed to queue steer draft");
           return SL_ERROR_NOMEM;
         }
+        if (impl->history_auto_add) {
+          rc = sl_history_add_impl(self, impl->buf);
+          if (rc != SL_OK) {
+            char *discard = sl_prompt_queue_take_raw(
+                &impl->prompt_queue, impl->prompt_queue.len - 1);
+            free(discard);
+            return rc;
+          }
+        }
         if (sl_buf_set(self, "") != 0) {
           char *discard = sl_prompt_queue_take_raw(&impl->prompt_queue,
                                                    impl->prompt_queue.len - 1);
@@ -5651,6 +5775,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   }
   memset(&search, 0, sizeof(search));
   search.match_index = -1;
+  impl->history_search_active = 0;
   impl->history_index = -1;
   impl->bracketed_paste = 0;
   impl->request_submit = 0;
@@ -5688,7 +5813,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     size_t paste_len;
     int key;
     sl_key_action_t action;
-    render_prompt = search.active && search.prompt ? search.prompt : prompt;
+    render_prompt =
+        impl->history_search_active && search.prompt ? search.prompt : prompt;
     impl->active_prompt = render_prompt;
     sl_refresh_scroll_region(self);
     paste_len = 0;
@@ -5725,7 +5851,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
           done = 1;
         }
       }
-      render_prompt = search.active && search.prompt ? search.prompt : prompt;
+      render_prompt =
+          impl->history_search_active && search.prompt ? search.prompt : prompt;
       impl->active_prompt = render_prompt;
       if (!done && sl_render_apply(self, render_prompt) != 0) {
         failed = 1;
@@ -5757,7 +5884,9 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
           done = 1;
           break;
         }
-        render_prompt = search.active && search.prompt ? search.prompt : prompt;
+        render_prompt = impl->history_search_active && search.prompt
+                            ? search.prompt
+                            : prompt;
         impl->active_prompt = render_prompt;
         if (sl_render_apply(self, render_prompt) != 0) {
           failed = 1;
@@ -5779,7 +5908,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       if (action == SL_KEY_ACTION_HANDLED)
         break;
       if (action == SL_KEY_ACTION_SUBMIT) {
-        sl_history_search_accept(&search);
+        sl_history_search_accept(self, &search);
         done = 1;
         break;
       }
@@ -5794,15 +5923,15 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         done = 1;
         break;
       }
-      if (search.active) {
+      if (impl->history_search_active) {
         switch (key) {
         case SL_KEY_CTRL_C:
           interrupted = 1;
           done = 1;
           break;
         case SL_KEY_ENTER:
-          sl_history_search_accept(&search);
-          done = 1;
+          sl_history_search_accept(self, &search);
+          /* Return the match to normal editing; this Enter does not submit. */
           break;
         case SL_KEY_CTRL_R:
           if (sl_history_search_refresh(self, &search, 1) != 0) {
@@ -6011,7 +6140,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       }
       break;
     }
-    render_prompt = search.active && search.prompt ? search.prompt : prompt;
+    render_prompt =
+        impl->history_search_active && search.prompt ? search.prompt : prompt;
     impl->active_prompt = render_prompt;
     if (!done && sl_render_apply(self, render_prompt) != 0) {
       failed = 1;
@@ -6024,7 +6154,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     sl_prompt_queue_stop_queued_turns(impl);
     free(promoted);
     free(queued);
-    sl_history_search_cleanup(&search);
+    sl_history_search_cleanup(self, &search);
     sl_render_clear_active(self);
     sl_release_auto_scroll_region(impl);
     (void)sl_show_cursor(impl);
@@ -6052,7 +6182,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   if (failed) {
     free(promoted);
     free(queued);
-    sl_history_search_cleanup(&search);
+    sl_history_search_cleanup(self, &search);
     sl_release_auto_scroll_region(impl);
     (void)sl_show_cursor(impl);
     impl->active_prompt = NULL;
@@ -6073,7 +6203,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     if (sl_history_search_cancel(self, &search) != 0)
       failed = 1;
   } else {
-    sl_history_search_accept(&search);
+    sl_history_search_accept(self, &search);
   }
   if (!failed && (sl_render_apply(self, prompt) != 0 ||
                   sl_render_finish(self, queue_dispatch) != 0))
@@ -6091,7 +6221,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   if (failed) {
     free(promoted);
     free(queued);
-    sl_history_search_cleanup(&search);
+    sl_history_search_cleanup(self, &search);
     free(impl->history_edit);
     impl->history_edit = NULL;
     impl->history_index = -1;
@@ -6102,7 +6232,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   if (eof || cancelled) {
     free(promoted);
     free(queued);
-    sl_history_search_cleanup(&search);
+    sl_history_search_cleanup(self, &search);
     free(impl->history_edit);
     impl->history_edit = NULL;
     impl->history_index = -1;
@@ -6115,24 +6245,33 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   if (!result) {
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_ERROR);
-    sl_history_search_cleanup(&search);
+    sl_history_search_cleanup(self, &search);
     free(impl->history_edit);
     impl->history_edit = NULL;
     impl->history_index = -1;
     sl_buf_set(self, "");
     return NULL;
   }
+  if (!promoted && !queued && impl->history_auto_add &&
+      sl_history_add_impl(self, result) != SL_OK) {
+    free(result);
+    result = NULL;
+    sl_disable_raw(self);
+    sl_set_readline_status(self, SL_READLINE_ERROR);
+  }
   {
     sl_prompt_source_t result_source;
     result_source = promoted ? SL_PROMPT_SOURCE_PROMOTED
                     : queued ? SL_PROMPT_SOURCE_QUEUED
                              : SL_PROMPT_SOURCE_DIRECT;
-    sl_set_readline_status(self, SL_READLINE_SUBMITTED);
-    if (source)
-      *source = result_source;
-    sl_prompt_queue_resume_on_user_turn(impl, result_source);
+    if (result) {
+      sl_set_readline_status(self, SL_READLINE_SUBMITTED);
+      if (source)
+        *source = result_source;
+      sl_prompt_queue_resume_on_user_turn(impl, result_source);
+    }
   }
-  sl_history_search_cleanup(&search);
+  sl_history_search_cleanup(self, &search);
   free(impl->history_edit);
   impl->history_edit = NULL;
   impl->history_index = -1;
@@ -6177,8 +6316,11 @@ static void sl_destroy_method(sl_t *self) {
   impl = sl_impl(self);
   if (!self)
     return;
-  if (impl && impl->watch_callback_depth != 0) {
-    sl_set_error(self, "cannot destroy softline handle from a watch callback");
+  if (impl && (impl->watch_callback_depth != 0 || impl->history_busy)) {
+    sl_set_error(self,
+                 impl->history_busy
+                     ? "cannot destroy softline handle from a history callback"
+                     : "cannot destroy softline handle from a watch callback");
     return;
   }
   if (impl) {
@@ -6187,6 +6329,7 @@ static void sl_destroy_method(sl_t *self) {
     sl_release_auto_scroll_region(impl);
     sl_disable_raw(self);
     (void)sl_show_cursor(impl);
+    (void)sl_history_close_impl(self);
     sl_history_clear(&impl->history);
     sl_prompt_queue_clear_raw(&impl->prompt_queue);
     sl_statusline_clear(&impl->statusline);
@@ -6510,6 +6653,15 @@ static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
   if (rc != 0) {
     sl_set_error(self, "failed to queue active draft");
     return SL_ERROR_NOMEM;
+  }
+  if (impl->history_auto_add) {
+    int status = sl_history_add_impl(self, impl->buf);
+    if (status != SL_OK) {
+      char *discard = sl_prompt_queue_take_raw(&impl->prompt_queue,
+                                               impl->prompt_queue.len - 1);
+      free(discard);
+      return status;
+    }
   }
   if (sl_buf_set(self, "") != 0) {
     sl_set_error(self, "failed to clear queued draft");
@@ -7038,6 +7190,12 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->history_set_max_len = sl_history_set_max;
   self->history_save = sl_history_save_impl;
   self->history_load = sl_history_load_impl;
+  self->history_set_backend = sl_history_set_backend_impl;
+  self->history_open = sl_history_open_impl;
+  self->history_close = sl_history_close_impl;
+  self->history_compact = sl_history_compact_impl;
+  self->history_set_auto_add = sl_history_set_auto_add_impl;
+  self->history_search_active = sl_history_search_active_impl;
   self->set_screen_width = sl_set_screen_width_method;
   self->set_live_scroll_region = sl_set_live_scroll_region_method;
   self->set_image_paste_path_template = sl_set_image_paste_path_template_method;
@@ -7192,6 +7350,39 @@ int sl_history_load(sl_t *self, const char *filename) {
   if (!self || !self->history_load)
     return SL_ERROR_INVALID;
   return self->history_load(self, filename);
+}
+
+int sl_history_set_backend(sl_t *self, const char *key,
+                           sl_history_load_callback_t load,
+                           sl_history_append_callback_t append,
+                           void *userdata) {
+  if (!self || !self->history_set_backend)
+    return SL_ERROR_INVALID;
+  return self->history_set_backend(self, key, load, append, userdata);
+}
+
+int sl_history_open(sl_t *self, const char *key, const char *directory) {
+  if (!self || !self->history_open)
+    return SL_ERROR_INVALID;
+  return self->history_open(self, key, directory);
+}
+
+int sl_history_close(sl_t *self) {
+  if (!self || !self->history_close)
+    return SL_ERROR_INVALID;
+  return self->history_close(self);
+}
+
+int sl_history_compact(sl_t *self) {
+  if (!self || !self->history_compact)
+    return SL_ERROR_INVALID;
+  return self->history_compact(self);
+}
+
+int sl_history_set_auto_add(sl_t *self, int enabled) {
+  if (!self || !self->history_set_auto_add)
+    return SL_ERROR_INVALID;
+  return self->history_set_auto_add(self, enabled);
 }
 
 int sl_set_screen_width(sl_t *self, int width) {
@@ -7432,6 +7623,12 @@ int sl_bind_key(sl_t *self, sl_key_t key, sl_key_callback_t callback,
   if (!self || !self->bind_key)
     return SL_ERROR_INVALID;
   return self->bind_key(self, key, callback, userdata);
+}
+
+int sl_history_search_active(const sl_t *self) {
+  if (!self || !self->history_search_active)
+    return 0;
+  return self->history_search_active(self);
 }
 
 int sl_insert(sl_t *self, const char *text) {
