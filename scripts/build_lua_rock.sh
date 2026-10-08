@@ -1,5 +1,9 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 CC="${SOFTLINE_LUA_CC:-${1:?missing compiler}}"
 CFLAGS="${2:?missing CFLAGS}"

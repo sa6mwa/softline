@@ -1,8 +1,12 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
+VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
 STAGE_ROOT="${1:-${ROOT_DIR}/build/lua-release/softline-lua-${VERSION}}"
 
 rm -rf "${STAGE_ROOT}"
@@ -16,6 +20,7 @@ cp "${ROOT_DIR}/softline.rockspec.in" "${STAGE_ROOT}/"
 cp "${ROOT_DIR}/lua/README.md" "${STAGE_ROOT}/lua/"
 cp "${ROOT_DIR}/lua/softline_lua.c" "${STAGE_ROOT}/lua/"
 cp "${ROOT_DIR}/scripts/build_lua_rock.sh" "${STAGE_ROOT}/scripts/"
+cp "${ROOT_DIR}/scripts/require-host-bash.sh" "${STAGE_ROOT}/scripts/"
 cp "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${STAGE_ROOT}/scripts/"
 cp "${ROOT_DIR}/include/softline/softline.h" "${STAGE_ROOT}/include/softline/"
 cp "${ROOT_DIR}/tests/lua_smoke.lua" "${STAGE_ROOT}/tests/"
@@ -31,6 +36,7 @@ softline.rockspec.in
 lua/README.md
 lua/softline_lua.c
 scripts/build_lua_rock.sh
+scripts/require-host-bash.sh
 scripts/render_lua_rockspec.sh
 include/softline/softline.h
 tests/lua_smoke.lua
