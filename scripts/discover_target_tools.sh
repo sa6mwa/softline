@@ -1,5 +1,9 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 usage() {
   echo "usage: $0 <build-dir> <target-id>" >&2

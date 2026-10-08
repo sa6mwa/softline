@@ -21,17 +21,6 @@ if(NOT DEFINED SL_TARGET_ID OR SL_TARGET_ID STREQUAL "")
 endif()
 
 execute_process(
-  COMMAND "${_softline_resolver}" ensure "${SL_TARGET_ID}"
-  RESULT_VARIABLE _softline_ensure_result
-  OUTPUT_VARIABLE _softline_ensure_output
-  ERROR_VARIABLE _softline_ensure_error)
-if(NOT _softline_ensure_result EQUAL 0)
-  message(FATAL_ERROR
-    "Unable to provision the pinned Bootlin toolchain for ${SL_TARGET_ID}:\n"
-    "${_softline_ensure_error}")
-endif()
-
-execute_process(
   COMMAND "${_softline_resolver}" discover "${SL_TARGET_ID}"
   RESULT_VARIABLE _softline_discover_result
   OUTPUT_VARIABLE _softline_description
@@ -40,6 +29,12 @@ if(NOT _softline_discover_result EQUAL 0)
   message(FATAL_ERROR
     "Unable to inspect the pinned Bootlin toolchain for ${SL_TARGET_ID}:\n"
     "${_softline_discover_error}")
+endif()
+
+if(NOT _softline_description MATCHES "(^|[\r\n])status=ready([\r\n]|$)")
+  message(FATAL_ERROR
+    "Pinned Bootlin collection is not ready; prepare explicitly with: "
+    "${_softline_resolver} ensure ${SL_TARGET_ID}")
 endif()
 
 function(_softline_toolchain_value key output)
