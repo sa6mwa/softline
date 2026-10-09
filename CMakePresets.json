@@ -24,6 +24,7 @@
       "displayName": "Debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "SL_TEST_TIMEOUT_SCALE": "1",
         "SL_BUILD_TESTS": "ON",
         "SL_BUILD_EXAMPLES": "ON"
       }
@@ -67,6 +68,7 @@
       "name": "valgrind",
       "inherits": "linux-base",
       "displayName": "Native Valgrind",
+      "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "SL_TEST_TIMEOUT_SCALE": "5",
