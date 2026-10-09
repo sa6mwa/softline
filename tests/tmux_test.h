@@ -19,7 +19,7 @@
 
 struct terminal {
   const char *tmux;
-  char work[4096], socket[4096], commands[4096], acks[4096], recording[4096];
+  char work[4096], commands[4096], acks[4096], recording[4096];
   char pane[32];
   int command_fd, ack_fd, line_open, expected_prompt;
   unsigned char reply[6];
@@ -53,7 +53,7 @@ static int command(struct terminal *t, char *output, size_t capacity, ...) {
   double deadline;
   args[index++] = t->tmux;
   args[index++] = "-S";
-  args[index++] = t->socket;
+  args[index++] = "socket";
   args[index++] = "-f";
   args[index++] = "/dev/null";
   va_start(input, capacity);
@@ -68,6 +68,9 @@ static int command(struct terminal *t, char *output, size_t capacity, ...) {
     close(pipe_fd[0]);
     dup2(pipe_fd[1], 1);
     close(pipe_fd[1]);
+    /* Bind relative to owned scratch, including deeply extracted sources. */
+    if (chdir(t->work))
+      _exit(127);
     execv(t->tmux, (char *const *)args);
     _exit(127);
   }
@@ -230,10 +233,8 @@ static int prepare(struct terminal *t, const char *tmux, const char *build,
           (int)sizeof(t->work) ||
       !mkdtemp(t->work))
     return 1;
-  if (strlen(t->work) + 17 >= sizeof(t->socket))
+  if (strlen(t->work) + 17 >= sizeof(t->commands))
     return 1;
-  strcpy(t->socket, t->work);
-  strcat(t->socket, "/socket");
   strcpy(t->commands, t->work);
   strcat(t->commands, "/commands");
   strcpy(t->acks, t->work);

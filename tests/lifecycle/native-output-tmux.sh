@@ -4,7 +4,9 @@ tmux=$1
 fixture=$2
 build=$3
 work=$(mktemp -d "$build/native-tmux.XXXXXX")
-socket="$work/tmux.sock"
+# Relative Unix socket paths stay below the kernel limit in extracted sources.
+cd "$work"
+socket=tmux.sock
 cleanup() {
   "$tmux" -S "$socket" kill-server >/dev/null 2>&1 || :
   rm -rf -- "$work"
