@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
+include("${CMAKE_CURRENT_LIST_DIR}/header-doxygen.cmake")
 file(READ "${INVENTORY}" facts)
 file(READ "${ROOT}/lua/README.md" docs)
 file(READ "${ROOT}/README.md" readme)

@@ -27,10 +27,21 @@ forbidden=("$ROOT_DIR" "${HOME:-}" "${CPKT_TOOLCHAIN_CACHE:-$cache/cpkt/toolchai
   "${CPKT_DEPENDENCY_CACHE:-$cache/cpkt/deps}" "${CPKT_TOOLCHAIN_ROOT:-}" "${CPKT_TOOLCHAIN_SYSROOT:-}")
 fail() { echo "ERROR: $*" >&2; exit 1; }
 scan_paths() {
-  local file=$1 label=$2 needle
+  local file=$1 label=$2 needle collection_file=$1
   for needle in "${forbidden[@]}"; do
     [[ -z "$needle" ]] || ! LC_ALL=C grep -aFq -- "$needle" "$file" || fail "$label: forbidden local/cache path $needle"
   done
+  # Shell source fixtures refer to a variable-based cache, not an absolute
+  # builder path. Only remove those template references from this check.
+  case "$label" in
+    scripts/test-*.sh|*/scripts/test-*.sh|tests/lifecycle/*.sh|*/tests/lifecycle/*.sh)
+      sed -E 's@\$\{[A-Za-z_][A-Za-z0-9_]*\}/[-/A-Za-z0-9_.+]*|\$[A-Za-z_][A-Za-z0-9_]*\/[-/A-Za-z0-9_.+]*@@g' "$file" > "$scratch/collection-paths"
+      collection_file="$scratch/collection-paths"
+      ;;
+  esac
+  if LC_ALL=C grep -aEq '/[^[:space:]"]*--(glibc|musl)--stable-[0-9][^[:space:]"]*/' "$collection_file"; then
+    fail "$label: pinned Bootlin collection path"
+  fi
 }
 inspect_elf() {
   local file=$1 label=$2 output value entry cache_file description soname
@@ -78,16 +89,6 @@ scan() {
   [[ -f "$file" ]] || return 0
   scan_paths "$file" "$label"
   magic=$(od -An -tx1 -N4 "$file" | tr -d ' \n')
-  # Source fixtures legitimately name selected collections. Generic collection
-  # path signatures concern compiled payloads; actual local roots are forbidden
-  # in every file by scan_paths above.
-  case "$magic" in
-    7f454c46|213c6172|cffaedfe|cefaedfe|feedfacf|feedface|cafebabe|bebafeca)
-      if LC_ALL=C grep -aEq '/[^[:space:]"]*--(glibc|musl)--stable-[0-9][^[:space:]"]*/' "$file"; then
-        fail "$label: pinned Bootlin collection path"
-      fi
-      ;;
-  esac
   if [[ "$magic" == 7f454c46 ]]; then inspect_elf "$file" "$label"; return; fi
   case "$file" in
     *.tar.gz|*.tgz|*.tar.xz|*.tar|*.zip|*.rock)

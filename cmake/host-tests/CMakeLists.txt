@@ -31,6 +31,9 @@ add_custom_target(api_inventory ALL DEPENDS "${api_inventory}")
 add_test(NAME public_header_docs COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
   "-DINVENTORY=${api_inventory}" -P "${root}/tests/lifecycle/public-api.cmake")
 set_tests_properties(public_header_docs PROPERTIES TIMEOUT 30 LABELS "host;api")
+add_test(NAME public_header_docs_negative COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
+  "-DINVENTORY=${api_inventory}" -P "${root}/tests/lifecycle/header-doc-fixtures.cmake")
+set_tests_properties(public_header_docs_negative PROPERTIES TIMEOUT 30 LABELS "host;api")
 add_test(NAME runtime_config COMMAND "${BASH_EXECUTABLE}"
   "${root}/tests/lifecycle/cache.sh" "${root}")
 add_test(NAME artifact_portability COMMAND "${BASH_EXECUTABLE}" "${root}/tests/lifecycle/artifact-portability.sh" "${root}")
