@@ -1,10 +1,15 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "${ROOT_DIR}/build"
 TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/consumer.XXXXXX")"
-VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
+PRODUCER_DIR="${ROOT_DIR}/build/consumer-producer"
+VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
 SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-0}"
 BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
 BOOTLIN_TARGET=""
@@ -13,11 +18,12 @@ BOOTLIN_TARGET_ARG=""
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 BOOTLIN_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target)"
-"${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${BOOTLIN_TARGET}" >/dev/null
-eval "$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${BOOTLIN_TARGET}")"
+toolchain_env="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${BOOTLIN_TARGET}")" || exit $?
+eval "$toolchain_env"
 BOOTLIN_TOOLCHAIN_ARG="-DCMAKE_TOOLCHAIN_FILE=${BOOTLIN_TOOLCHAIN}"
 BOOTLIN_TARGET_ARG="-DSL_TARGET_ID=${BOOTLIN_TARGET}"
 CONSUMER_CC="${CC}"
+READELF="${CPKT_TOOLCHAIN_READELF:?selected collection did not report readelf}"
 
 APP_DIR="${TMP_DIR}/consumer"
 
@@ -29,6 +35,7 @@ project(softline_consumer_smoke LANGUAGES C)
 find_package(softline REQUIRED CONFIG)
 
 add_executable(consumer main.c)
+target_compile_options(consumer PRIVATE -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror)
 target_link_libraries(consumer PRIVATE softline::softline)
 include("${SOFTLINE_RUNTIME_HELPER}")
 softline_local_runtime(consumer)
@@ -116,7 +123,7 @@ int main(void) {
 EOF
 
 install_disabled_smoke() {
-  build_dir="${TMP_DIR}/softline-build-install-disabled"
+  build_dir="${PRODUCER_DIR}"
   install_dir="${TMP_DIR}/install-disabled"
 
   cmake -S "${ROOT_DIR}" -B "${build_dir}" \
@@ -125,6 +132,9 @@ install_disabled_smoke() {
     ${BOOTLIN_TARGET_ARG:+"${BOOTLIN_TARGET_ARG}"} \
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DSL_BUILD_STATIC=ON -DSL_BUILD_SHARED=ON \
+    -DCMAKE_INSTALL_LIBDIR=lib \
     -DSL_INSTALL=OFF \
     -DCMAKE_INSTALL_PREFIX="${install_dir}"
   cmake --build "${build_dir}"
@@ -169,10 +179,10 @@ smoke_mode() {
   build_shared="$3"
   install_libdir_arg="${4:-}"
   install_dir="${TMP_DIR}/install-${mode}"
-  build_dir="${TMP_DIR}/softline-build-${mode}"
+  build_dir="${PRODUCER_DIR}"
   app_build_dir="${TMP_DIR}/consumer-build-${mode}"
   pkg_consumer="${TMP_DIR}/pkg-config-consumer-${mode}"
-  configure_libdir_arg=""
+  configure_libdir_arg="-DCMAKE_INSTALL_LIBDIR=${install_libdir_arg:-lib}"
   install_libdir=""
 
   if [ -n "${install_libdir_arg}" ]; then
@@ -185,6 +195,7 @@ smoke_mode() {
     ${BOOTLIN_TARGET_ARG:+"${BOOTLIN_TARGET_ARG}"} \
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
     -DSL_BUILD_STATIC="${build_static}" \
     -DSL_BUILD_SHARED="${build_shared}" \
     -DSL_INSTALL=ON \
@@ -219,7 +230,7 @@ smoke_mode() {
     echo "ERROR: pkg-config is required for package consumer smoke"
     exit 1
   fi
-  PKG_CONFIG_PATH="${install_libdir}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+  PKG_CONFIG_PATH="${install_libdir}/pkgconfig"
   export PKG_CONFIG_PATH
   pkg-config --exists softline
   test "$(pkg-config --modversion softline)" = "${VERSION}"
@@ -242,6 +253,6 @@ fi
 smoke_mode static-only ON OFF
 smoke_mode shared-only OFF ON
 smoke_mode both-lib64 ON ON lib64
-SL_VERSION_OVERRIDE=v1.2.3 sh "$0" --version-override-only
+SL_VERSION_OVERRIDE=v1.2.3 bash "$0" --version-override-only
 
 echo "Installed package consumer smoke test passed."
