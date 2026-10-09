@@ -175,6 +175,9 @@ static int exercise(const char *shell) {
   REQUIRE(send_bytes(&e, "\003") == 0);
   REQUIRE(wait_for(&e, c_chat ? "Operation cancelled" : "[operation] cancelled",
                    mark) == 0);
+  /* Cancellation output precedes re-entering raw prompt input. Wait for that
+   * observable handoff before sending a new command. */
+  REQUIRE(prompt(&e, mark) == 0);
   mark = e.length;
   REQUIRE(send_bytes(&e, "/shell\r") == 0);
   REQUIRE(wait_for(&e, "SHELL_READY", mark) == 0);
