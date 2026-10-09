@@ -1,10 +1,14 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LUA_TREE="${ROOT_DIR}/build/luarocks"
 SDK_DIR="${ROOT_DIR}/build/lua-sdk"
-ROCKSPEC="${ROOT_DIR}/build/lua-rockspec/softline-$(sh "${ROOT_DIR}/scripts/release_version.sh")-1.rockspec"
+ROCKSPEC="${ROOT_DIR}/build/lua-rockspec/softline-$(bash "${ROOT_DIR}/scripts/release_version.sh")-1.rockspec"
 INSTALL_LIBDIR="${SOFTLINE_LUA_INSTALL_LIBDIR:-}"
 INSTALL_LIBDIR_ARG=""
 
@@ -30,12 +34,11 @@ else
 fi
 
 "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${ROCKSPEC}" >/dev/null
-sh "${ROOT_DIR}/scripts/build-local-lua.sh" "${SDK_LIB_DIR}"
+bash "${ROOT_DIR}/scripts/build-local-lua.sh" "${SDK_LIB_DIR}"
 SOFTLINE_LUA_INCDIR="$(cat "${ROOT_DIR}/build/local-lua/lua-source-dir.txt")"
 export SOFTLINE_LUA_INCDIR
 rm -rf "${LUA_TREE}"
 NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target)"
-"${ROOT_DIR}/scripts/cpkt-toolchains.sh" ensure "${NATIVE_TARGET}" >/dev/null
 BOOTLIN_ENV="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
 eval "${BOOTLIN_ENV}"
 SOFTLINE_LUA_CC="${CC}"
@@ -52,31 +55,6 @@ eval "${SOFTLINE_LUA_ENV}"
 mkdir -p "${ROOT_DIR}/build/lua-test-history"
 SOFTLINE_HISTORY_DIR="${ROOT_DIR}/build/lua-test-history"
 export SOFTLINE_HISTORY_DIR
-lua "${ROOT_DIR}/tests/lua_history.lua" "${ROOT_DIR}/build"
-printf 'auto\nreadline\n' | lua "${ROOT_DIR}/tests/lua_history_auto.lua"
-python3 "${ROOT_DIR}/tests/lua_history_editor.py" "$(command -v lua)"
-python3 "${ROOT_DIR}/tests/check_chat_history.py" lua "$(command -v lua)" "${ROOT_DIR}/build"
-lua "${ROOT_DIR}/tests/lua_runtime.lua"
-lua -e 'local s=require("softline"); assert(s.new); print(_VERSION)'
-lua "${ROOT_DIR}/tests/lua_smoke.lua"
-printf 'hello\n' | lua "${ROOT_DIR}/tests/lua_readline.lua"
-SOFTLINE_LUA_CHAT_OUTPUT="$(printf 'hello\n/quit\n' | lua "${ROOT_DIR}/examples/chat.lua")"
-if [ "${SOFTLINE_LUA_CHAT_OUTPUT}" != "[turn] hello" ]; then
-  echo "ERROR: non-tty Lua chat output mismatch: ${SOFTLINE_LUA_CHAT_OUTPUT}" >&2
-  exit 1
-fi
-case "${SOFTLINE_LUA_CHAT_OUTPUT}" in
-  *"$(printf '\033[')"*)
-    echo "ERROR: non-tty Lua chat emitted terminal control sequences" >&2
-    exit 1
-    ;;
-esac
-SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_ctrl_c.py" "${ROOT_DIR}"
-SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_mixed_tty.py" "${ROOT_DIR}"
-SOFTLINE_CHAT_OPERATION_STEP_MS=25 python3 "${ROOT_DIR}/tests/lua_chat_watch.py" "${ROOT_DIR}"
-python3 "${ROOT_DIR}/tests/check_chat_shell.py" lua "$(command -v lua)" "${ROOT_DIR}/build"
-python3 "${ROOT_DIR}/tests/lua_live_output.py" "${ROOT_DIR}"
-python3 "${ROOT_DIR}/tests/lua_idle_callback.py" "${ROOT_DIR}"
-python3 "${ROOT_DIR}/tests/lua_watch_file_gc.py" "${ROOT_DIR}"
-
-echo "Lua facade tests passed."
+cmake -S "${ROOT_DIR}/cmake/lua-tests" -B "${ROOT_DIR}/build/lua-tests" -G Ninja \
+  -DSOFTLINE_LUA_EXECUTABLE="$(command -v lua)" -DSOFTLINE_LUA_DEBUG=OFF
+exec ctest --test-dir "${ROOT_DIR}/build/lua-tests" --stop-on-failure --output-on-failure --no-tests=error
