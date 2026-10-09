@@ -15,7 +15,10 @@ for path in sorted(source.rglob("*")):
     text = path.read_text()
     identifiers.update(re.findall(r"\bares_[A-Za-z0-9_]+\b", text))
     macros.update(re.findall(r"^\s*#\s*define\s+(ares_\w+)", text, re.M))
-output.write_text("/* Generated private resolver namespace. */\n"
+content = ("/* Generated private resolver namespace. */\n"
                   "#ifndef SL_CARES_NAMESPACE_H\n#define SL_CARES_NAMESPACE_H\n" +
                   "".join(f"#define {name} sl_cares_{name}\n"
                           for name in sorted(identifiers - macros)) + "#endif\n")
+
+if not output.exists() or output.read_text() != content:
+    output.write_text(content)

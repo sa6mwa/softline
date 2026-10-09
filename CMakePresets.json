@@ -69,6 +69,7 @@
       "displayName": "Native Valgrind",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "SL_TEST_TIMEOUT_SCALE": "5",
         "SL_BUILD_TESTS": "ON",
         "SL_BUILD_EXAMPLES": "ON"
       }
