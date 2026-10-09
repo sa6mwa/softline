@@ -1,19 +1,25 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DIST_DIR="${ROOT_DIR}/dist"
+DIST_DIR="${SOFTLINE_DIST_DIR:-${ROOT_DIR}/dist}"
 mkdir -p "${ROOT_DIR}/build"
 TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package-verify.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 if [ ! -d "${DIST_DIR}" ] || [ -z "$(ls -A "${DIST_DIR}" 2>/dev/null)" ]; then
   echo "No packages to verify in ${DIST_DIR}/"
-  exit 0
+  exit 1
 fi
 
-VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
-CHECKSUM_FILE="${DIST_DIR}/softline-${VERSION}-CHECKSUMS"
+VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
+CHECKSUM_FILE="${SOFTLINE_CHECKSUM_FILE:-${DIST_DIR}/softline-${VERSION}-CHECKSUMS}"
+SCOPED=0
+[[ -z ${SOFTLINE_CHECKSUM_FILE:-} ]] || SCOPED=1
 SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-0}"
 
 if [ ! -f "${CHECKSUM_FILE}" ]; then
@@ -26,6 +32,19 @@ if [ -e "${DIST_DIR}/SHA256SUMS" ]; then
   exit 1
 fi
 
+if [ "$SCOPED" = 0 ]; then
+source "${ROOT_DIR}/scripts/release-targets.sh"
+required=("softline-${VERSION}.tar.gz" "softline-lua-${VERSION}.tar.gz"
+  "softline-${VERSION}-1.rockspec" "softline-${VERSION}-1.src.rock")
+for target in $SOFTLINE_RELEASE_TARGETS; do required+=("softline-${VERSION}-${target}.tar.gz"); done
+for name in "${required[@]}"; do
+  [[ -f "$DIST_DIR/$name" && ! -L "$DIST_DIR/$name" ]] || {
+    echo "ERROR: missing or unsafe required release payload: $name" >&2; exit 1;
+  }
+  awk '{print $NF}' "$CHECKSUM_FILE" | grep -Fxq "$name" || {
+    echo "ERROR: required release payload absent from manifest: $name" >&2; exit 1;
+  }
+done
 for checksum in "${DIST_DIR}"/softline-*-CHECKSUMS; do
   [ -f "${checksum}" ] || continue
   if [ "${checksum}" != "${CHECKSUM_FILE}" ]; then
@@ -33,6 +52,7 @@ for checksum in "${DIST_DIR}"/softline-*-CHECKSUMS; do
     exit 1
   fi
 done
+fi
 
 target_from_basename() {
   basename="$1"
@@ -62,6 +82,7 @@ load_tools() {
       *) TARGET_OS="unknown" ;;
     esac
     LINKER="${LD:-${CPKT_TOOLCHAIN_LD:-}}"
+    READELF="${CPKT_TOOLCHAIN_READELF:-}"
     OTOOL="${CPKT_TOOLCHAIN_OTOOL:-}"
     INSTALL_NAME_TOOL="${CPKT_TOOLCHAIN_INSTALL_NAME_TOOL:-}"
     STRIP="${CPKT_TOOLCHAIN_STRIP:-}"
@@ -94,7 +115,7 @@ scan_for_local_paths() {
 }
 
 verify_elf_metadata() {
-  python3 "${ROOT_DIR}/scripts/verify_artifact_runtime.py" "$2" --readelf "${READELF}"
+  "${ROOT_DIR}/scripts/verify-artifact-runtime.sh" "$2" --readelf "${READELF}"
 }
 
 verify_darwin_metadata() {
@@ -183,7 +204,7 @@ verify_dynamic_exports() {
   case "${target}" in
     *-linux-*)
       "${NM}" -D --defined-only --format=posix "${shared_library}" |
-        awk '$2 ~ /^[TWtw]$/ { sub(/@.*/, "", $1); print $1 }' | sort -u > "${actual}"
+        awk '$1 != "SOFTLINE_1" { sub(/@.*/, "", $1); print $1 }' | sort -u > "${actual}"
       ;;
     *-apple-darwin)
       "${NM}" -gU "${shared_library}" |
@@ -291,6 +312,7 @@ else
 fi
 cd "${ROOT_DIR}"
 
+if [ "$SCOPED" = 0 ]; then
 for artifact in "${DIST_DIR}"/softline-*; do
   [ -f "${artifact}" ] || continue
   name="$(basename "${artifact}")"
@@ -305,8 +327,12 @@ for artifact in "${DIST_DIR}"/softline-*; do
   fi
 done
 
+fi
 echo "Verifying package layouts..."
-for archive in "${DIST_DIR}"/softline-*.tar.gz; do
+while IFS= read -r filename; do
+  case "$filename" in *.tar.gz) ;; *) continue ;; esac
+  [[ "$filename" == "${filename##*/}" ]] || { echo 'ERROR: checksum artifact must be a basename' >&2; exit 1; }
+  archive="${DIST_DIR}/${filename}"
   [ -f "${archive}" ] || continue
   basename="$(basename "${archive}" .tar.gz)"
   echo "  Checking ${basename}..."
@@ -410,8 +436,14 @@ for archive in "${DIST_DIR}"/softline-*.tar.gz; do
           exit 1
         fi
       done
-      python3 "${ROOT_DIR}/tests/check_resolver_symbols.py" "${NM}" \
-        "${pkg_lib_dir}/libsoftline.a"
+      "${NM}" -g "${pkg_lib_dir}/libsoftline.a" | awk '
+        /sl_cares_ares_getaddrinfo/ { found=1 }
+        $NF ~ /^ares_[A-Za-z0-9_]+$/ { bad=1; print "ERROR: unprefixed upstream symbol " $NF > "/dev/stderr" }
+        $0 ~ /[[:space:]]U[[:space:]]/ && $NF ~ /^(getaddrinfo|freeaddrinfo|getnameinfo|gethostbyname2?|gethostbyaddr|getservbyname(_r)?|getservbyport(_r)?|dlopen|dlsym)$/ {
+          bad=1; print "ERROR: libc resolver/module dependency " $NF > "/dev/stderr"
+        }
+        END { exit bad || !found }'
+
       ;;
   esac
 
@@ -436,14 +468,14 @@ for archive in "${DIST_DIR}"/softline-*.tar.gz; do
   verify_extracted_consumer "${target}" "${pkg_root}" "${pkg_lib_dir}"
 
   echo "  ${basename}: OK"
-done
+done < <(awk '{ print $NF }' "${CHECKSUM_FILE}")
 
-if [ -f "${DIST_DIR}/softline-${VERSION}-1.src.rock" ] ||
+if [ "$SCOPED" = 0 ] && { [ -f "${DIST_DIR}/softline-${VERSION}-1.src.rock" ] ||
    [ -f "${DIST_DIR}/softline-${VERSION}-1.rockspec" ] ||
-   [ -f "${DIST_DIR}/softline-lua-${VERSION}.tar.gz" ]; then
+   [ -f "${DIST_DIR}/softline-lua-${VERSION}.tar.gz" ]; }; then
   "${ROOT_DIR}/scripts/validate_luarocks.sh"
 fi
 
-"${ROOT_DIR}/scripts/verify-release-privacy.sh"
+SOFTLINE_CHECKSUM_FILE="${CHECKSUM_FILE}" "${ROOT_DIR}/scripts/verify-release-privacy.sh"
 
 echo "Package verification passed."

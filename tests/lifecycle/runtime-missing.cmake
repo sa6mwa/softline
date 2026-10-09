@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+include("${ROOT}/cmake/softline_local_runtime.cmake")
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_HOST_SYSTEM_PROCESSOR x86_64)
+set(SL_TARGET_ID x86_64-linux-gnu)
+set(CMAKE_SYSROOT "${ROOT}/build/missing-runtime-fixture")
+softline_local_runtime(probe)

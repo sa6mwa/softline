@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.24)
+include("${ROOT}/cmake/softline_verified_archive.cmake")
+softline_configure_dependency_cache()
+softline_verified_archive(fixture "${URL}" "${DIGEST}" "${NAME}" archive)
+file(SHA256 "${archive}" actual)
+if(NOT actual STREQUAL DIGEST)
+  message(FATAL_ERROR "Acquisition returned unverified fixture bytes")
+endif()

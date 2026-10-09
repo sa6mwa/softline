@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 project(softline_terminal_test_tools LANGUAGES NONE)
+get_filename_component(root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+find_program(BASH_EXECUTABLE bash REQUIRED)
+execute_process(COMMAND "${BASH_EXECUTABLE}" "${root}/scripts/require-host-bash.sh"
+  COMMAND_ERROR_IS_FATAL ANY)
 include(../softline_verified_archive.cmake)
 softline_configure_dependency_cache()
 if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" OR
@@ -14,7 +18,7 @@ file(MAKE_DIRECTORY "${root}/.cache/dependency-contracts/x86_64-linux-gnu")
 file(LOCK "${contract}.lock" GUARD PROCESS TIMEOUT 600)
 file(READ "${CMAKE_CURRENT_LIST_DIR}/archives.json" manifest)
 file(SHA256 "${CMAKE_CURRENT_LIST_DIR}/archives.json" manifest_hash)
-file(SHA256 "${root}/scripts/relocate-terminal-test-tools.py" relocation_hash)
+file(SHA256 "${root}/scripts/relocate-terminal-test-tools.sh" relocation_hash)
 file(SHA256 "${CMAKE_CURRENT_LIST_FILE}" provision_hash)
 set(manifest_hash "${manifest_hash}:${relocation_hash}:${provision_hash}")
 set(stale TRUE)
@@ -48,13 +52,12 @@ foreach(i RANGE ${last})
     file(ARCHIVE_EXTRACT INPUT "${payload}" DESTINATION "${install}")
   endif()
 endforeach()
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(verify_options --verify)
 if(stale)
   set(verify_options "")
 endif()
-execute_process(COMMAND "${Python3_EXECUTABLE}"
-  "${root}/scripts/relocate-terminal-test-tools.py" "${install}" ${verify_options}
+execute_process(COMMAND "${BASH_EXECUTABLE}"
+  "${root}/scripts/relocate-terminal-test-tools.sh" "${install}" ${verify_options}
   RESULT_VARIABLE relocated)
 if(NOT relocated EQUAL 0)
   message(FATAL_ERROR "Could not relocate or verify pinned terminal test tools")

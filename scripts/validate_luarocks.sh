@@ -1,10 +1,15 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${SOFTLINE_DIST_DIR:-${ROOT_DIR}/dist}"
-VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
-TMP_DIR="$(mktemp -d)"
+VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/validate_luarocks.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 ROCKSPEC="${DIST_DIR}/softline-${VERSION}-1.rockspec"

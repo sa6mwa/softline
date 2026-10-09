@@ -277,14 +277,15 @@ worker did not establish a settled resize boundary: a status repaint could
 cross GTK allocation and overwrite the input row. No production timing,
 buffering or repaint behavior is changed by this fixture coordination.
 It verifies continuation, prompt placement and unchanged transcript cells
-once the terminal geometry agrees with the PTY. `--streaming-race` retains
-the unpaused diagnostic; passing that diagnostic does not prove race-free
-VT output. The separately paced tmux check has the same scope restriction.
+once the terminal geometry agrees with the PTY. The former Python
+`--streaming-race` diagnostic is no longer exposed by the native harness;
+the paced gate does not prove race-free VT output. The separately paced tmux
+check has the same scope restriction.
 The themed width-sweep gate likewise pauses its private producer during each
 sweep and freezes the editor only for each physical allocation, resuming it
-before checking prompt updates. `check_chat_width_resize.py --resize-race`
-(after its normal arguments) retains the unpaused width diagnostic. Both
-diagnostic modes leave the worker and editor running. The shared coordination
+before checking prompt updates. The former Python `--resize-race` diagnostic
+is likewise no longer exposed; its unpaused behavior is outside the paced
+gate's proof. The shared coordination
 helper has explicit stop/poll and input barriers, including pending replies
 needed to finish a frame, with resume checks after resize/drain failures.
 Input responsiveness is tested with the editor running.
@@ -424,7 +425,7 @@ opaque-feed/latency contract. The CR-tail diagnostic retains a reproducer.
   while changing its grid immediately. Faster successive resizes can leave the
   visible grid and reported PTY geometry different while output is emitted;
   that case can still corrupt output. The `--queued-resize` diagnostic in
-  `tests/check_terminal_resize.py` retains this reproducer. The standard paced
+  `tests/test_tmux_resize.c` retains this reproducer. The standard paced
   test does not prove that diagnostic passes. There is no tmux-specific
   production workaround or transcript replay.
 - The Unicode output matrix compares actual raw and libmdf sink emissions

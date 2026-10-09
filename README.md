@@ -555,7 +555,7 @@ On native x86_64 Linux, `make test` provisions checksum-pinned GTK/VTE,
 Xvfb, keyboard, font and clipboard test tools from the lifecycle's shared
 verified archive cache. `make deps-terminal-tests` prepares them independently.
 The cache is selected by `CPKT_DEPENDENCY_CACHE`, otherwise
-`${XDG_CACHE_HOME:-$HOME/.cache}/c.pkt.systems/deps`; every reused archive is
+`${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps`; every reused archive is
 hashed. Repository-local extraction and runtime staging are disposable under
 `.cache/deps-build/x86_64-linux-gnu/terminal-tests` and
 `.cache/deps/x86_64-linux-gnu/terminal-tests`. No package manager installation
@@ -628,15 +628,20 @@ from the shared dependency cache; disposable extraction state stays under
 LuaRocks remains a host packaging tool. This runtime selection is not hermetic
 execution and does not establish compatibility with older deployment libcs.
 
-`make prerelease` is the deterministic local gate: formatting, debug and
-sanitizer tests, native Valgrind, Lua, toolchain, editor, header, and
-install-tree consumer checks. `make release-matrix` builds the standard Linux GNU/musl target matrix,
-generates binary and Lua release artifacts, writes checksums, and verifies
-package layout, runtime loader metadata, and release privacy. The rehearsal
-matrix may skip Darwin when osxcross is unavailable. `make release` is stricter:
-it requires the Darwin toolchain and a verified Darwin artifact, then creates
-and reconstructs the source archive; packaged Darwin artifacts require
-target-correct Mach-O inspection.
+`make prerelease` performs incremental preparation: formatting, native Debug,
+sanitizer, Memcheck, Lua, host, editor and installed-consumer checks, followed by
+binary and Lua artifact rehearsals. Memcheck shares the Debug producer;
+consumer install variants share matching library objects. `make release-matrix`
+is binary-only, with a scoped checksum inventory under `build/package-state/`.
+Its ordinary rehearsal may omit Darwin when osxcross is unavailable.
+
+`make release` is only for the final exact lightweight `vX.Y.Z` tag on a clean,
+committed checkout, without a candidate version override. It validates identity
+and prepared tools before `make clean`, then builds fresh local proof and all
+seven SDK targets. Delivered source supplies the native Release lane; cross
+lanes stay in the checkout. All source/Lua products and SDKs must appear in the
+complete checksum manifest. Packaged Darwin bytes require target-correct Mach-O
+inspection. A failed release stops; repair is a separate iteration.
 
 osxcross discovery selects the newest complete `arm64-apple-darwin25.x`
 compiler prefix, including installations with only dotted executable names.
@@ -662,16 +667,17 @@ Resolver sources are checked in; configuring/building never downloads c-ares.
 
 Source archive smoke extracts and builds under the repository's `build/`,
 independently of the caller's working directory or `TMPDIR`, and removes its
-workspace on success, failure, or interruption.
+workspace on ordinary success or failure. The terminal/job runner owns the
+whole operation and its cancellation; helpers stay in the foreground.
 
 `cmake/softline.exports` is the source-controlled dynamic export contract for
 `libsoftline`. Build and extracted-package checks fail if a public symbol is
 missing or an accidental symbol becomes linkable. The lifecycle migration record
 is maintained in [docs/lifecycle-migration.md](docs/lifecycle-migration.md).
 
-`v99.99.99` is permanently reserved for the release-version contract check and
-is never a valid softline release tag. The Lua facade supports Lua 5.5 only;
-LuaRocks builds must select Lua 5.5.
+Version/tag variations are tested in disposable Git fixtures without changing
+active release refs. No release version is reserved for a lifecycle test. The
+Lua facade supports Lua 5.5 only; LuaRocks builds must select Lua 5.5.
 
 Installed CMake consumers should use the canonical imported target:
 

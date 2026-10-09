@@ -240,6 +240,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   find_library(SOFTLINE_TEST_VTE NAMES vte-2.91 libvte-2.91.so.0
     NO_CMAKE_FIND_ROOT_PATH)
   if(SOFTLINE_TEST_XVFB_RUN AND SOFTLINE_TEST_VTE)
+    if(DEFINED ENV{SOFTLINE_TERMINAL_TEST_ROOT} AND
+       NOT "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}" STREQUAL "")
+      set(terminal_test_environment "SOFTLINE_TERMINAL_TEST_ROOT=$ENV{SOFTLINE_TERMINAL_TEST_ROOT}")
+      foreach(variable PATH FONTCONFIG_PATH FONTCONFIG_FILE XKB_CONFIG_ROOT NO_AT_BRIDGE TMPDIR
+          CPKT_TOOLCHAIN_CACHE CPKT_DEPENDENCY_CACHE)
+        list(APPEND terminal_test_environment "${variable}=$ENV{${variable}}")
+      endforeach()
+      # Cached tool discovery survives ordinary CMake/Ninja regeneration, so
+      # retain its matching runtime as well. Do not depend on make test's
+      # temporary parent environment on every configure.
+      set(SOFTLINE_TERMINAL_TEST_ROOT "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}"
+        CACHE INTERNAL "Prepared terminal test runtime" FORCE)
+      set(SOFTLINE_TERMINAL_TEST_ENVIRONMENT "${terminal_test_environment}"
+        CACHE INTERNAL "Prepared terminal test environment" FORCE)
+    endif()
     foreach(adapter output retained editor chat)
       add_executable(test_vte_${adapter} test_vte_${adapter}.c)
       target_link_libraries(test_vte_${adapter} PRIVATE util ${CMAKE_DL_LIBS})
@@ -267,20 +282,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       set_property(TARGET test_clipboard_image APPEND PROPERTY BUILD_RPATH
         "${SOFTLINE_TERMINAL_TEST_ROOT}/usr/lib/x86_64-linux-gnu"
         "${SOFTLINE_TERMINAL_TEST_ROOT}/lib/x86_64-linux-gnu")
-    endif()
-    if(DEFINED ENV{SOFTLINE_TERMINAL_TEST_ROOT} AND
-       NOT "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}" STREQUAL "")
-      set(terminal_test_environment "SOFTLINE_TERMINAL_TEST_ROOT=$ENV{SOFTLINE_TERMINAL_TEST_ROOT}")
-      foreach(variable PATH FONTCONFIG_PATH FONTCONFIG_FILE XKB_CONFIG_ROOT NO_AT_BRIDGE TMPDIR)
-        list(APPEND terminal_test_environment "${variable}=$ENV{${variable}}")
-      endforeach()
-      # Cached tool discovery survives ordinary CMake/Ninja regeneration, so
-      # retain its matching runtime as well. Do not depend on make test's
-      # temporary parent environment on every configure.
-      set(SOFTLINE_TERMINAL_TEST_ROOT "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}"
-        CACHE INTERNAL "Prepared terminal test runtime" FORCE)
-      set(SOFTLINE_TERMINAL_TEST_ENVIRONMENT "${terminal_test_environment}"
-        CACHE INTERNAL "Prepared terminal test environment" FORCE)
     endif()
     if(SOFTLINE_TERMINAL_TEST_ROOT)
       set(terminal_test_environment "${SOFTLINE_TERMINAL_TEST_ENVIRONMENT}")
@@ -321,7 +322,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
         "-DCTEST=${CMAKE_CTEST_COMMAND}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/terminal-environment.cmake")
       set_tests_properties(softline_terminal_test_environment PROPERTIES
-        LABELS "integration;dependency" TIMEOUT 45)
+        ENVIRONMENT "${terminal_test_environment}" LABELS "integration;dependency" TIMEOUT 45)
     endif()
     add_test(NAME softline_terminal_opaque_feed COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
       "$<TARGET_FILE:test_vte_output>" opaque "$<TARGET_FILE:native_output_fixture>")

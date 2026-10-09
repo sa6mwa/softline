@@ -1,8 +1,13 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/test_package_source_worktree.XXXXXX")"
 REPO_DIR="${TMP_DIR}/repo"
 WORKTREE_DIR="${TMP_DIR}/linked-worktree"
 
@@ -17,6 +22,7 @@ trap cleanup EXIT HUP INT TERM
 mkdir -p "${REPO_DIR}/scripts"
 cp "${ROOT_DIR}/scripts/package-source.sh" "${REPO_DIR}/scripts/"
 cp "${ROOT_DIR}/scripts/release_version.sh" "${REPO_DIR}/scripts/"
+cp "${ROOT_DIR}/scripts/require-host-bash.sh" "${REPO_DIR}/scripts/"
 printf 'linked worktree fixture\n' > "${REPO_DIR}/README.md"
 
 git -C "${REPO_DIR}" init -q

@@ -1,13 +1,18 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LOG_FILE="$(mktemp)"
+mkdir -p "${ROOT_DIR}/build"
+LOG_FILE="$(mktemp "${ROOT_DIR}/build/clangd.XXXXXX")"
 trap 'rm -f "${LOG_FILE}"' EXIT
 
 if ! command -v clangd >/dev/null 2>&1; then
-  echo "SKIP: clangd not found"
-  exit 0
+  echo "ERROR: clangd is required for the selected editor verification gate" >&2
+  exit 1
 fi
 
 if [ ! -f "${ROOT_DIR}/.clangd" ]; then
