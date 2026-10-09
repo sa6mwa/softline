@@ -31,9 +31,6 @@ scan_paths() {
   for needle in "${forbidden[@]}"; do
     [[ -z "$needle" ]] || ! LC_ALL=C grep -aFq -- "$needle" "$file" || fail "$label: forbidden local/cache path $needle"
   done
-  if LC_ALL=C grep -aEq '/[^[:space:]"]*--(glibc|musl)--stable-[0-9][^[:space:]"]*/' "$file"; then
-    fail "$label: pinned Bootlin collection path"
-  fi
 }
 inspect_elf() {
   local file=$1 label=$2 output value entry cache_file description soname
@@ -81,6 +78,16 @@ scan() {
   [[ -f "$file" ]] || return 0
   scan_paths "$file" "$label"
   magic=$(od -An -tx1 -N4 "$file" | tr -d ' \n')
+  # Source fixtures legitimately name selected collections. Generic collection
+  # path signatures concern compiled payloads; actual local roots are forbidden
+  # in every file by scan_paths above.
+  case "$magic" in
+    7f454c46|213c6172|cffaedfe|cefaedfe|feedfacf|feedface|cafebabe|bebafeca)
+      if LC_ALL=C grep -aEq '/[^[:space:]"]*--(glibc|musl)--stable-[0-9][^[:space:]"]*/' "$file"; then
+        fail "$label: pinned Bootlin collection path"
+      fi
+      ;;
+  esac
   if [[ "$magic" == 7f454c46 ]]; then inspect_elf "$file" "$label"; return; fi
   case "$file" in
     *.tar.gz|*.tgz|*.tar.xz|*.tar|*.zip|*.rock)

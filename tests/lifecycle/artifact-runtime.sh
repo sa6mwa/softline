@@ -27,6 +27,9 @@ verify() {
   fi
 }
 build; verify
+printf '%s\n' 'const char *private_path = "/other-builder/roots/x86-64--glibc--stable-2026.08-1/bin/cc";' 'int main(void) { return 0; }' > "$work/main.c"
+build; verify 'pinned Bootlin collection path'
+printf 'int main(void) { return 0; }\n' > "$work/main.c"
 build -static -nostdlib -Wl,-e,main; verify
 for tag in --enable-new-dtags --disable-new-dtags; do
   for path in '$ORIGIN' '$ORIGIN/../lib' '$ORIGIN:$ORIGIN/lib'; do
