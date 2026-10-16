@@ -9,10 +9,6 @@
 #include <unistd.h>
 
 static int control_fd, ready_fd, yield_mode, phase, partial, owner_step;
-static void cancel_step(sl_t *sl, void *context) {
-  (void)context;
-  (void)sl_cancel(sl);
-}
 static int emit(sl_t *sl, const char *text) {
   return sl_output_stream_write(sl, text, strlen(text));
 }
@@ -56,15 +52,7 @@ static int producer(sl_t *sl, const sl_watch_event_t *event, void *context) {
       return SL_ERROR_IO;
   }
   if (owner_step) {
-    char *line;
-    /* Experimental control: re-enter the existing input owner before writing.
-     * This is not proposed as a production-facing API or caller workaround. */
-    if (sl_set_idle_callback(sl, cancel_step, NULL) != SL_OK)
-      return SL_ERROR_IO;
-    line = sl_readline(sl, "> ");
-    sl_free_string(sl, line);
-    if (sl_set_idle_callback(sl, NULL, NULL) != SL_OK ||
-        sl_last_readline_status(sl) != SL_READLINE_CANCELLED)
+    if (sl_output_stream_reconcile(sl) != SL_OK)
       return SL_ERROR_IO;
   }
   if (partial && emit(sl, "\n") != SL_OK)
@@ -119,7 +107,7 @@ int main(int argc, char **argv) {
     close(control_fd);
     return 2;
   }
-  while ((line = sl_next_prompt(sl, "> ", NULL)) != NULL) {
+  while ((line = sl_next_prompt(sl, "custom> ", NULL)) != NULL) {
     int quit = strcmp(line, "/quit") == 0;
     sl_free_string(sl, line);
     if (quit)

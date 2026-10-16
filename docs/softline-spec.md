@@ -412,11 +412,9 @@ Current build surfaces include:
 - CMake presets
 - static and shared library builds
 - shared-library ABI/SOVERSION policy through `SOFTLINE_ABI_VERSION`, currently
-  `0`, decoupled from the project release version. Softline and its sole
-  consumer evolve together; current API changes do not establish a new ABI
-  compatibility commitment. Both are rebuilt together; older compiled consumers
-  are unsupported, as recorded in the
-  [development ABI exception](softline-mdf-stream-design.md#review-exception-development-abi-0).
+  `1`, decoupled from the project release version. Adding the public receiver
+  method `output_stream_reconcile` breaks the exposed C layout and advances
+  exactly once from released v0.10.0's ABI 0. Consumers must rebuild.
 - installed CMake package exports with canonical target `softline::softline`
 - installed pkg-config metadata
 - Lua 5.5 facade packaged as LuaRocks source artifacts

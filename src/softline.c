@@ -838,6 +838,12 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
   {
     int observed = sl_native_observe_producer(self);
     int col, row, result;
+    if (impl->output_reconcile_active && observed <= 0 &&
+        sl_surface_native_cursor_live(impl->output_surface)) {
+      sl_set_error(
+          self, "terminal did not provide a cursor report for reconciliation");
+      return -1;
+    }
     sl_surface_native_position(impl->output_surface, NULL, &col);
     result = sl_surface_resize(impl->output_surface, width, prompt_top);
     if (result == 0 && observed > 0) {
@@ -3045,7 +3051,14 @@ static int sl_native_reconcile_rendered_frame(sl_t *self, int width,
   span = impl->rendered_rows;
   height_only = impl->rendered_width == width;
   offset = old_offset = impl->rendered_cursor_row;
-  observed = impl->cursor_position_probe == 1 ? sl_query_cursor_row(self) : 0;
+  observed = impl->cursor_position_probe == 1 || impl->output_reconcile_active
+                 ? sl_query_cursor_row(self)
+                 : 0;
+  if (impl->output_reconcile_active && observed <= 0) {
+    sl_set_error(self,
+                 "terminal did not provide a cursor report for reconciliation");
+    return -1;
+  }
   /* A retained frame can remain above the new bottom after terminal growth.
    * Its cached top and height identify the physical cursor we last painted. */
   old_below = impl->rendered_height - 1 - (impl->rendered_top_row + old_offset);
@@ -3367,6 +3380,15 @@ static int sl_render_apply(sl_t *self, const char *prompt) {
   impl = sl_impl(self);
   if (!impl)
     return -1;
+  if (!impl->retained_prompt || strcmp(impl->retained_prompt, prompt) != 0) {
+    char *copy = sl_strdup(prompt);
+    if (!copy) {
+      sl_set_error(self, "failed to retain prompt text");
+      return -1;
+    }
+    free(impl->retained_prompt);
+    impl->retained_prompt = copy;
+  }
 retry:
   if (sl_render_build(self, prompt, &render) != 0) {
     sl_render_free(&render);
@@ -4075,6 +4097,30 @@ failed:
   }
   impl->output_stream_active = 0;
   return SL_ERROR_IO;
+}
+
+static int sl_output_stream_reconcile_method(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  int result;
+  if (!impl || !impl->output_stream_active || impl->output_write_active ||
+      impl->output_reconcile_active) {
+    sl_set_error(self, "reconciliation requires an open stream outside a feed");
+    return SL_ERROR_INVALID;
+  }
+  if (!isatty(impl->input_fd) || !isatty(impl->output_fd))
+    return SL_OK;
+  /* This explicit owner operation may observe input. Never enter it from a
+   * producer feed, and leave its incremental UTF-8/SGR validator untouched. */
+  impl->output_reconcile_active = 1;
+  if (impl->cursor_position_probe < 0)
+    impl->cursor_position_probe = 0;
+  if (impl->rendered_rows > 0)
+    result = sl_render_apply(self, impl->active_prompt ? impl->active_prompt
+                                                       : impl->retained_prompt);
+  else
+    result = sl_prepare_native_output(self) == SL_OK ? 0 : -1;
+  impl->output_reconcile_active = 0;
+  return result == 0 ? SL_OK : SL_ERROR_IO;
 }
 
 static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
@@ -6341,6 +6387,7 @@ static void sl_destroy_method(sl_t *self) {
     sl_surface_destroy(impl->output_surface);
     free(impl->history_edit);
     free(impl->pending_input);
+    free(impl->retained_prompt);
     free(impl->buf);
     free(impl);
   }
@@ -7205,6 +7252,7 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->watch_remove = sl_watch_remove_method;
   self->watch_clear = sl_watch_clear_method;
   self->output_stream_begin = sl_output_stream_begin_method;
+  self->output_stream_reconcile = sl_output_stream_reconcile_method;
   self->output_stream_write = sl_output_stream_write_method;
   self->output_stream_end = sl_output_stream_end_method;
   self->output_stream_write_quoted_prompt =
@@ -7683,6 +7731,12 @@ int sl_output_stream_begin(sl_t *self) {
   if (!self || !self->output_stream_begin)
     return SL_ERROR_INVALID;
   return self->output_stream_begin(self);
+}
+
+int sl_output_stream_reconcile(sl_t *self) {
+  if (!self || !self->output_stream_reconcile)
+    return SL_ERROR_INVALID;
+  return self->output_stream_reconcile(self);
 }
 
 int sl_output_stream_write(sl_t *self, const char *bytes, size_t length) {

@@ -10,7 +10,7 @@ mkdir -p "${ROOT_DIR}/build"
 TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/consumer.XXXXXX")"
 PRODUCER_DIR="${ROOT_DIR}/build/consumer-producer"
 VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
-SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-0}"
+SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
 BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
 BOOTLIN_TARGET=""
 BOOTLIN_TOOLCHAIN_ARG=""
@@ -114,6 +114,11 @@ int main(void) {
     return 13;
 
   sl_free_string(sl, line);
+  if (sl->output_stream_begin(sl) != SL_OK ||
+      sl->output_stream_reconcile(sl) != SL_OK ||
+      sl_output_stream_reconcile(sl) != SL_OK ||
+      sl->output_stream_end(sl) != SL_OK)
+    return 13;
   sl_destroy(sl);
   close(input_pipe[0]);
   close(output_pipe[0]);
@@ -133,6 +138,7 @@ install_disabled_smoke() {
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
+    -DSOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION}" \
     -DSL_BUILD_STATIC=ON -DSL_BUILD_SHARED=ON \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DSL_INSTALL=OFF \
@@ -196,6 +202,7 @@ smoke_mode() {
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
+    -DSOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION}" \
     -DSL_BUILD_STATIC="${build_static}" \
     -DSL_BUILD_SHARED="${build_shared}" \
     -DSL_INSTALL=ON \

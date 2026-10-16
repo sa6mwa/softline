@@ -326,7 +326,8 @@ persistent session API.
 Open a session once, forward each external renderer sink fragment, and close it
 when the conversation ends. The receiver and free-function C APIs are
 equivalent; Lua exposes `sl:output_stream_begin()`,
-`sl:output_stream_write(bytes)`, and `sl:output_stream_end()`.
+`sl:output_stream_reconcile()`, `sl:output_stream_write(bytes)`, and
+`sl:output_stream_end()`.
 
 ```c
 sl->output_stream_begin(sl);
@@ -334,6 +335,15 @@ sl->output_stream_begin(sl);
 sl->output_stream_write(sl, bytes, length);
 sl->output_stream_end(sl);
 ```
+
+Before resuming synchronous output after a settled terminal resize, call
+`sl_output_stream_reconcile(sl)` on the owner thread outside producer feeds.
+It observes the cursor and repaints only owned prompt cells, preserving input,
+queue, history, status and incremental stream parsing. A required cursor reply
+may wait up to 100 ms; check for `SL_OK` before continuing. Redirected sessions
+are a no-op. Feed writes themselves never wait for cursor reports. The active
+input loop already reconciles before dispatching producer watches; a resize
+inside a long producer callback requires returning to the owner between feeds.
 
 Ending the session between editor calls closes the native prompt and restores
 normal terminal input and the full scroll region. By default it clears only
@@ -587,12 +597,10 @@ the caller's normal chat history. These test stores remain available for
 diagnosis until `make clean`.
 
 Every project-owned C target is compiled as C89 with POSIX terminal APIs.
-Shared builds use `SOFTLINE_ABI_VERSION=0` for SONAME/SOVERSION during current
-development. Softline and its sole consumer change together; API changes in
-this development phase do not establish a new ABI compatibility commitment.
-Both are rebuilt together; older compiled consumers are unsupported. The
-[development ABI exception](docs/softline-mdf-stream-design.md#review-exception-development-abi-0)
-records this explicit decision and its scope.
+Shared builds use `SOFTLINE_ABI_VERSION=1` for SONAME/SOVERSION. The public
+receiver layout gains `output_stream_reconcile`; rebuild consumers against the
+new header/library pair. ABI 1 advances exactly once from released v0.10.0's
+ABI 0, independently of the project release version.
 
 Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
 builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin

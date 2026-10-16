@@ -166,6 +166,9 @@ typedef struct sl_impl {
   int rendered_cap;
   sl_reflow_frame_t reflow_frame;
   const char *active_prompt;
+  /* Owned prompt text only; producer transcript is never retained. */
+  char *retained_prompt;
+  int output_reconcile_active;
   int active_readline;
   int request_submit;
   int request_cancel;

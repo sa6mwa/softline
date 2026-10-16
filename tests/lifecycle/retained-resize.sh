@@ -47,7 +47,7 @@ wait_for visible 'Welcome to resize reproduction'
 if [[ $mode == retained* ]]; then run send-keys -t repro:0.0 hold Enter; fi
 if [[ $draft == early ]]; then
   run send-keys -t repro:0.0 'draft survives resize'
-  wait_for visible '> draft survives resize'
+  wait_for visible 'custom> draft survives resize'
 fi
 printf F >&8
 IFS= read -r -N 1 -t 8 ready <&9 || fail 'Producer did not reach its resize barrier'
@@ -67,15 +67,21 @@ run capture-pane -p -t repro:0.0 > after-resize-before-write
 printf P >&8
 wait_for visible 'Worked for'
 if [[ $draft != early ]]; then run send-keys -t repro:0.0 'draft survives resize'; fi
-wait_for visible '> draft survives resize'
+wait_for visible 'custom> draft survives resize'
 run capture-pane -p -S - -t repro:0.0 > transcript
+tr -d '\n' < transcript > joined-transcript
+for ((i=0; i<120; ++i)); do
+  source=$(printf 'SOURCE_%03d abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789' "$i")
+  grep -Fq "$source" joined-transcript || fail "Producer row $i changed or disappeared"
+  [[ $(grep -c "^SOURCE_$(printf '%03d' "$i") " transcript) == 1 ]] || fail "Producer row $i was replayed"
+done
 grep -Fxq '* Edited snake.c' screen || fail 'Old source text contaminated the edit heading'
 for ((i=0; i<6; ++i)); do
   expected=$(printf '%4d +PATCH_ROW_%03d' "$((i+1))" "$i")
   grep -Fxq "$expected" screen || fail "Patch row $i was misplaced or overwritten"
 done
 awk '
-  /^> draft survives resize/ {prompt=NR; count++}
+  /^custom> draft survives resize/ {prompt=NR; count++}
   /[^[:space:]]/ {last=NR}
   END {exit !(count == 1 && prompt == last)}' screen || fail 'Final prompt is misplaced or duplicated'
 run send-keys -t repro:0.0 C-u /quit Enter

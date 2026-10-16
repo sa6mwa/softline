@@ -11,7 +11,12 @@ target_link_libraries(test_softline PRIVATE softline)
 softline_apply_warnings(test_softline)
 softline_local_runtime(test_softline)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  # The opt-in retained-resize CTest project exercises a documented known gap.
+  add_executable(test_reconcile test_reconcile.c)
+  target_link_libraries(test_reconcile PRIVATE softline util)
+  softline_apply_warnings(test_reconcile)
+  softline_local_runtime(test_reconcile)
+  add_test(NAME softline_reconcile COMMAND test_reconcile)
+  set_tests_properties(softline_reconcile PROPERTIES LABELS "unit;streaming" TIMEOUT 10)
   add_executable(retained_resize_fixture retained_resize_fixture.c)
   target_link_libraries(retained_resize_fixture PRIVATE softline)
   softline_apply_warnings(retained_resize_fixture)
@@ -376,6 +381,26 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   find_program(SOFTLINE_TEST_TMUX tmux)
+  if(SOFTLINE_TEST_TMUX)
+    function(retained_resize_case name columns rows mode variant draft)
+      add_test(NAME "softline_retained_${name}" COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/retained-resize.sh"
+        "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:retained_resize_fixture>"
+        "${PROJECT_BINARY_DIR}" "${columns}" "${rows}" "${mode}" "${variant}" "${draft}")
+      set_tests_properties("softline_retained_${name}" PROPERTIES
+        LABELS "integration;streaming;retained-resize" TIMEOUT 30)
+    endfunction()
+    retained_resize_case(partial_shrink 60 18 retained-observed partial late)
+    retained_resize_case(complete_shrink 60 18 retained-observed complete late)
+    retained_resize_case(partial_width 60 30 retained-observed partial late)
+    retained_resize_case(partial_height 120 18 retained-observed partial late)
+    retained_resize_case(partial_growth 160 40 retained-observed partial late)
+    retained_resize_case(width_growth 160 30 retained-observed complete late)
+    retained_resize_case(watch_shrink 60 18 watch partial late)
+    retained_resize_case(yield_shrink 60 18 yield partial late)
+    retained_resize_case(watch_draft 60 18 watch partial early)
+    retained_resize_case(yield_draft 60 18 yield complete early)
+  endif()
   if(SOFTLINE_TEST_TMUX)
     add_test(NAME softline_terminal_native_output_tmux
       COMMAND bash
