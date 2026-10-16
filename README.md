@@ -644,12 +644,29 @@ is binary-only, with a scoped checksum inventory under `build/package-state/`.
 Its ordinary rehearsal may omit Darwin when osxcross is unavailable.
 
 `make release` is only for the final exact lightweight `vX.Y.Z` tag on a clean,
-committed checkout, without a candidate version override. It validates identity
-and prepared tools before `make clean`, then builds fresh local proof and all
+signed commit attached to the default branch resolved by `origin/HEAD`, without
+a candidate version override. Complete implementation and review on one
+development branch, then squash onto the local default branch before engineer
+amendment/signing. Keep remote refs unchanged during preparation. The gate
+verifies the signature, branch, tag and prepared tools before `make clean`,
+then builds fresh local proof and all
 seven SDK targets. Delivered source supplies the native Release lane; cross
 lanes stay in the checkout. All source/Lua products and SDKs must appear in the
 complete checksum manifest. Packaged Darwin bytes require target-correct Mach-O
 inspection. A failed release stops; repair is a separate iteration.
+
+Only after that complete local gate passes may an explicitly authorized release
+push the default-branch commit and its lightweight tag, then upload the exact
+checksum-selected local artifacts. Never push to obtain CI feedback. Hosted
+native checks are optional diagnostics; local osxcross supplies Darwin release
+proof. Publication remains a separate, explicitly authorized operation.
+
+Builds default to four jobs through `CMAKE_BUILD_PARALLEL_LEVEL`; set it explicitly
+to choose another limit. Operational helpers and direct CMake configuration reject
+symlinked `build/`, `dist/`, or `.cache/` roots and borrowed cache overrides.
+Cache overrides use this checkout's `build/` or `.cache/`, or the declared global
+`${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/{toolchains,deps}` caches. Staging and local
+dependency paths must resolve inside this checkout before cleanup or extraction.
 
 osxcross discovery selects the newest complete `arm64-apple-darwin25.x`
 compiler prefix, including installations with only dotted executable names.
@@ -684,7 +701,9 @@ missing or an accidental symbol becomes linkable. The lifecycle migration record
 is maintained in [docs/lifecycle-migration.md](docs/lifecycle-migration.md).
 
 Version/tag variations are tested in disposable Git fixtures without changing
-active release refs. No release version is reserved for a lifecycle test. The
+active release refs. The signed release fixtures require Git SSH signing support
+and `ssh-keygen`; their temporary keys and trust files stay under ignored `build/`.
+No release version is reserved for a lifecycle test. The
 Lua facade supports Lua 5.5 only; LuaRocks builds must select Lua 5.5.
 
 Installed CMake consumers should use the canonical imported target:

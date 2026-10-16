@@ -23,12 +23,15 @@ mkdir -p "${REPO_DIR}/scripts"
 cp "${ROOT_DIR}/scripts/package-source.sh" "${REPO_DIR}/scripts/"
 cp "${ROOT_DIR}/scripts/release_version.sh" "${REPO_DIR}/scripts/"
 cp "${ROOT_DIR}/scripts/require-host-bash.sh" "${REPO_DIR}/scripts/"
+cp "${ROOT_DIR}/scripts/require-workspace.sh" "${REPO_DIR}/scripts/"
+mkdir -p "${REPO_DIR}/cmake"
+cp "${ROOT_DIR}/cmake/softline_workspace.cmake" "${REPO_DIR}/cmake/"
 printf 'linked worktree fixture\n' > "${REPO_DIR}/README.md"
 
 git -C "${REPO_DIR}" init -q
 git -C "${REPO_DIR}" config user.email test@example.invalid
 git -C "${REPO_DIR}" config user.name "Test User"
-git -C "${REPO_DIR}" add README.md scripts
+git -C "${REPO_DIR}" add README.md scripts cmake
 git -C "${REPO_DIR}" commit -q -m "test: seed source package fixture"
 git -C "${REPO_DIR}" worktree add --detach -q "${WORKTREE_DIR}" HEAD
 

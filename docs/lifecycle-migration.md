@@ -19,6 +19,12 @@ There is no helper supervisor, receipt service or active-tag recovery protocol.
 Generated scratch stays under `build/`; `make clean` removes local generated
 state and `dist/` while preserving shared verified caches.
 
+Workspace checks reject borrowed generated roots, nested staging symlinks and
+cache overrides outside owned local state or the declared global cpkt cache.
+`make clean-dist` uses the same anchored cleanup helper and preserves other local
+state; full clean removes hidden entries too. Builds default to four jobs and
+honor an explicit `CMAKE_BUILD_PARALLEL_LEVEL`.
+
 ## Tool and test cutover
 
 - PATH-selected Bash is at least 4.4. Linux compilation uses complete pinned
@@ -48,8 +54,11 @@ Lua rehearsal gates; source reconstruction is separately available through
 `make package-source-smoke`. Binary rehearsals write a selected inventory under
 `build/package-state/`, preserving unrelated identified artifacts.
 
-`make release` is the final exact lightweight `vX.Y.Z` tagged gate. Its read-only
-identity/tool preflight runs before the retained `make clean`. Candidate overrides,
+`make release` is the final exact lightweight `vX.Y.Z` tagged gate on the signed,
+attached default branch resolved through `origin/HEAD`. Implementation and review
+use one development branch; squash the verified change onto the local default
+branch before engineer amendment/signing. Its read-only signature/branch/tag/tool
+preflight runs before the retained `make clean`. Candidate overrides,
 dirty worktrees and partial inventory selectors cannot enter that gate. Git tag
 variations are checked only in disposable fixture repositories.
 
@@ -65,13 +74,27 @@ files are rejected. Verification inspects extracted layout, version, public expo
 private dependency notices, ELF/Mach-O metadata, relocatable imports and real
 installed static/shared consumers. Publication is a separate explicitly authorized
 operation. Release failure stops; repairs do not retag/rebuild/publish inside it.
+Default-branch and release-tag pushes remain prohibited until the signed,
+tagged commit passes the entire local gate. Hosted builds are optional diagnostics
+and must never be triggered by pushing for feedback.
 
 ## Product boundaries preserved
 
 libmdf remains an example/integration-test dependency, outside `libsoftline` and
 its SDK imports. Private bundled c-ares remains Linux resolver implementation;
-there is no inferred cpkt SDK dependency. The public C/Lua behavior and ABI 0,
-selected targets and artifact set remain unchanged by this migration. Cross
+there is no inferred cpkt SDK dependency. Lifecycle work preserves public C/Lua
+behavior, selected targets and the artifact set. The separate retained-resize
+repair adds owner reconciliation and advances the exposed receiver ABI from
+released v0.10.0's ABI 0 to ABI 1. Cross
 execution and hosted native checks are not implicitly opted in; cross lanes prove
 build/link/package metadata, with runtime execution deferred where no selected
 native runner exists.
+
+## Installed skill synchronization
+
+The five lifecycle helper files and their resolver fixtures are exact vendored
+copies of the installed skill. Softline's native-host policy lives in
+`scripts/native-linux-target.sh`; its Darwin adapter obtains the prepared SDK
+from `osxcross-conf` and selects the matching installation's target tools.
+There is no local fork of the shared resolver interface. Python remains limited
+to the declared generators and small input servers described above.

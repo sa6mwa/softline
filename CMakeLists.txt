@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
+include(cmake/softline_workspace.cmake)
+softline_check_workspace("${CMAKE_CURRENT_SOURCE_DIR}")
 include(cmake/softline_version.cmake)
 project(softline VERSION "${PROJECT_VERSION}" LANGUAGES C)
 
@@ -51,7 +53,7 @@ function(softline_reject_stale_linux_toolchain_cache)
   set(_softline_resolver "${CMAKE_SOURCE_DIR}/scripts/cpkt-toolchains.sh")
   if(NOT _softline_expected_target)
     execute_process(
-      COMMAND "${_softline_resolver}" native-linux-target
+      COMMAND "${CMAKE_SOURCE_DIR}/scripts/native-linux-target.sh"
       RESULT_VARIABLE _softline_native_result
       OUTPUT_VARIABLE _softline_expected_target
       ERROR_VARIABLE _softline_native_error

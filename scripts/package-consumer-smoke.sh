@@ -4,6 +4,7 @@ case ${BASH_SOURCE[0]} in
   *) source ./require-host-bash.sh ;;
 esac || exit $?
 set -euo pipefail
+source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "${ROOT_DIR}/build"
@@ -17,7 +18,7 @@ BOOTLIN_TOOLCHAIN_ARG=""
 BOOTLIN_TARGET_ARG=""
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-BOOTLIN_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target)"
+BOOTLIN_TARGET="$("${ROOT_DIR}/scripts/native-linux-target.sh")"
 toolchain_env="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${BOOTLIN_TARGET}")" || exit $?
 eval "$toolchain_env"
 BOOTLIN_TOOLCHAIN_ARG="-DCMAKE_TOOLCHAIN_FILE=${BOOTLIN_TOOLCHAIN}"

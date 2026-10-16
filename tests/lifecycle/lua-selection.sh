@@ -5,7 +5,12 @@ mkdir -p "$root/build"
 work=$(mktemp -d "$root/build/lua-selection.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/scripts" "$work/commands" "$work/build/lua-sdk/lib/pkgconfig"
-cp "$root/scripts/"{lua-test.sh,lua-debug.sh,require-host-bash.sh} "$work/scripts/"
+cp "$root/scripts/"{lua-test.sh,lua-debug.sh,require-host-bash.sh,require-workspace.sh} "$work/scripts/"
+cat > "$work/scripts/native-linux-target.sh" <<'SH'
+#!/bin/sh
+[ "$SELECT_BOOTLIN" = 1 ] || exit 1
+echo x86_64-linux-gnu
+SH
 for tool in render_lua_rockspec.sh lua-env.sh lua-debug-env.sh; do
   printf '#!/bin/sh\nexit 0\n' > "$work/scripts/$tool"
 done
@@ -19,7 +24,6 @@ printf '#!/bin/sh\necho 0.0.0\n' > "$work/scripts/release_version.sh"
 cat > "$work/scripts/cpkt-toolchains.sh" <<'SH'
 #!/bin/sh
 case "$1" in
-  native-linux-target) [ "$SELECT_BOOTLIN" = 1 ] || exit 1; echo x86_64-linux-gnu ;;
   env) [ "$ENV_FAIL" = 0 ] || exit 7; echo 'export CC=fixture LD=fixture AR=fixture RANLIB=fixture' ;;
 esac
 SH

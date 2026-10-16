@@ -1,8 +1,11 @@
 include_guard(GLOBAL)
+include("${CMAKE_CURRENT_LIST_DIR}/softline_workspace.cmake")
 
 # External dependencies share one verified-archive cache.  Each CMake root
 # resolves it exactly once; this helper only consumes that resolved contract.
 function(softline_configure_dependency_cache)
+  get_filename_component(owner "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+  softline_check_workspace("${owner}")
   if(DEFINED CPKT_DEPENDENCY_CACHE)
     set(_softline_dependency_cache "${CPKT_DEPENDENCY_CACHE}")
   elseif(DEFINED ENV{CPKT_DEPENDENCY_CACHE} AND

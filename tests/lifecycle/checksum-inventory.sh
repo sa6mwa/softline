@@ -4,7 +4,9 @@ root=$1
 work=$(mktemp -d "$root/build/checksum-inventory.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/scripts" "$work/dist" "$work/build/package-state"
-cp "$root/scripts/"{package-checksums.sh,package-verify.sh,release_version.sh,require-host-bash.sh,release-targets.sh} "$work/scripts/"
+cp "$root/scripts/"{package-checksums.sh,package-verify.sh,release_version.sh,require-host-bash.sh,require-workspace.sh,release-targets.sh} "$work/scripts/"
+mkdir -p "$work/cmake"
+cp "$root/cmake/softline_workspace.cmake" "$work/cmake/"
 printf '9.8.7\n' > "$work/VERSION"
 source "$work/scripts/release-targets.sh"
 for target in $SOFTLINE_RELEASE_TARGETS; do printf 'SDK %s\n' "$target" > "$work/dist/softline-9.8.7-$target.tar.gz"; done

@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-case ${BASH_SOURCE[0]} in
-  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
-  *) source ./require-host-bash.sh ;;
-esac || exit $?
 # Provision native AFL++ GCC-plugin instrumentation for the pkt.systems lifecycle.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/cpkt-archive-cache.sh"
@@ -51,14 +47,16 @@ collection_id() {
 root() { local id=$1; printf '%s/roots/aflplusplus-%s-x86_64-linux-gnu-%s-r%s\n' "$(cache)" "$version" "$id" "$revision"; }
 value() { sed -n "s/^$1=//p" <<<"$2" | tail -1; }
 ready() {
-  local r=$1 id=$2
-  [[ -x "$r/bin/afl-fuzz" && -x "$r/bin/afl-showmap" &&
-     -x "$r/bin/cpkt-afl-gcc" && -x "$r/bin/cpkt-afl-g++" &&
-     -x "$r/bin/afl-cc" && -x "$r/bin/afl-gcc-fast" && -x "$r/bin/afl-g++-fast" &&
-     -x "$r/bin/bootlin-gcc" && -x "$r/bin/bootlin-g++" &&
-     -x "$r/libexec/bootlin-runtime/cc1" && -x "$r/libexec/bootlin-runtime/cc1plus" &&
-     -f "$r/lib/afl/afl-gcc-pass.so" && -f "$r/lib/afl/afl-compiler-rt.o" &&
-     -f "$r/.cpkt-aflpp-revision-$revision-$id" ]]
+  local r=$1 id=$2 path
+  [[ -d "$r" ]] || return 1
+  r=$(CDPATH= cd -- "$r" && pwd -P) || return 1
+  for path in bin/{afl-fuzz,afl-showmap,cpkt-afl-gcc,cpkt-afl-g++,afl-cc,afl-gcc-fast,afl-g++-fast,bootlin-gcc,bootlin-g++} \
+      libexec/bootlin-runtime/{cc1,cc1plus}; do
+    [[ -x "$r/$path" ]] && cpkt_afl_owned_file "$r" "$r/$path" || return 1
+  done
+  for path in lib/afl/{afl-gcc-pass.so,afl-compiler-rt.o,dynamic_list.txt} ".cpkt-aflpp-revision-$revision-$id"; do
+    cpkt_afl_owned_file "$r" "$r/$path" || return 1
+  done
 }
 
 bootlin_description() {
@@ -67,6 +65,12 @@ bootlin_description() {
   description=$("$bootlin" discover x86_64-linux-gnu) || die 'unable to inspect pinned Bootlin collection'
   [[ "$(value status "$description")" == ready ]] || die "Bootlin collection is not ready; run: $bootlin ensure x86_64-linux-gnu"
   printf '%s\n' "$description"
+}
+
+require_bootlin_runtime() {
+  local description=$1
+  cpkt_afl_resolve_runtime "$(value cc "$description")" "$(value cxx "$description")" \
+    "$(value sysroot "$description")" "$(value root "$description")"
 }
 
 require_native_host() {
@@ -81,7 +85,7 @@ ensure() {
   local r c d br id
   d=$(bootlin_description); br=$(value root "$d"); id=$(collection_id "$br")
   r=$(root "$id"); c=$(cache)
-  ready "$r" "$id" && return
+  if ready "$r" "$id"; then require_bootlin_runtime "$d"; return; fi
   with_cache_lock "$c/locks/aflplusplus-${version}-x86_64-linux-gnu.lock" ensure_locked
 }
 
@@ -95,6 +99,7 @@ ensure_locked() {
   compiler_bin=$(dirname -- "$cc")
   sysroot=$(value sysroot "$desc")
   id=$(collection_id "$br"); r=$(root "$id")
+  require_bootlin_runtime "$desc"
   ready "$r" "$id" && return
   [[ -x "$cc" && -x "$cxx" && -f "$br/include/gmp.h" ]] || die 'Bootlin GCC plugin headers are incomplete'
   mkdir -p "$c/archives"
@@ -111,7 +116,8 @@ ensure_locked() {
     mv "$dl" "$archive"
     trap - EXIT HUP INT TERM
   fi
-  tmp="$c/.aflplusplus.$$"; install_cleanup_trap -rf "$tmp"
+  tmp=$(mktemp -d "$c/.aflplusplus.XXXXXXXX")
+  install_cleanup_trap -rf "$tmp"
   mkdir -p "$tmp/extract" "$tmp/root/bin" "$tmp/root/lib/afl"
   tar -xzf "$archive" -C "$tmp/extract"; src="$tmp/extract/AFLplusplus-$version"
   [[ -d "$src" ]] || die "unexpected archive layout: $archive_name"
@@ -143,13 +149,15 @@ report() {
   require_native_host
   d=$(bootlin_description); br=$(value root "$d"); id=$(collection_id "$br"); r=$(root "$id")
   ready "$r" "$id" || die "AFL++ is not ready for $id; run: $0 ensure"
+  require_bootlin_runtime "$d"
   printf 'status=ready\nversion=%s\ncache=%s\nsource=aflplusplus\nroot=%s\nafl_fuzz=%s\nafl_showmap=%s\ncc=%s\ncxx=%s\nhelper=%s\n' "$version" "$(cache)" "$r" "$r/bin/afl-fuzz" "$r/bin/afl-showmap" "$r/bin/cpkt-afl-gcc" "$r/bin/cpkt-afl-g++" "$r/lib/afl"
 }
 env_out() {
-  local d cc cxx br id r
+  local d br id r
   require_native_host
-  d=$(bootlin_description); cc=$(value cc "$d"); cxx=$(value cxx "$d"); br=$(value root "$d"); id=$(collection_id "$br"); r=$(root "$id")
+  d=$(bootlin_description); br=$(value root "$d"); id=$(collection_id "$br"); r=$(root "$id")
   ready "$r" "$id" || die "AFL++ is not ready for $id; run: $0 ensure"
+  require_bootlin_runtime "$d"
   printf 'export CPKT_AFLPP_ROOT=%q\nexport AFL_PATH=%q\nexport AFL_CC=%q\nexport AFL_CXX=%q\nexport CC=%q\nexport CXX=%q\nexport PATH=%q\n' "$r" "$r/lib/afl" "$r/bin/bootlin-gcc" "$r/bin/bootlin-g++" "$r/bin/cpkt-afl-gcc" "$r/bin/cpkt-afl-g++" "$r/bin:$PATH"
 }
 case "${1:-}" in

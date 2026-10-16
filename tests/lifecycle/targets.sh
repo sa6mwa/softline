@@ -6,7 +6,7 @@ work=$(mktemp -d "$root/build/target-test.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 cp "$root/Makefile" "$work/"
 mkdir -p "$work/scripts" "$work/bin" "$work/build/debug/examples"
-cp "$root/scripts/"{require-host-bash.sh,deps.sh,build.sh} "$work/scripts/"
+cp "$root/scripts/"{require-host-bash.sh,require-workspace.sh,deps.sh,build.sh} "$work/scripts/"
 cat > "$work/bin/cmake" <<'SH'
 #!/bin/sh
 printf 'cmake %s\n' "$*" >> "$CALL_LOG"

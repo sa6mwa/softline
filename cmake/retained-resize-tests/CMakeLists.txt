@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
-project(softline_retained_resize_diagnostic LANGUAGES NONE)
 get_filename_component(root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+include(../softline_workspace.cmake)
+softline_check_workspace("${root}")
+project(softline_retained_resize_diagnostic LANGUAGES NONE)
 find_program(BASH_EXECUTABLE bash REQUIRED)
 execute_process(COMMAND "${BASH_EXECUTABLE}" "${root}/scripts/require-host-bash.sh"
   COMMAND_ERROR_IS_FATAL ANY)

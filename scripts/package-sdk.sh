@@ -15,6 +15,7 @@ source "$ROOT_DIR/scripts/release-targets.sh"
 version=$("$ROOT_DIR/scripts/release_version.sh")
 stage="$ROOT_DIR/build/package-stage"
 payload="$stage/softline-$version-$target"
+SOFTLINE_GENERATED_PATH="$payload" source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 mkdir -p "$stage" "$dist"
 trap 'rm -rf -- "$payload"' EXIT
 rm -rf -- "$payload"

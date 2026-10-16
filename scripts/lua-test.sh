@@ -4,6 +4,7 @@ case ${BASH_SOURCE[0]} in
   *) source ./require-host-bash.sh ;;
 esac || exit $?
 set -euo pipefail
+source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LUA_TREE="${ROOT_DIR}/build/luarocks"
@@ -38,7 +39,7 @@ bash "${ROOT_DIR}/scripts/build-local-lua.sh" "${SDK_LIB_DIR}"
 SOFTLINE_LUA_INCDIR="$(cat "${ROOT_DIR}/build/local-lua/lua-source-dir.txt")"
 export SOFTLINE_LUA_INCDIR
 rm -rf "${LUA_TREE}"
-NATIVE_TARGET="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" native-linux-target)"
+NATIVE_TARGET="$("${ROOT_DIR}/scripts/native-linux-target.sh")"
 BOOTLIN_ENV="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${NATIVE_TARGET}")"
 eval "${BOOTLIN_ENV}"
 SOFTLINE_LUA_CC="${CC}"

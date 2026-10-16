@@ -5,7 +5,7 @@ set(_softline_resolver "${CMAKE_CURRENT_LIST_DIR}/../../scripts/cpkt-toolchains.
 
 if(NOT DEFINED SL_TARGET_ID OR SL_TARGET_ID STREQUAL "")
   execute_process(
-    COMMAND "${_softline_resolver}" native-linux-target
+    COMMAND "${CMAKE_CURRENT_LIST_DIR}/../../scripts/native-linux-target.sh"
     RESULT_VARIABLE _softline_native_target_result
     OUTPUT_VARIABLE _softline_native_target
     ERROR_VARIABLE _softline_native_target_error

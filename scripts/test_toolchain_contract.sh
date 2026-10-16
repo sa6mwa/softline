@@ -9,14 +9,14 @@ mkdir -p "$ROOT_DIR/build/toolchain-checks"
 export TMPDIR="$ROOT_DIR/build/toolchain-checks"
 "$ROOT_DIR/scripts/test-cpkt-toolchain-resolvers.sh"
 "$ROOT_DIR/scripts/test-cpkt-aflpp-resolver.sh"
-resolver="$ROOT_DIR/scripts/cpkt-toolchains.sh"
-[[ $(CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE=x86_64 "$resolver" native-linux-target) == x86_64-linux-gnu ]]
+resolver="$ROOT_DIR/scripts/native-linux-target.sh"
+[[ $(CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE=x86_64 "$resolver") == x86_64-linux-gnu ]]
 for machine in aarch64 armv7l riscv64; do
-  if CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE="$machine" "$resolver" native-linux-target >/dev/null 2>&1; then
+  if CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE="$machine" "$resolver" >/dev/null 2>&1; then
     echo "ERROR: unsupported native compiler host accepted: $machine" >&2; exit 1
   fi
 done
-if CPKT_HOST_SYSTEM=Darwin CPKT_HOST_MACHINE=arm64 "$resolver" native-linux-target >/dev/null 2>&1; then
+if CPKT_HOST_SYSTEM=Darwin CPKT_HOST_MACHINE=arm64 "$resolver" >/dev/null 2>&1; then
   echo 'ERROR: non-Linux host accepted as a native Bootlin host' >&2; exit 1
 fi
 echo 'Toolchain fixture contracts passed without acquiring real dependencies.'

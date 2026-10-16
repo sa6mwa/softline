@@ -4,6 +4,7 @@ case ${BASH_SOURCE[0]} in
   *) source ./require-host-bash.sh ;;
 esac || exit $?
 set -euo pipefail
+source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd -P)
 DIST_DIR=${SOFTLINE_DIST_DIR:-$ROOT_DIR/dist}
 VERSION=$("$ROOT_DIR/scripts/release_version.sh")

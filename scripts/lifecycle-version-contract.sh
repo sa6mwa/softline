@@ -14,6 +14,19 @@ ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd -P)
 [[ -z $(git -C "$ROOT_DIR" status --porcelain) ]] || {
   echo 'ERROR: final release requires a clean committed worktree' >&2; exit 1;
 }
+default_ref=$(git -C "$ROOT_DIR" symbolic-ref --quiet refs/remotes/origin/HEAD) || {
+  echo 'ERROR: resolve the default branch with git remote set-head origin before final release' >&2; exit 1;
+}
+default_branch=${default_ref#refs/remotes/origin/}
+branch=$(git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD) || {
+  echo 'ERROR: final release requires an attached default branch, not detached HEAD' >&2; exit 1;
+}
+[[ "$branch" == "$default_branch" ]] || {
+  echo "ERROR: final release requires default branch $default_branch; current branch is $branch" >&2; exit 1;
+}
+git -C "$ROOT_DIR" verify-commit HEAD || {
+  echo 'ERROR: final release requires the amended final commit with a verified signature' >&2; exit 1;
+}
 version=$("$ROOT_DIR/scripts/release_version.sh")
 [[ "$version" != 0.0.0 ]] || {
   echo 'ERROR: final release requires one exact lightweight vX.Y.Z tag on HEAD' >&2; exit 1;

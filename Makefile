@@ -5,6 +5,7 @@
 SHELL := bash
 .SHELLFLAGS := -euo pipefail -c
 .NOTPARALLEL:
+export CMAKE_BUILD_PARALLEL_LEVEL ?= 4
 
 ROOT_DIR := $(CURDIR)
 BUILD_DIR := $(ROOT_DIR)/build
@@ -123,7 +124,7 @@ test-debug: test ## Run debug tests
 test-all: test test-host asan valgrind-portable fuzz-portable lua-test ## Complete missing native, host, hardening, fuzz and Lua proof
 
 .PHONY: test-host
-test-host: ## Verify lifecycle fixtures once per matching host context
+test-host: ## Run host lifecycle fixtures
 	@./scripts/test-host.sh
 
 .PHONY: test-terminal-cache
@@ -331,4 +332,4 @@ clean: ## Remove all generated build and dist artifacts
 
 .PHONY: clean-dist
 clean-dist: ## Remove dist/ artifacts only
-	@rm -rf $(DIST_DIR)
+	@./scripts/clean.sh dist

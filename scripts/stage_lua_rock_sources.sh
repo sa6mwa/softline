@@ -8,6 +8,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
 STAGE_ROOT="${1:-${ROOT_DIR}/build/lua-release/softline-lua-${VERSION}}"
+SOFTLINE_GENERATED_PATH="$STAGE_ROOT" source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
 rm -rf "${STAGE_ROOT}"
 mkdir -p "${STAGE_ROOT}/lua" "${STAGE_ROOT}/scripts" \

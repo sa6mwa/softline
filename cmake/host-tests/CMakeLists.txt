@@ -1,11 +1,16 @@
 cmake_minimum_required(VERSION 3.24)
-project(softline_host_tests LANGUAGES NONE)
 get_filename_component(root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+include(../softline_workspace.cmake)
+softline_check_workspace("${root}")
+project(softline_host_tests LANGUAGES NONE)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(BASH_EXECUTABLE bash REQUIRED)
 execute_process(COMMAND "${BASH_EXECUTABLE}" "${root}/scripts/require-host-bash.sh"
   COMMAND_ERROR_IS_FATAL ANY)
 enable_testing()
+add_test(NAME workspace_ownership COMMAND "${BASH_EXECUTABLE}"
+  "${root}/tests/lifecycle/workspace.sh" "${root}")
+set_tests_properties(workspace_ownership PROPERTIES TIMEOUT 30 LABELS "host;lifecycle")
 function(host_shell name script)
   add_test(NAME "${name}" COMMAND "${BASH_EXECUTABLE}" "${root}/scripts/${script}")
   set_tests_properties("${name}" PROPERTIES TIMEOUT 90 LABELS "host;lifecycle"
