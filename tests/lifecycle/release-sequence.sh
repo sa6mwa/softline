@@ -18,7 +18,7 @@ cat > "$fixture/scripts/cpkt-aflpp.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
-for helper in package-source package-checksums package-verify release_lua_artifacts; do
+for helper in package-source package-checksums package-verify release_lua_artifacts package-consumer-smoke; do
   printf '#!/usr/bin/env bash\nprintf '\''%%s:%%s\\n'\'' %q "$*" >> "$CALL_LOG"\n' "$helper" > "$fixture/scripts/$helper.sh"
 done
 cat > "$fixture/scripts/package.sh" <<'SH'
@@ -30,6 +30,7 @@ cat > "$fixture/scripts/extract-release-source.sh" <<'SH'
 mkdir -p "$2/native/scripts"
 root=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 cp "$root/scripts/package.sh" "$2/native/scripts/"
+cp "$root/scripts/package-consumer-smoke.sh" "$2/native/scripts/"
 printf 'extract\n' >> "$CALL_LOG"
 printf '%s\n' "$2/native"
 SH
@@ -79,17 +80,18 @@ if SOFTLINE_RELEASE_TARGETS=x86_64-linux-gnu "$fixture/scripts/release.sh" prefl
 fi
 "$fixture/scripts/release.sh"
 mapfile -t calls < "$CALL_LOG"
-[[ ${#calls[@]} == 8 ]]
-[[ ${calls[0]} == "make:-C $fixture prerelease-checks" ]]
+[[ ${#calls[@]} == 9 ]]
+[[ ${calls[0]} == "make:-C $fixture prerelease-runtime-checks" ]]
 [[ ${calls[1]} == package-source: && ${calls[2]} == extract ]]
 [[ ${calls[3]} == "package:$fixture/build/release-source/native/scripts/package.sh:x86_64-linux-gnu:0" ]]
-[[ ${calls[4]} == "package:$fixture/scripts/package.sh:"*":1" ]]
-[[ ${calls[4]} != *' x86_64-linux-gnu '* ]]
-[[ ${calls[5]} == release_lua_artifacts: && ${calls[6]} == 'package-checksums:all' && ${calls[7]} == package-verify: ]]
+[[ ${calls[4]} == "package-consumer-smoke:--producer $fixture/build/release-source/native/build/x86_64-linux-gnu-release" ]]
+[[ ${calls[5]} == "package:$fixture/scripts/package.sh:"*":1" ]]
+[[ ${calls[5]} != *' x86_64-linux-gnu '* ]]
+[[ ${calls[6]} == release_lua_artifacts: && ${calls[7]} == 'package-checksums:all' && ${calls[8]} == package-verify: ]]
 [[ -f "$fixture/build/retained" ]]
 : > "$CALL_LOG"
 "$real_make" --no-print-directory -C "$fixture" release MAKE="$work/bin/make"
 mapfile -t calls < "$CALL_LOG"
-[[ ${#calls[@]} == 10 && ${calls[0]} == make:lifecycle-version-contract && ${calls[1]} == make:clean ]]
-[[ ${calls[2]} == "make:-C $fixture prerelease-checks" && ${calls[9]} == package-verify: ]]
+[[ ${#calls[@]} == 11 && ${calls[0]} == make:lifecycle-version-contract && ${calls[1]} == make:clean ]]
+[[ ${calls[2]} == "make:-C $fixture prerelease-runtime-checks" && ${calls[10]} == package-verify: ]]
 echo 'Read-only preflight preserves outputs; final sequence shares source-native and checkout-cross ownership.'

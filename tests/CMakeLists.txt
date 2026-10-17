@@ -1,3 +1,8 @@
+foreach(terminal_root "${SOFTLINE_TERMINAL_TEST_ROOT}" "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}")
+  if(NOT terminal_root STREQUAL "")
+    softline_check_generated_path("${PROJECT_SOURCE_DIR}" "${terminal_root}")
+  endif()
+endforeach()
 find_package(Threads REQUIRED)
 add_executable(test_history test_history.c)
 target_link_libraries(test_history PRIVATE softline Threads::Threads)
@@ -138,7 +143,7 @@ endif()
 
 if(TARGET softline_shared AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME softline_exports COMMAND bash
-    "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/exports.sh"
+      "${PROJECT_SOURCE_DIR}/scripts/verify-public-exports.sh"
     "${CMAKE_NM}" "$<TARGET_FILE:softline_shared>"
     "${PROJECT_SOURCE_DIR}/cmake/softline.exports")
   set_tests_properties(softline_exports PROPERTIES LABELS "unit;abi" TIMEOUT 10)

@@ -6,6 +6,7 @@ esac || exit $?
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SOFTLINE_GENERATED_PATH="$ROOT_DIR/build/local-lua-debug/lua" source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 if [ ! -f "${ROOT_DIR}/build/local-lua-debug/lua" ] || [ ! -x "${ROOT_DIR}/build/local-lua-debug/lua" ]; then
   echo "ERROR: local Lua interpreter missing or not executable; run make lua-debug-test first" >&2
   exit 1

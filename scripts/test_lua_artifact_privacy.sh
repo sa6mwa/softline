@@ -73,6 +73,12 @@ leak_rockspec() {
   printf '%s\n' "source = { url = \"file://${HOME}/softline-lua-${VERSION}.tar.gz\" }" \
     >> "${dist_dir}/softline-${VERSION}-1.rockspec"
 }
+leak_external_file_url() {
+  printf 'source = { url = "file:///other-builder/softline.tar.gz" }\n' >> "$1/softline-${VERSION}-1.rockspec"
+}
+leak_absolute_source_url() {
+  printf 'source = { url = "/other-builder/softline.tar.gz" }\n' >> "$1/softline-${VERSION}-1.rockspec"
+}
 
 leak_lua_archive() {
   dist_dir="$1"
@@ -106,6 +112,8 @@ leak_src_rock_nested_archive() {
 }
 
 expect_lua_validation_failure rockspec "local file URL" leak_rockspec
+expect_lua_validation_failure external-file "local file URL" leak_external_file_url
+expect_lua_validation_failure absolute-source "absolute source URL" leak_absolute_source_url
 expect_lua_validation_failure lua-archive "live-worktree source URL" leak_lua_archive
 expect_lua_validation_failure src-rock "package-manager temporary path" leak_src_rock_nested_archive
 

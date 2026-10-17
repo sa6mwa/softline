@@ -10,7 +10,7 @@ mkdir -p "$fixture/cmake/terminal-tests" "$fixture/scripts" "$work/payload/usr/b
 cp "$root/cmake/terminal-tests/CMakeLists.txt" "$fixture/cmake/terminal-tests/"
 cp "$root/cmake/softline_verified_archive.cmake" "$fixture/cmake/"
 cp "$root/cmake/softline_workspace.cmake" "$fixture/cmake/"
-cp "$root/scripts/"{relocate-terminal-test-tools.sh,require-host-bash.sh} "$fixture/scripts/"
+cp "$root/scripts/"{relocate-terminal-test-tools.sh,require-host-bash.sh,require-workspace.sh} "$fixture/scripts/"
 printf 'test Xvfb /usr/bin\0 prefix' > "$work/payload/usr/bin/Xvfb"
 chmod +x "$work/payload/usr/bin/Xvfb"
 tar -czf "$work/data.tar.gz" -C "$work/payload" usr

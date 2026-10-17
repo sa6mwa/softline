@@ -6,10 +6,27 @@ esac || exit $?
 set -euo pipefail
 source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "${ROOT_DIR}/build"
-TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/consumer.XXXXXX")"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 PRODUCER_DIR="${ROOT_DIR}/build/consumer-producer"
+version_only=0
+producer_args=()
+while (($#)); do
+  case "$1" in
+    --version-override-only) version_only=1; shift ;;
+    --producer)
+      [[ $# -ge 2 && -n $2 ]] || { echo 'ERROR: --producer needs a prepared build directory' >&2; exit 2; }
+      PRODUCER_DIR=$2
+      SOFTLINE_GENERATED_PATH="$PRODUCER_DIR" source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
+      [[ -f "$PRODUCER_DIR/CMakeCache.txt" ]] || { echo 'ERROR: prepare the selected consumer producer first' >&2; exit 1; }
+      producer_args=(--producer "$PRODUCER_DIR")
+      shift 2
+      ;;
+    *) echo 'Usage: package-consumer-smoke.sh [--producer prepared-build-dir] [--version-override-only]' >&2; exit 2 ;;
+  esac
+done
+mkdir -p "${ROOT_DIR}/build"
+# Exercise ordinary path spaces in both CMake and pkg-config consumers.
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/consumer with spaces.XXXXXX")"
 VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
 SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
 BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
@@ -252,10 +269,12 @@ smoke_mode() {
   export PKG_CONFIG_PATH PKG_CONFIG_LIBDIR
   pkg-config --exists softline
   test "$(pkg-config --modversion softline)" = "${VERSION}"
+  # pkg-config emits shell-quoted arguments from this verified SDK.
+  pkg_flags=$(pkg-config --cflags --libs softline)
+  eval "pkg_args=($pkg_flags)"
   "${CONSUMER_CC}" -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
     @"${app_build_dir}/consumer-runtime.flags" \
-    $(pkg-config --cflags softline) "${APP_DIR}/main.c" \
-    $(pkg-config --libs softline) -Wl,-rpath,"${install_libdir}" \
+    "${APP_DIR}/main.c" "${pkg_args[@]}" -Wl,-rpath,"${install_libdir}" \
     -o "${pkg_consumer}"
   "${pkg_consumer}"
   test ! -e "$SOFTLINE_UNEXPECTED_CPKT_CALLS"
@@ -265,13 +284,13 @@ smoke_mode() {
 
 install_disabled_smoke
 smoke_mode both ON ON
-if [ "${1:-}" = "--version-override-only" ]; then
+if [ "$version_only" = 1 ]; then
   echo "Installed package consumer smoke test passed."
   exit 0
 fi
 smoke_mode static-only ON OFF
 smoke_mode shared-only OFF ON
 smoke_mode both-lib64 ON ON lib64
-SL_VERSION_OVERRIDE=v1.2.3 bash "$0" --version-override-only
+SL_VERSION_OVERRIDE=v1.2.3 bash "$0" --version-override-only "${producer_args[@]}"
 
 echo "Installed package consumer smoke test passed."

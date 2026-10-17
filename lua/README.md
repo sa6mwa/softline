@@ -459,6 +459,9 @@ lua examples/simple.lua
 lua examples/chat.lua
 ```
 
+The facade loads the installed public shared `libsoftline`; a static-only SDK
+is rejected. Local SDK tests install from the common Debug library producer.
+
 `examples/chat.lua` accepts the same `SOFTLINE_PROMPT_THEME` values as the C
 chat example. It uses the default native persistent output session: transcript
 output starts at the original cursor, while the prompt starts at the bottom

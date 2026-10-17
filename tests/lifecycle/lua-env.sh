@@ -6,7 +6,9 @@ work=$(mktemp -d "$root/build/lua-env.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/source with spaces/scripts" "$work/bin"
 fixture="$work/source with spaces"
-cp "$root/scripts/require-host-bash.sh" "$fixture/scripts/"
+cp "$root/scripts/"{require-host-bash.sh,require-workspace.sh} "$fixture/scripts/"
+mkdir -p "$fixture/cmake"
+cp "$root/cmake/softline_workspace.cmake" "$fixture/cmake/"
 cat > "$work/bin/luarocks" <<'SH'
 #!/bin/sh
 printf '%s\n' 'export LUA_PATH=fixture' 'export LUA_CPATH=fixture'
@@ -36,5 +38,14 @@ for mode in lua lua-debug; do
   exports=$("$fixture/scripts/$mode-env.sh")
   selected=$(bash -c 'eval "$1"; command -v lua' test "$exports")
   [[ "$selected" == "$binary" ]]
+  mv "$binary" "$work/borrowed-lua"
+  ln -s "$work/borrowed-lua" "$binary"
+  if "$fixture/scripts/$mode-env.sh" > "$work/out" 2> "$work/err"; then
+    echo "ERROR: $mode accepted another workspace's interpreter" >&2; exit 1
+  fi
+  [[ ! -s "$work/out" ]]
+  grep -q 'Generated path must stay below this checkout' "$work/err"
+  unlink "$binary"
+  mv "$work/borrowed-lua" "$binary"
 done
 echo 'Lua environments reject missing/bad interpreters and select the local runtime.'

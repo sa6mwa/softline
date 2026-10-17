@@ -30,8 +30,8 @@ cd "$work"
 make --no-print-directory deps DEPENDENCY=libmdf
 grep -qx 'cmake --preset debug' "$CALL_LOG"
 : > "$CALL_LOG"
-make --no-print-directory deps DEPENDENCY=lua PRESET=debug-lua
-printf 'cmake --preset debug-lua\nlua %s/build/debug-lua\n' "$work" > "$work/expected"
+make --no-print-directory deps DEPENDENCY=lua PRESET=debug
+printf 'cmake --preset debug\nlua %s/build/debug\n' "$work" > "$work/expected"
 cmp "$CALL_LOG" "$work/expected"
 : > "$CALL_LOG"
 if make deps DEPENDENCY=bad > "$work/error" 2>&1; then echo 'Invalid dependency accepted' >&2; exit 1; fi

@@ -553,7 +553,7 @@ make build
 make test
 make test-terminal-cache
 make deps DEPENDENCY=libmdf
-make deps DEPENDENCY=lua PRESET=debug-lua
+make deps DEPENDENCY=lua PRESET=debug
 make asan
 make valgrind
 make package-consumer-smoke

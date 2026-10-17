@@ -36,13 +36,14 @@ fi
 # make release has already checked the tag and emptied local generated state.
 # Ordinary host/hardening proof stays in the checkout. Delivered source owns
 # the native Release lane; other target configurations retain their own graph.
-make -C "$ROOT_DIR" prerelease-checks
+make -C "$ROOT_DIR" prerelease-runtime-checks
 "$ROOT_DIR/scripts/package-source.sh"
 version=$("$ROOT_DIR/scripts/release_version.sh")
 source=$("$ROOT_DIR/scripts/extract-release-source.sh" \
   "$ROOT_DIR/dist/softline-$version.tar.gz" "$ROOT_DIR/build/release-source")
 export SOFTLINE_DIST_DIR="$ROOT_DIR/dist"
 SOFTLINE_PACKAGE_TARGETS=x86_64-linux-gnu SOFTLINE_REQUIRE_DARWIN=0 "$source/scripts/package.sh"
+"$source/scripts/package-consumer-smoke.sh" --producer "$source/build/x86_64-linux-gnu-release"
 source "$ROOT_DIR/scripts/release-targets.sh"
 cross_targets=
 for target in $SOFTLINE_RELEASE_TARGETS; do

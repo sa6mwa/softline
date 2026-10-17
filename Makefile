@@ -43,7 +43,7 @@ deps-release: ## Configure release build dependencies
 
 .PHONY: deps-cross
 deps-cross: ## Provision and inspect all pinned cross toolchains
-	@./scripts/cpkt-toolchains.sh ensure all
+	@source ./scripts/require-workspace.sh && ./scripts/cpkt-toolchains.sh ensure all
 
 .PHONY: deps
 deps: ## Configure one dependency closure (DEPENDENCY=libmdf|lua PRESET=debug)
@@ -168,7 +168,7 @@ valgrind-portable: ## Run native Valgrind on supported Linux hosts, skip where u
 
 .PHONY: deps-fuzz
 deps-fuzz: ## Explicitly provision pinned native AFL++ instrumentation
-	@./scripts/cpkt-aflpp.sh ensure
+	@source ./scripts/require-workspace.sh && ./scripts/cpkt-aflpp.sh ensure
 
 .PHONY: fuzz-smoke
 fuzz-smoke: ## Build and execute a bounded native AFL++ smoke run (prepare with deps-fuzz)
@@ -316,8 +316,9 @@ release: ## Final tagged release only: clean, reconstruct source, verify complet
 	@$(MAKE) clean
 	@./scripts/release.sh
 
-.PHONY: prerelease-checks
-prerelease-checks: format-check test-all test-clangd package-consumer-smoke
+.PHONY: prerelease-checks prerelease-runtime-checks
+prerelease-checks: prerelease-runtime-checks package-consumer-smoke
+prerelease-runtime-checks: format-check test-all test-clangd
 
 .PHONY: lifecycle-version-contract
 lifecycle-version-contract: ## Verify exact lightweight-tag release version behavior

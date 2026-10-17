@@ -37,5 +37,7 @@ git -C "${REPO_DIR}" worktree add --detach -q "${WORKTREE_DIR}" HEAD
 
 "${WORKTREE_DIR}/scripts/package-source.sh" >/dev/null
 test -f "${WORKTREE_DIR}/dist/softline-0.0.0.tar.gz"
+ln -s "$WORKTREE_DIR" "$TMP_DIR/source-alias"
+"$TMP_DIR/source-alias/scripts/package-source.sh" >/dev/null
 
 echo "Linked worktree source package test passed."

@@ -9,9 +9,15 @@ ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd -P)
 build=$1
 target=$2
 dist=$3
+[[ "$build" == /* ]] || build="$PWD/$build"
+SOFTLINE_GENERATED_PATH="$build" source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 source "$ROOT_DIR/scripts/release-targets.sh"
 [[ " $SOFTLINE_RELEASE_TARGETS " == *" $target "* ]] || { echo 'ERROR: unknown SDK target' >&2; exit 2; }
 [[ -f "$build/CMakeCache.txt" ]] || { echo 'ERROR: prepare and verify the SDK producer first' >&2; exit 1; }
+producer_source=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$build/CMakeCache.txt")
+[[ -n "$producer_source" && -d "$producer_source" && $(cd "$producer_source" && pwd -P) == "$ROOT_DIR" ]] || {
+  echo 'ERROR: SDK producer must belong to this checkout' >&2; exit 1;
+}
 version=$("$ROOT_DIR/scripts/release_version.sh")
 stage="$ROOT_DIR/build/package-stage"
 payload="$stage/softline-$version-$target"

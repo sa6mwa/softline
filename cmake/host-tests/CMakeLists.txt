@@ -38,6 +38,14 @@ set_tests_properties(public_header_docs_negative PROPERTIES TIMEOUT 30 LABELS "h
 add_test(NAME public_api_negative COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
   -P "${root}/tests/lifecycle/api-fixtures.cmake")
 set_tests_properties(public_api_negative PROPERTIES TIMEOUT 30 LABELS "host;api")
+add_test(NAME lua_sdk COMMAND "${BASH_EXECUTABLE}"
+  "${root}/tests/lifecycle/lua-sdk.sh" "${root}")
+set_tests_properties(lua_sdk PROPERTIES TIMEOUT 30 LABELS "host;lua")
+add_test(NAME sdk_metadata COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
+  -P "${root}/tests/lifecycle/sdk-metadata.cmake")
+add_test(NAME public_exports COMMAND "${BASH_EXECUTABLE}"
+  "${root}/tests/lifecycle/public-exports.sh" "${root}")
+set_tests_properties(sdk_metadata public_exports PROPERTIES TIMEOUT 30 LABELS "host;packaging")
 add_test(NAME runtime_config COMMAND "${BASH_EXECUTABLE}"
   "${root}/tests/lifecycle/cache.sh" "${root}")
 add_test(NAME artifact_portability COMMAND "${BASH_EXECUTABLE}" "${root}/tests/lifecycle/artifact-portability.sh" "${root}")

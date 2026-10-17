@@ -60,27 +60,47 @@ if [ -n "${SOFTLINE_LUA_CC:-}" ]; then
   fi
 fi
 
-if [ -n "${SOFTLINE_INCLUDE_DIR:-}" ] && [ -n "${SOFTLINE_LIB_DIR:-}" ]; then
-  SOFTLINE_CFLAGS="-I${SOFTLINE_INCLUDE_DIR}"
-  SOFTLINE_LIBS="-L${SOFTLINE_LIB_DIR} -lsoftline"
-elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists softline; then
-  SOFTLINE_CFLAGS="$(pkg-config --cflags softline)"
-  SOFTLINE_LIBS="$(pkg-config --libs softline)"
+if [[ -n ${SOFTLINE_INCLUDE_DIR:-} || -n ${SOFTLINE_LIB_DIR:-} ]]; then
+  [[ -n ${SOFTLINE_INCLUDE_DIR:-} && -n ${SOFTLINE_LIB_DIR:-} ]] || {
+    echo 'ERROR: select both SOFTLINE_INCLUDE_DIR and SOFTLINE_LIB_DIR' >&2; exit 1;
+  }
+  include_dir=$SOFTLINE_INCLUDE_DIR
+  library_dir=$SOFTLINE_LIB_DIR
 elif [ -n "${SOFTLINE_DIR:-}" ]; then
-  SOFTLINE_CFLAGS="-I${SOFTLINE_DIR}/include"
+  include_dir="${SOFTLINE_DIR}/include"
   if [ -d "${SOFTLINE_DIR}/lib" ]; then
-    SOFTLINE_LIBS="-L${SOFTLINE_DIR}/lib -lsoftline"
+    library_dir="${SOFTLINE_DIR}/lib"
   elif [ -d "${SOFTLINE_DIR}/lib64" ]; then
-    SOFTLINE_LIBS="-L${SOFTLINE_DIR}/lib64 -lsoftline"
+    library_dir="${SOFTLINE_DIR}/lib64"
   else
     echo "ERROR: SOFTLINE_DIR does not contain lib/ or lib64/" >&2
     exit 1
   fi
+elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists softline; then
+  pkg_flags=$(pkg-config --keep-system-cflags --cflags-only-I softline)
+  eval "include_args=($pkg_flags)"
+  pkg_flags=$(pkg-config --keep-system-libs --libs-only-L softline)
+  eval "library_args=($pkg_flags)"
+  [[ ${#include_args[@]} == 1 && ${#library_args[@]} == 1 ]] || {
+    echo 'ERROR: selected SDK must declare one public include and library directory' >&2; exit 1;
+  }
+  include_dir=${include_args[0]#-I}
+  library_dir=${library_args[0]#-L}
 else
   echo "ERROR: unable to find softline via pkg-config; set PKG_CONFIG_PATH or SOFTLINE_DIR" >&2
   exit 1
 fi
 
+[[ -n "$include_dir" && -n "$library_dir" ]] || {
+  echo 'ERROR: selected SDK must declare its include and library directories' >&2; exit 1;
+}
+shared_library="$library_dir/libsoftline.so"
+if [[ ! -f "$shared_library" ]]; then shared_library="$library_dir/libsoftline.dylib"; fi
+[[ -f "$shared_library" ]] || {
+  echo "ERROR: Lua facade requires the public shared libsoftline in $library_dir; a static-only SDK is unsupported" >&2
+  exit 1
+}
+
 "${CC}" ${CFLAGS} -Wall -Wextra -Werror -I"${LUA_COMPILE_INCDIR}" \
-  ${SOFTLINE_CFLAGS} -c "${ROOT_DIR}/lua/softline_lua.c" -o "${OBJ}"
-"${CC}" ${LIBFLAG} -o "${MOD}" "${OBJ}" ${SOFTLINE_LIBS}
+  "-I${include_dir}" -c "${ROOT_DIR}/lua/softline_lua.c" -o "${OBJ}"
+"${CC}" ${LIBFLAG} -o "${MOD}" "${OBJ}" "$shared_library"

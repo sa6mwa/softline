@@ -11,9 +11,9 @@ preset=${2:-debug}
 cd "$ROOT_DIR"
 case "$component:$preset" in
   libmdf:debug) cmake --preset debug ;;
-  lua:debug|lua:debug-lua)
+  lua:debug)
     cmake --preset "$preset"
     "$ROOT_DIR/scripts/build-local-lua.sh" "$ROOT_DIR/build/$preset"
     ;;
-  *) echo 'ERROR: use DEPENDENCY=libmdf PRESET=debug or DEPENDENCY=lua PRESET=debug|debug-lua' >&2; exit 2 ;;
+  *) echo 'ERROR: use DEPENDENCY=libmdf|lua PRESET=debug' >&2; exit 2 ;;
 esac

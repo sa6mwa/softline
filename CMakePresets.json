@@ -30,15 +30,6 @@
       }
     },
     {
-      "name": "debug-lua",
-      "inherits": "debug",
-      "displayName": "Debug Lua facade SDK",
-      "cacheVariables": {
-        "SL_BUILD_TESTS": "OFF",
-        "SL_BUILD_EXAMPLES": "OFF"
-      }
-    },
-    {
       "name": "asan",
       "inherits": "linux-base",
       "displayName": "ASan+UBSan",
@@ -185,10 +176,6 @@
       "configurePreset": "debug"
     },
     {
-      "name": "debug-lua",
-      "configurePreset": "debug-lua"
-    },
-    {
       "name": "asan",
       "configurePreset": "asan"
     },
@@ -233,11 +220,6 @@
     {
       "name": "debug",
       "configurePreset": "debug",
-      "output": {"outputOnFailure": true}
-    },
-    {
-      "name": "debug-lua",
-      "configurePreset": "debug-lua",
       "output": {"outputOnFailure": true}
     },
     {

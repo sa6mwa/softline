@@ -6,10 +6,11 @@ esac || exit $?
 set -euo pipefail
 source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 DIST_DIR="${SOFTLINE_DIST_DIR:-${ROOT_DIR}/dist}"
 mkdir -p "${ROOT_DIR}/build"
-TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package-verify.XXXXXX")"
+# Relocated consumer proof also exercises ordinary SDK path spaces.
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package verify.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 if [ ! -d "${DIST_DIR}" ] || [ -z "$(ls -A "${DIST_DIR}" 2>/dev/null)" ]; then
@@ -144,13 +145,13 @@ verify_darwin_metadata() {
     case "${file}" in
       *.dylib)
         case "${id}" in
-          @rpath/*) ;;
+            "@rpath/libsoftline.${SOFTLINE_ABI_VERSION}.dylib") ;;
           "")
             echo "ERROR: ${artifact}: ${file} missing LC_ID_DYLIB"
             exit 1
             ;;
           *)
-            echo "ERROR: ${artifact}: ${file} has non-@rpath install name ${id}"
+            echo "ERROR: ${artifact}: ${file} has an incorrect ABI install name ${id}"
             exit 1
             ;;
         esac
@@ -191,8 +192,6 @@ verify_dynamic_exports() {
   artifact="$1"
   target="$2"
   pkg_lib_dir="$3"
-  expected="${TMP_DIR}/expected-exports"
-  actual="${TMP_DIR}/actual-exports"
   shared_library=""
 
   if [ -z "${NM:-}" ] || [ ! -x "${NM}" ]; then
@@ -214,22 +213,16 @@ verify_dynamic_exports() {
     echo "ERROR: ${artifact}: shared libsoftline payload missing" >&2
     exit 1
   fi
-  sed -n '/^[A-Za-z_][A-Za-z0-9_]*$/p' "${ROOT_DIR}/cmake/softline.exports" | sort > "${expected}"
   case "${target}" in
-    *-linux-*)
-      "${NM}" -D --defined-only --format=posix "${shared_library}" |
-        awk '$1 != "SOFTLINE_1" { sub(/@.*/, "", $1); print $1 }' | sort -u > "${actual}"
-      ;;
-    *-apple-darwin)
-      "${NM}" -gU "${shared_library}" |
-        awk '$2 ~ /^[TWtw]$/ { sub(/^_/, "", $3); print $3 }' | sort -u > "${actual}"
-      ;;
+    *-linux-*) format=elf ;;
+    *-apple-darwin) format=macho ;;
     *)
       echo "ERROR: ${artifact}: unknown target for dynamic export verification: ${target}" >&2
       exit 1
       ;;
   esac
-  if ! diff -u "${expected}" "${actual}"; then
+  if ! bash "$ROOT_DIR/scripts/verify-public-exports.sh" "$NM" "$shared_library" \
+      "$ROOT_DIR/cmake/softline.exports" "$format"; then
     echo "ERROR: ${artifact}: libsoftline dynamic exports differ from cmake/softline.exports" >&2
     exit 1
   fi
@@ -253,13 +246,18 @@ verify_extracted_consumer() {
   cat > "${consumer_dir}/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.24)
 project(softline_extracted_consumer LANGUAGES C)
-find_package(softline REQUIRED CONFIG)
+find_package(softline ${SOFTLINE_EXPECTED_VERSION} EXACT REQUIRED CONFIG)
 add_executable(softline_extracted_consumer main.c)
 target_link_libraries(softline_extracted_consumer PRIVATE softline::softline)
+add_executable(softline_extracted_static main.c)
+target_link_libraries(softline_extracted_static PRIVATE softline::softline_static)
 target_compile_options(softline_extracted_consumer PRIVATE
+  -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror)
+target_compile_options(softline_extracted_static PRIVATE
   -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(softline_extracted_consumer PRIVATE -Wl,--fatal-warnings)
+  target_link_options(softline_extracted_static PRIVATE -static -Wl,--fatal-warnings)
 endif()
 include("${SOFTLINE_RUNTIME_HELPER}")
 softline_local_runtime(softline_extracted_consumer)
@@ -282,12 +280,17 @@ EOF
   cmake -S "${consumer_dir}" -B "${consumer_dir}/cmake-build" -G Ninja \
     "$@" \
     -DCMAKE_PREFIX_PATH="${pkg_root}" \
+    -DSOFTLINE_EXPECTED_VERSION="${VERSION}" \
     -DSOFTLINE_RUNTIME_HELPER="${ROOT_DIR}/cmake/softline_local_runtime.cmake" \
     -Dsoftline_DIR="${pkg_lib_dir}/cmake/softline"
   cmake --build "${consumer_dir}/cmake-build"
 
   PKG_CONFIG_PATH="${pkg_lib_dir}/pkgconfig"
   export PKG_CONFIG_PATH
+  pkg_flags=$(pkg-config --cflags --libs softline)
+  eval "shared_args=($pkg_flags)"
+  pkg_flags=$(pkg-config --cflags --static --libs softline)
+  eval "static_args=($pkg_flags)"
   if [ "${target}" = "arm64-apple-darwin" ]; then
     if [ -z "${LINKER:-}" ]; then
       echo "ERROR: ${target}: target linker unavailable for pkg-config consumer" >&2
@@ -295,21 +298,24 @@ EOF
     fi
     PATH="$(dirname "${LINKER}"):${PATH}" "${CC}" --ld-path="${LINKER}" \
       -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
-      $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
-      $(pkg-config --libs softline) -o "${consumer_dir}/pkg-config-consumer"
+      "${consumer_dir}/main.c" "${shared_args[@]}" -o "${consumer_dir}/pkg-config-consumer"
   else
     "${CC}" -Wl,--fatal-warnings -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
       @"${consumer_dir}/cmake-build/softline_extracted_consumer-runtime.flags" \
-      $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
-      $(pkg-config --libs softline) -Wl,-rpath,"${pkg_lib_dir}" -o "${consumer_dir}/pkg-config-consumer"
+      "${consumer_dir}/main.c" "${shared_args[@]}" -Wl,-rpath,"${pkg_lib_dir}" -o "${consumer_dir}/pkg-config-consumer"
   fi
 
+  if [ "${target}" = arm64-apple-darwin ]; then
+    PATH="$(dirname "${LINKER}"):${PATH}" "${CC}" --ld-path="${LINKER}" -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
+      "${consumer_dir}/main.c" "${static_args[@]}" -o "${consumer_dir}/static-consumer"
+  else
+    "${CC}" -Wl,--fatal-warnings -static -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
+      "${consumer_dir}/main.c" "${static_args[@]}" -o "${consumer_dir}/static-consumer"
+  fi
   if [ "${target}" = "x86_64-linux-gnu" ] || [ "${target}" = "x86_64-linux-musl" ]; then
     "${consumer_dir}/cmake-build/softline_extracted_consumer"
+    "${consumer_dir}/cmake-build/softline_extracted_static"
     "${consumer_dir}/pkg-config-consumer"
-    "${CC}" -Wl,--fatal-warnings -static -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
-      $(pkg-config --cflags softline) "${consumer_dir}/main.c" \
-      $(pkg-config --static --libs softline) -o "${consumer_dir}/static-consumer"
     "${consumer_dir}/static-consumer"
   fi
 }
@@ -380,6 +386,8 @@ while IFS= read -r filename; do
 
   pkg_root="${TMP_DIR}/${basename}"
   scan_for_local_paths "${basename}" "${pkg_root}"
+  cmake "-DSDK_ROOT=$pkg_root" "-DSDK_VERSION=$VERSION" "-DSDK_ABI=$SOFTLINE_ABI_VERSION" \
+    "-DSDK_TARGET=$target" -P "$ROOT_DIR/cmake/softline_verify_sdk.cmake"
 
   if [ ! -d "${pkg_root}/include" ]; then
     echo "ERROR: ${basename} missing include/"
@@ -423,20 +431,18 @@ while IFS= read -r filename; do
   PKG_CONFIG_PATH="${pkg_lib_dir}/pkgconfig"
   export PKG_CONFIG_PATH
   pkg-config --exists softline
-  case "$(pkg-config --cflags softline)" in
-    *"${pkg_root}"*) ;;
-    *)
-      echo "ERROR: ${basename} pkg-config cflags do not point inside package"
-      exit 1
-      ;;
-  esac
-  case "$(pkg-config --libs softline)" in
-    *"${pkg_root}"*) ;;
-    *)
-      echo "ERROR: ${basename} pkg-config libs do not point inside package"
-      exit 1
-      ;;
-  esac
+  [[ $(pkg-config --modversion softline) == "$VERSION" ]] || {
+    echo "ERROR: ${basename} pkg-config version differs from $VERSION" >&2; exit 1;
+  }
+  for selection in --cflags-only-I --libs-only-L; do
+    pkg_flags=$(pkg-config --keep-system-cflags --keep-system-libs "$selection" softline)
+    eval "directory_args=($pkg_flags)"
+    [[ ${#directory_args[@]} == 1 ]] || { echo "ERROR: ${basename}: ambiguous SDK directory" >&2; exit 1; }
+    case "$(cd "${directory_args[0]:2}" && pwd -P)" in
+      "${pkg_root}/"*) ;;
+      *) echo "ERROR: ${basename} pkg-config directory does not point inside package" >&2; exit 1 ;;
+    esac
+  done
 
   if [ ! -f "${pkg_root}/share/doc/softline/LICENSE" ]; then
     echo "ERROR: ${basename} missing softline license"
@@ -467,24 +473,6 @@ while IFS= read -r filename; do
 
       ;;
   esac
-
-  metadata_file="${pkg_root}/share/softline/package-metadata.json"
-  if [ ! -f "${metadata_file}" ]; then
-    echo "ERROR: ${basename} missing package metadata"
-    exit 1
-  fi
-  if grep -F "${ROOT_DIR}" "${metadata_file}" >/dev/null; then
-    echo "ERROR: ${basename} package metadata contains local build path"
-    exit 1
-  fi
-  if ! grep -F "\"target_id\": \"${target}\"" "${metadata_file}" >/dev/null; then
-    echo "ERROR: ${basename} package metadata target_id mismatch"
-    exit 1
-  fi
-  if ! grep -F "\"pkg_config\": \"softline\"" "${metadata_file}" >/dev/null; then
-    echo "ERROR: ${basename} package metadata missing pkg-config identity"
-    exit 1
-  fi
 
   verify_extracted_consumer "${target}" "${pkg_root}" "${pkg_lib_dir}"
 

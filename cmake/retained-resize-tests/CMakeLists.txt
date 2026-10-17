@@ -6,10 +6,11 @@ project(softline_retained_resize_diagnostic LANGUAGES NONE)
 find_program(BASH_EXECUTABLE bash REQUIRED)
 execute_process(COMMAND "${BASH_EXECUTABLE}" "${root}/scripts/require-host-bash.sh"
   COMMAND_ERROR_IS_FATAL ANY)
-find_program(TMUX_EXECUTABLE tmux REQUIRED)
 if(NOT EXISTS "${SOFTLINE_RESIZE_FIXTURE}")
   message(FATAL_ERROR "Build retained_resize_fixture and set SOFTLINE_RESIZE_FIXTURE to its absolute path")
 endif()
+softline_check_generated_path("${root}" "${SOFTLINE_RESIZE_FIXTURE}")
+find_program(TMUX_EXECUTABLE tmux REQUIRED)
 enable_testing()
 function(resize_case name columns rows mode variant draft)
   add_test(NAME "${name}" COMMAND "${BASH_EXECUTABLE}"

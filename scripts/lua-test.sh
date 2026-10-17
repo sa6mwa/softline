@@ -11,19 +11,15 @@ LUA_TREE="${ROOT_DIR}/build/luarocks"
 SDK_DIR="${ROOT_DIR}/build/lua-sdk"
 ROCKSPEC="${ROOT_DIR}/build/lua-rockspec/softline-$(bash "${ROOT_DIR}/scripts/release_version.sh")-1.rockspec"
 INSTALL_LIBDIR="${SOFTLINE_LUA_INSTALL_LIBDIR:-}"
-INSTALL_LIBDIR_ARG=""
-
-if [ -n "${INSTALL_LIBDIR}" ]; then
-  INSTALL_LIBDIR_ARG="-DCMAKE_INSTALL_LIBDIR=${INSTALL_LIBDIR}"
-fi
+INSTALL_LIBDIR_ARG="-DCMAKE_INSTALL_LIBDIR=${INSTALL_LIBDIR:-lib}"
 
 (
   cd "${ROOT_DIR}"
-  cmake --preset debug-lua ${INSTALL_LIBDIR_ARG}
-  cmake --build --preset debug-lua
+  cmake --preset debug "${INSTALL_LIBDIR_ARG}"
+  cmake --build --preset debug --target softline_static softline_shared
 )
 rm -rf "${SDK_DIR}"
-cmake --install "${ROOT_DIR}/build/debug-lua" --prefix "${SDK_DIR}"
+cmake --install "${ROOT_DIR}/build/debug" --prefix "${SDK_DIR}"
 
 if [ -d "${SDK_DIR}/lib/pkgconfig" ]; then
   SDK_LIB_DIR="${SDK_DIR}/lib"
@@ -47,6 +43,7 @@ export CC LD AR RANLIB SOFTLINE_LUA_CC
 (
   cd "${ROOT_DIR}"
   PKG_CONFIG_PATH="${SDK_LIB_DIR}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}" \
+    SOFTLINE_INCLUDE_DIR="${SDK_DIR}/include" SOFTLINE_LIB_DIR="${SDK_LIB_DIR}" \
     SOFTLINE_DIR="${SDK_DIR}" \
     luarocks --tree "${LUA_TREE}" make "${ROCKSPEC}"
 )

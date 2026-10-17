@@ -35,6 +35,14 @@ scan_release_paths() {
     echo "ERROR: ${artifact} contains local file URL" >&2
     exit 1
   fi
+  if grep -R -a -F --include='*.rockspec' 'file://' "${path}" >/dev/null 2>&1; then
+    echo "ERROR: ${artifact} contains local file URL" >&2
+    exit 1
+  fi
+  if grep -R -a -E --include='*.rockspec' "url[[:space:]]*=[[:space:]]*['\"]/" "${path}" >/dev/null 2>&1; then
+    echo "ERROR: ${artifact} contains absolute source URL" >&2
+    exit 1
+  fi
   if grep -R -a -F "${ROOT_DIR}" "${path}" >/dev/null 2>&1; then
     echo "ERROR: ${artifact} contains repository path" >&2
     exit 1

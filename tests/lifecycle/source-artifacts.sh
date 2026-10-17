@@ -42,6 +42,8 @@ for run in first second; do
   (cd "$fixture/dist"; sha256sum softline-* | LC_ALL=C sort) > "$work/$run"
 done
 cmp "$work/first" "$work/second"
+grep -Fxq '   url = "https://github.com/sa6mwa/softline/releases/download/v9.8.7/softline-lua-9.8.7.tar.gz",' \
+  "$fixture/dist/softline-9.8.7-1.rockspec"
 mkdir "$work/extracted" "$work/lua"
 tar -xzf "$fixture/dist/softline-9.8.7.tar.gz" -C "$work/extracted"
 tar -xzf "$fixture/dist/softline-lua-9.8.7.tar.gz" -C "$work/lua"

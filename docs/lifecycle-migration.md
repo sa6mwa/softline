@@ -42,6 +42,8 @@ honor an explicit `CMAKE_BUILD_PARALLEL_LEVEL`.
   Lua API semantics execute in the selected runtime.
 - Debug and native Memcheck share compilation. Instrumented checks retain their
   explicit timeout profile. ASan/UBSan and AFL++ own distinct effective flags.
+  Lua SDK installation uses that same Debug library producer. Its facade requires
+  the public shared library; static-only SDKs fail before compilation.
   Installed consumer variants reuse matching library objects and inspect real
   CMake/pkg-config imports, ABI metadata and execution.
 - Export maps use unchanged-content native generation. The private resolver
@@ -70,16 +72,21 @@ variations are checked only in disposable fixture repositories.
 
 Final release starts once from clean local state, shares matching producers and
 runs fresh required proof. Its delivered source reconstruction supplies the native
-Release lane; cross configurations remain in the owning checkout. CMake install
-stages the public SDK under `build/`, and deterministic archives normalize ordering,
-timestamps, ownership, gzip/ZIP metadata and intentional modes.
+Release lane; cross configurations remain in the owning checkout. The final
+installed-consumer matrix reuses that reconstructed Release producer; preparation
+retains its separate consumer workspace. Explicit test commands run CTest;
+matching preparation results are reused without another result-cache service.
+CMake install stages the public SDK under `build/`, and deterministic archives
+normalize ordering, timestamps, ownership, gzip/ZIP metadata and intentional modes.
 
 The complete checksum inventory contains four source/Lua artifacts plus all seven
 SDK targets. Required payloads must exist and verify; stale/unlisted release-looking
 files are rejected. Verification inspects extracted layout, version, public exports,
 private dependency notices, ELF/Mach-O metadata, relocatable imports and real
-installed static/shared consumers. Publication is a separate explicitly authorized
-operation. Release failure stops; repairs do not retag/rebuild/publish inside it.
+installed static/shared consumer links on every target. Header, CMake, pkg-config
+and package-metadata release versions must agree. Publication is a separate
+explicitly authorized operation. Release failure stops; repairs do not
+retag/rebuild/publish inside it.
 Default-branch and release-tag pushes remain prohibited until the signed,
 tagged commit passes the entire local gate. Hosted builds are optional diagnostics
 and must never be triggered by pushing for feedback.

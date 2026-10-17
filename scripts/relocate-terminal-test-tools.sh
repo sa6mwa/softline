@@ -6,8 +6,8 @@ esac || exit $?
 set -euo pipefail
 ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 [[ $# -eq 1 || ( $# -eq 2 && ${2:-} == --verify ) ]] || { echo 'Usage: relocate-terminal-test-tools.sh install-root [--verify]' >&2; exit 2; }
-root=$(cd "$1" && pwd)
-case "$root" in "$ROOT_DIR"/.cache/*|"$ROOT_DIR"/build/*) ;; *) echo 'ERROR: terminal runtime must be repository-local generated state' >&2; exit 1 ;; esac
+root=$(cd "$1" && pwd -P)
+SOFTLINE_GENERATED_PATH="$root" source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 if (($# == 1)); then
   server="$root/usr/bin/Xvfb"
   offset=
