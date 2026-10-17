@@ -19,6 +19,27 @@ reject() {
   [[ $(cat "$work/borrowed/sentinel") == keep ]]
 }
 check
+# Direct CMake entrypoints share the checkout's generated-state boundary.
+mkdir -p "$fixture/cmake/ownership-probe"
+cat > "$fixture/cmake/ownership-probe/CMakeLists.txt" <<'CMAKE'
+cmake_minimum_required(VERSION 3.24)
+get_filename_component(root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+include("${root}/cmake/softline_workspace.cmake")
+softline_check_workspace("${root}")
+project(ownership_probe LANGUAGES NONE)
+file(WRITE "${CMAKE_BINARY_DIR}/configured" "owned\n")
+CMAKE
+for output in "$work/borrowed/build" "$fixture/source-build"; do
+  reject cmake -S "$fixture/cmake/ownership-probe" -B "$output"
+  grep -q 'Generated path must stay below this checkout' "$work/error"
+  [[ ! -e "$output/configured" ]]
+done
+for area in build .cache dist; do
+  cmake -S "$fixture/cmake/ownership-probe" -B "$fixture/$area" > "$work/configure" 2>&1
+  [[ $(cat "$fixture/$area/configured") == owned ]]
+done
+ln -s "$fixture" "$work/source-alias"
+cmake -S "$work/source-alias/cmake/ownership-probe" -B "$work/source-alias/build" > "$work/configure" 2>&1
 CPKT_DEPENDENCY_CACHE="$fixture/build/archives" check
 CPKT_TOOLCHAIN_CACHE="$fixture/.cache/toolchains" check
 CPKT_DEPENDENCY_CACHE="$XDG_CACHE_HOME/cpkt/deps" check
@@ -26,6 +47,9 @@ CPKT_TOOLCHAIN_CACHE="$work/borrowed" reject check
 CPKT_DEPENDENCY_CACHE="$work/borrowed" reject check
 ln -s "$work/borrowed" "$fixture/build/link"
 CPKT_DEPENDENCY_CACHE="$fixture/build/link/cache" reject check
+reject cmake -S "$fixture/cmake/ownership-probe" -B "$fixture/build/link/configure"
+grep -q 'Generated path must stay below this checkout' "$work/error"
+[[ ! -e "$work/borrowed/configure/configured" ]]
 reject "$fixture/scripts/stage_lua_rock_sources.sh" "$work/borrowed"
 reject "$fixture/scripts/stage_lua_rock_sources.sh" "$fixture/build/link/stage"
 [[ ! -e "$work/borrowed/stage" ]]

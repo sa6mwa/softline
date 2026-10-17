@@ -6,7 +6,7 @@ mkdir -p "$root/build"
 work=$(mktemp -d "$root/build/terminal-cache.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 fixture="$work/source"
-mkdir -p "$fixture/cmake/terminal-tests" "$fixture/scripts" "$work/payload/usr/bin" "$work/configure"
+mkdir -p "$fixture/cmake/terminal-tests" "$fixture/scripts" "$work/payload/usr/bin"
 cp "$root/cmake/terminal-tests/CMakeLists.txt" "$fixture/cmake/terminal-tests/"
 cp "$root/cmake/softline_verified_archive.cmake" "$fixture/cmake/"
 cp "$root/cmake/softline_workspace.cmake" "$fixture/cmake/"
@@ -26,7 +26,7 @@ printf '{"archives":[{"name":"fixture","url":"file://%s/tools.deb","sha256":"%s"
   "$work" "$digest" "$work" "$extra_digest" > "$fixture/cmake/terminal-tests/archives.json"
 export XDG_CACHE_HOME="$work/global"
 cache="$XDG_CACHE_HOME/cpkt/deps"
-args=(-S "$fixture/cmake/terminal-tests" -B "$work/configure" "-DCPKT_DEPENDENCY_CACHE=$cache")
+args=(-S "$fixture/cmake/terminal-tests" -B "$fixture/build/terminal-tests" "-DCPKT_DEPENDENCY_CACHE=$cache")
 export CPKT_DEPENDENCY_CACHE="$cache/unused-cache"
 cmake "${args[@]}"
 install="$fixture/.cache/deps/x86_64-linux-gnu/terminal-tests/install"

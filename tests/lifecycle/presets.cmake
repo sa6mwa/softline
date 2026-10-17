@@ -37,4 +37,9 @@ execute_process(COMMAND "${CMAKE_COMMAND}" --list-presets=all
 if(NOT result EQUAL 0)
   message(FATAL_ERROR "CMake could not load the declared presets: ${listing}")
 endif()
+execute_process(COMMAND make --no-print-directory help
+  WORKING_DIRECTORY "${ROOT}" RESULT_VARIABLE result OUTPUT_VARIABLE help ERROR_VARIABLE errors)
+if(NOT result EQUAL 0 OR NOT help MATCHES "lua-test-lib64")
+  message(FATAL_ERROR "Make help must expose the lib64 Lua test command: ${help}${errors}")
+endif()
 message(STATUS "Native CMake preset inventory passed")

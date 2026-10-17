@@ -41,12 +41,13 @@ function(softline_check_workspace root)
       message(FATAL_ERROR "${area}/ must be owned by this checkout, not a symlink")
     endif()
   endforeach()
-  if(DEFINED CMAKE_BINARY_DIR)
-    cmake_path(IS_PREFIX owner "${CMAKE_BINARY_DIR}" NORMALIZE local_build)
+  if(DEFINED CMAKE_BINARY_DIR AND NOT DEFINED CMAKE_SCRIPT_MODE_FILE)
     softline_physical_path("${CMAKE_BINARY_DIR}" binary)
-    cmake_path(IS_PREFIX owner "${binary}" NORMALIZE owned_build)
-    if(local_build AND NOT owned_build)
-      message(FATAL_ERROR "Build directory resolves outside this checkout: ${CMAKE_BINARY_DIR}")
+    # The generated area itself is a valid binary directory (e.g. -B build).
+    if(NOT binary STREQUAL "${owner}/build" AND
+       NOT binary STREQUAL "${owner}/.cache" AND
+       NOT binary STREQUAL "${owner}/dist")
+      softline_check_generated_path("${owner}" "${binary}")
     endif()
   endif()
   if(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")

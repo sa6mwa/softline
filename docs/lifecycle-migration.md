@@ -21,6 +21,8 @@ state and `dist/` while preserving shared verified caches.
 
 Workspace checks reject borrowed generated roots, nested staging symlinks and
 cache overrides outside owned local state or the declared global cpkt cache.
+Direct CMake binary directories use those same owned generated areas, including
+when reached through a source-path alias; external and in-source builds fail.
 `make clean-dist` uses the same anchored cleanup helper and preserves other local
 state; full clean removes hidden entries too. Builds default to four jobs and
 honor an explicit `CMAKE_BUILD_PARALLEL_LEVEL`.

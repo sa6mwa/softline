@@ -673,6 +673,8 @@ proof. Publication remains a separate, explicitly authorized operation.
 Builds default to four jobs through `CMAKE_BUILD_PARALLEL_LEVEL`; set it explicitly
 to choose another limit. Operational helpers and direct CMake configuration reject
 symlinked `build/`, `dist/`, or `.cache/` roots and borrowed cache overrides.
+Direct CMake binary directories must also resolve inside this checkout's
+`build/`, `.cache/`, or `dist/`; in-source and external builds are rejected.
 Cache overrides use this checkout's `build/` or `.cache/`, or the declared global
 `${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/{toolchains,deps}` caches. Staging and local
 dependency paths must resolve inside this checkout before cleanup or extraction.
