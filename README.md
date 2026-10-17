@@ -642,6 +642,8 @@ binary and Lua artifact rehearsals. Memcheck shares the Debug producer;
 consumer install variants share matching library objects. `make release-matrix`
 is binary-only, with a scoped checksum inventory under `build/package-state/`.
 Its ordinary rehearsal may omit Darwin when osxcross is unavailable.
+`make verify-release-archives` verifies the existing complete release manifest
+and every source/Lua artifact and SDK it names, without regenerating checksums.
 
 `make release` is only for the final exact lightweight `vX.Y.Z` tag on a clean,
 signed commit attached to the default branch resolved by `origin/HEAD`, without
@@ -649,6 +651,7 @@ a candidate version override. Complete implementation and review on one
 development branch, then squash onto the local default branch before engineer
 amendment/signing. Keep remote refs unchanged during preparation. The gate
 verifies the signature, branch, tag and prepared tools before `make clean`,
+including that the prepared toolchain cache survives that cleanup,
 then builds fresh local proof and all
 seven SDK targets. Delivered source supplies the native Release lane; cross
 lanes stay in the checkout. All source/Lua products and SDKs must appear in the

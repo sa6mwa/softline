@@ -6,6 +6,9 @@ softline_workspace_args=("-DSOFTLINE_WORKSPACE_ROOT=$softline_workspace_root")
 if [[ -n ${SOFTLINE_GENERATED_PATH:-} ]]; then
   softline_workspace_args+=("-DSOFTLINE_GENERATED_PATH=$SOFTLINE_GENERATED_PATH")
 fi
+if [[ ${SOFTLINE_FINAL_RELEASE:-0} == 1 ]]; then
+  softline_workspace_args+=(-DSOFTLINE_FINAL_RELEASE=ON)
+fi
 cmake "${softline_workspace_args[@]}" \
   -P "$softline_workspace_root/cmake/softline_workspace.cmake" || return $?
 export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-4}

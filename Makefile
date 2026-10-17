@@ -289,7 +289,8 @@ test-lua-artifact-privacy: ## Verify Lua release artifacts fail on local path le
 	@./scripts/test-host.sh -R "^(lua_artifact_privacy)$$"
 
 .PHONY: verify-release-archives
-verify-release-archives: package-verify ## Verify all release archives
+verify-release-archives: ## Verify the complete release manifest and all archives
+	@SOFTLINE_CHECKSUM_FILE= ./scripts/package-verify.sh
 
 .PHONY: verify-release-privacy
 verify-release-privacy: ## Scan release artifacts for local paths

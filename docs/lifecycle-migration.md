@@ -53,12 +53,15 @@ Preparation is incremental. `make prerelease` combines missing local and binary/
 Lua rehearsal gates; source reconstruction is separately available through
 `make package-source-smoke`. Binary rehearsals write a selected inventory under
 `build/package-state/`, preserving unrelated identified artifacts.
+`make verify-release-archives` instead verifies the existing complete release
+manifest without regenerating checksums or narrowing its artifact selection.
 
 `make release` is the final exact lightweight `vX.Y.Z` tagged gate on the signed,
 attached default branch resolved through `origin/HEAD`. Implementation and review
 use one development branch; squash the verified change onto the local default
 branch before engineer amendment/signing. Its read-only signature/branch/tag/tool
-preflight runs before the retained `make clean`. Candidate overrides,
+preflight runs before the retained `make clean` and rejects toolchain caches
+that cleanup would delete. Candidate overrides,
 dirty worktrees and partial inventory selectors cannot enter that gate. Git tag
 variations are checked only in disposable fixture repositories.
 

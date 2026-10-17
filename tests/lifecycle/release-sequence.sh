@@ -38,7 +38,7 @@ cat > "$work/bin/make" <<'SH'
 printf 'make:%s\n' "$*" >> "$CALL_LOG"
 SH
 chmod +x "$fixture/scripts/"* "$work/bin/make"
-printf '/build/\n/dist/\n' > "$fixture/.gitignore"
+printf '/build/\n/dist/\n/.cache/\n' > "$fixture/.gitignore"
 source "$root/tests/lifecycle/release-fixture.sh"
 release_fixture_init "$fixture"
 export PATH="$work/bin:$PATH" CALL_LOG="$work/calls"
@@ -58,6 +58,20 @@ if "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then echo 'Feat
 [[ -f "$fixture/build/retained" && ! -s "$CALL_LOG" ]]
 git -C "$fixture" checkout -q trunk
 "$fixture/scripts/release.sh" preflight
+for area in build .cache; do
+  mkdir -p "$fixture/$area/toolchains"
+  if CPKT_TOOLCHAIN_CACHE="$fixture/$area/toolchains" "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then
+    echo 'Release accepted a toolchain cache that clean deletes' >&2; exit 1
+  fi
+  grep -q 'survive make clean' "$work/error"
+  [[ -f "$fixture/build/retained" && ! -s "$CALL_LOG" ]]
+done
+if env -u CPKT_TOOLCHAIN_CACHE -u CPKT_DEPENDENCY_CACHE XDG_CACHE_HOME="$fixture/build/global-cache" \
+    "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then
+  echo 'Release accepted a disposable default toolchain cache' >&2; exit 1
+fi
+grep -q 'survive make clean' "$work/error"
+[[ -f "$fixture/build/retained" && ! -s "$CALL_LOG" ]]
 if SOFTLINE_RELEASE_TARGETS=x86_64-linux-gnu "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then
   echo 'Partial final release accepted' >&2; exit 1
 fi

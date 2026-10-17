@@ -17,6 +17,20 @@ unset SOFTLINE_DIST_DIR SL_VERSION_OVERRIDE SL_VERSION_ROOT
 "$work/scripts/package-checksums.sh"
 (cd "$work/dist"; sha256sum -c softline-9.8.7-CHECKSUMS)
 [[ $(wc -l < "$work/dist/softline-9.8.7-CHECKSUMS") == 11 ]]
+cp "$root/Makefile" "$work/"
+cp "$work/dist/softline-9.8.7-CHECKSUMS" "$work/complete-manifest"
+printf 'x86_64-linux-gnu\n' > "$work/build/package-state/targets"
+"$work/scripts/package-checksums.sh" binary
+for omitted in softline-9.8.7.tar.gz softline-lua-9.8.7.tar.gz softline-9.8.7-1.rockspec softline-9.8.7-1.src.rock softline-9.8.7-aarch64-linux-gnu.tar.gz; do
+  cp "$work/dist/$omitted" "$work/saved-payload"
+  printf corrupt > "$work/dist/$omitted"
+  if (cd "$work"; SOFTLINE_CHECKSUM_FILE="$work/build/package-state/softline-9.8.7-BINARY-CHECKSUMS" make --no-print-directory verify-release-archives) > "$work/error" 2>&1; then
+    echo 'Complete archive target accepted corrupted omitted payload' >&2; exit 1
+  fi
+  grep -Fq "$omitted: FAILED" "$work/error"
+  cmp "$work/complete-manifest" "$work/dist/softline-9.8.7-CHECKSUMS"
+  mv "$work/saved-payload" "$work/dist/$omitted"
+done
 reject() {
   if "$work/scripts/package-checksums.sh" "$@" > "$work/error" 2>&1; then echo 'Incomplete/invalid inventory accepted' >&2; exit 1; fi
 }

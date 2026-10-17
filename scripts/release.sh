@@ -4,7 +4,7 @@ case ${BASH_SOURCE[0]} in
   *) source ./require-host-bash.sh ;;
 esac || exit $?
 set -euo pipefail
-source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
+SOFTLINE_FINAL_RELEASE=1 source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 mode=${1:-run}
 case "$mode" in preflight|run) ;; *) echo 'Usage: release.sh [preflight|run]' >&2; exit 2 ;; esac
