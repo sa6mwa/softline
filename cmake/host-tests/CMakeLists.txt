@@ -3,7 +3,6 @@ get_filename_component(root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 include(../softline_workspace.cmake)
 softline_check_workspace("${root}")
 project(softline_host_tests LANGUAGES NONE)
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(BASH_EXECUTABLE bash REQUIRED)
 execute_process(COMMAND "${BASH_EXECUTABLE}" "${root}/scripts/require-host-bash.sh"
   COMMAND_ERROR_IS_FATAL ANY)
@@ -30,18 +29,15 @@ add_test(NAME lifecycle_surface COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
   -P "${root}/tests/lifecycle/presets.cmake")
 host_shell(lua_artifact_privacy test_lua_artifact_privacy.sh
   "${root}/scripts/validate_luarocks.sh" "${root}/scripts/release_version.sh")
-set(api_inventory "${CMAKE_BINARY_DIR}/api-inventory.json")
-add_custom_command(OUTPUT "${api_inventory}"
-  COMMAND "${Python3_EXECUTABLE}" "${root}/scripts/api-inventory.py" "${root}" "${api_inventory}"
-  DEPENDS "${root}/scripts/api-inventory.py" "${root}/include/softline/softline.h"
-    "${root}/lua/softline_lua.c" "${root}/CMakeLists.txt" VERBATIM)
-add_custom_target(api_inventory ALL DEPENDS "${api_inventory}")
 add_test(NAME public_header_docs COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
-  "-DINVENTORY=${api_inventory}" -P "${root}/tests/lifecycle/public-api.cmake")
+  -P "${root}/tests/lifecycle/public-api.cmake")
 set_tests_properties(public_header_docs PROPERTIES TIMEOUT 30 LABELS "host;api")
 add_test(NAME public_header_docs_negative COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
-  "-DINVENTORY=${api_inventory}" -P "${root}/tests/lifecycle/header-doc-fixtures.cmake")
+  -P "${root}/tests/lifecycle/header-doc-fixtures.cmake")
 set_tests_properties(public_header_docs_negative PROPERTIES TIMEOUT 30 LABELS "host;api")
+add_test(NAME public_api_negative COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}"
+  -P "${root}/tests/lifecycle/api-fixtures.cmake")
+set_tests_properties(public_api_negative PROPERTIES TIMEOUT 30 LABELS "host;api")
 add_test(NAME runtime_config COMMAND "${BASH_EXECUTABLE}"
   "${root}/tests/lifecycle/cache.sh" "${root}")
 add_test(NAME artifact_portability COMMAND "${BASH_EXECUTABLE}" "${root}/tests/lifecycle/artifact-portability.sh" "${root}")

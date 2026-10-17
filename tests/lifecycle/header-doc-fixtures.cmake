@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 set(work "${ROOT}/build/host-tests/header-doc-fixture")
 file(REMOVE_RECURSE "${work}")
 foreach(relative include/softline/softline.h cmake/softline_version.h.in
-    cmake/softline.exports lua/README.md README.md)
+    cmake/softline.exports lua/softline_lua.c lua/README.md README.md CMakeLists.txt)
   get_filename_component(directory "${work}/${relative}" DIRECTORY)
   file(MAKE_DIRECTORY "${directory}")
   file(COPY_FILE "${ROOT}/${relative}" "${work}/${relative}")
@@ -10,7 +10,7 @@ endforeach()
 file(READ "${ROOT}/include/softline/softline.h" header)
 file(READ "${ROOT}/cmake/softline_version.h.in" version)
 function(check name expected)
-  execute_process(COMMAND "${CMAKE_COMMAND}" "-DROOT=${work}" "-DINVENTORY=${INVENTORY}"
+  execute_process(COMMAND "${CMAKE_COMMAND}" "-DROOT=${work}"
     -P "${ROOT}/tests/lifecycle/public-api.cmake"
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
   string(REGEX REPLACE "[ \t\r\n]+" " " diagnostic "${error}")

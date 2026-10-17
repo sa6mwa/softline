@@ -35,9 +35,11 @@ honor an explicit `CMAKE_BUILD_PARALLEL_LEVEL`.
   naming/URL aliases. Local dependency extraction stays under `.cache/`.
 - Project C targets use C89 and warnings as errors. Vendored upstream Lua/c-ares
   keep their selected upstream compilation boundary and recorded licenses.
-- Python only generates declared API, namespace or image facts/data, or supplies
+- Python only generates the private resolver namespace or image inputs, or supplies
   small HTTP/DNS inputs. Test assertions and orchestration use compiled fixtures
-  and small Bash/CMake checks. Lua API semantics execute in the selected runtime.
+  and small Bash/CMake checks. API/documentation checks inspect sources directly
+  in CMake; no Python analysis or generated test inventory sits behind them.
+  Lua API semantics execute in the selected runtime.
 - Debug and native Memcheck share compilation. Instrumented checks retain their
   explicit timeout profile. ASan/UBSan and AFL++ own distinct effective flags.
   Installed consumer variants reuse matching library objects and inspect real
