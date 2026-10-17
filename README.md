@@ -651,7 +651,7 @@ a candidate version override. Complete implementation and review on one
 development branch, then squash onto the local default branch before engineer
 amendment/signing. Keep remote refs unchanged during preparation. The gate
 verifies the signature, branch, tag and prepared tools before `make clean`,
-including that the prepared toolchain cache survives that cleanup,
+including that the selected toolchain and dependency caches survive that cleanup,
 then builds fresh local proof and all
 seven SDK targets. Delivered source supplies the native Release lane; cross
 lanes stay in the checkout. All source/Lua products and SDKs must appear in the
@@ -670,6 +670,10 @@ symlinked `build/`, `dist/`, or `.cache/` roots and borrowed cache overrides.
 Cache overrides use this checkout's `build/` or `.cache/`, or the declared global
 `${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/{toolchains,deps}` caches. Staging and local
 dependency paths must resolve inside this checkout before cleanup or extraction.
+Source reconstruction (`make package-source-smoke` and final release) requires
+the declared shared cpkt caches: checkout-local overrides would belong to the
+parent checkout and cannot be reused by the extracted source. Incompatible
+cache selections fail before extraction or release cleanup.
 
 osxcross discovery selects the newest complete `arm64-apple-darwin25.x`
 compiler prefix, including installations with only dotted executable names.

@@ -4,6 +4,7 @@ case ${BASH_SOURCE[0]} in
   *) source ./require-host-bash.sh ;;
 esac || exit $?
 set -euo pipefail
+SOFTLINE_SHARED_CACHES_ONLY=1 source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 DIST_DIR=${SOFTLINE_DIST_DIR:-$ROOT_DIR/dist}
 mkdir -p "$ROOT_DIR/build"

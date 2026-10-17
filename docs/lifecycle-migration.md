@@ -60,8 +60,9 @@ manifest without regenerating checksums or narrowing its artifact selection.
 attached default branch resolved through `origin/HEAD`. Implementation and review
 use one development branch; squash the verified change onto the local default
 branch before engineer amendment/signing. Its read-only signature/branch/tag/tool
-preflight runs before the retained `make clean` and rejects toolchain caches
-that cleanup would delete. Candidate overrides,
+preflight runs before the retained `make clean` and rejects toolchain or dependency
+caches that cleanup would delete. Source smoke likewise rejects checkout-local
+cache overrides before extracting a separate source workspace. Candidate overrides,
 dirty worktrees and partial inventory selectors cannot enter that gate. Git tag
 variations are checked only in disposable fixture repositories.
 

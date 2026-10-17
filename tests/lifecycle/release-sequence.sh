@@ -59,12 +59,14 @@ if "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then echo 'Feat
 git -C "$fixture" checkout -q trunk
 "$fixture/scripts/release.sh" preflight
 for area in build .cache; do
-  mkdir -p "$fixture/$area/toolchains"
-  if CPKT_TOOLCHAIN_CACHE="$fixture/$area/toolchains" "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then
-    echo 'Release accepted a toolchain cache that clean deletes' >&2; exit 1
-  fi
-  grep -q 'survive make clean' "$work/error"
-  [[ -f "$fixture/build/retained" && ! -s "$CALL_LOG" ]]
+  for kind in DEPENDENCY TOOLCHAIN; do
+    mkdir -p "$fixture/$area/cache"
+    if env "CPKT_${kind}_CACHE=$fixture/$area/cache" "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then
+      echo "Release accepted a disposable $kind cache" >&2; exit 1
+    fi
+    grep -q 'survive make clean' "$work/error"
+    [[ -f "$fixture/build/retained" && ! -s "$CALL_LOG" ]]
+  done
 done
 if env -u CPKT_TOOLCHAIN_CACHE -u CPKT_DEPENDENCY_CACHE XDG_CACHE_HOME="$fixture/build/global-cache" \
     "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then
