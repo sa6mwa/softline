@@ -602,7 +602,13 @@ receiver layout gains `output_stream_reconcile`; rebuild consumers against the
 new header/library pair. ABI 1 advances exactly once from released v0.10.0's
 ABI 0, independently of the project release version.
 
-Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
+Builds require no installed cpkt CLI, cpkt SDK or cpkt checkout. The standalone
+lifecycle helper scripts are vendored here; their `cpkt-*` filenames and shared
+cache namespace follow the lifecycle skill. Source archives include those helpers
+and do not need an installed skill. Installed-consumer checks disable cpkt package
+discovery and restrict pkg-config lookup to the installed Softline SDK.
+
+Linux debug, sanitizer, Valgrind, package-consumer, and release package
 builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin
 compiler executables are x86_64-hosted, so ordinary Linux lifecycle work is
 supported on native x86_64 Linux hosts. Unsupported Linux hosts fail closed

@@ -78,7 +78,7 @@ set(CMAKE_STRIP
 set(CMAKE_INSTALL_NAME_TOOL
   "${_softline_osxcross_install_name_tool}"
   CACHE FILEPATH "Darwin install_name_tool" FORCE)
-set(CPKT_OTOOL
+set(CMAKE_OTOOL
   "${_softline_osxcross_otool}"
   CACHE FILEPATH "Darwin otool" FORCE)
 

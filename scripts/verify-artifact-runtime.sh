@@ -4,6 +4,7 @@ case ${BASH_SOURCE[0]} in
   *) source ./require-host-bash.sh ;;
 esac || exit $?
 set -euo pipefail
+source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 (($# >= 1)) || { echo 'Usage: verify-artifact-runtime.sh path [--readelf tool] [--manifest file]' >&2; exit 2; }
 path=$1; shift

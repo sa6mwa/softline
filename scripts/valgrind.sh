@@ -4,6 +4,7 @@ case ${BASH_SOURCE[0]} in
   *) source ./require-host-bash.sh ;;
 esac || exit $?
 set -euo pipefail
+source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 command -v valgrind >/dev/null || { echo 'ERROR: install host Valgrind for the native memory-check gate' >&2; exit 1; }
 cd "$ROOT_DIR"

@@ -14,7 +14,7 @@ add_test(NAME lua_history COMMAND "${SOFTLINE_LUA_EXECUTABLE}" "${root}/tests/lu
 add_test(NAME lua_runtime COMMAND "${SOFTLINE_LUA_EXECUTABLE}" "${root}/tests/lua_runtime.lua")
 file(READ "${lua_build}/runtime-root.txt" runtime_root)
 string(STRIP "${runtime_root}" runtime_root)
-set_tests_properties(lua_runtime PROPERTIES ENVIRONMENT "CPKT_TOOLCHAIN_ROOT=${runtime_root}")
+set_tests_properties(lua_runtime PROPERTIES ENVIRONMENT "SOFTLINE_TOOLCHAIN_ROOT=${runtime_root}")
 add_test(NAME lua_smoke COMMAND "${SOFTLINE_LUA_EXECUTABLE}" "${root}/tests/lua_smoke.lua")
 foreach(mode history_auto readline simple chat)
   add_test(NAME "lua_console_${mode}" COMMAND "${BASH_EXECUTABLE}"

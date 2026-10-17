@@ -17,6 +17,14 @@ BOOTLIN_TARGET=""
 BOOTLIN_TOOLCHAIN_ARG=""
 BOOTLIN_TARGET_ARG=""
 trap 'rm -rf "${TMP_DIR}"' EXIT
+mkdir -p "$TMP_DIR/bin"
+cat > "$TMP_DIR/bin/cpkt" <<'EOF'
+#!/bin/sh
+printf 'unexpected cpkt invocation\n' >> "$SOFTLINE_UNEXPECTED_CPKT_CALLS"
+exit 99
+EOF
+chmod +x "$TMP_DIR/bin/cpkt"
+export PATH="$TMP_DIR/bin:$PATH" SOFTLINE_UNEXPECTED_CPKT_CALLS="$TMP_DIR/cpkt-calls"
 
 BOOTLIN_TARGET="$("${ROOT_DIR}/scripts/native-linux-target.sh")"
 toolchain_env="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${BOOTLIN_TARGET}")" || exit $?
@@ -33,6 +41,7 @@ cat > "${APP_DIR}/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.24)
 project(softline_consumer_smoke LANGUAGES C)
 
+set(CMAKE_DISABLE_FIND_PACKAGE_cpkt TRUE)
 find_package(softline REQUIRED CONFIG)
 
 add_executable(consumer main.c)
@@ -239,7 +248,8 @@ smoke_mode() {
     exit 1
   fi
   PKG_CONFIG_PATH="${install_libdir}/pkgconfig"
-  export PKG_CONFIG_PATH
+  PKG_CONFIG_LIBDIR="${install_libdir}/pkgconfig"
+  export PKG_CONFIG_PATH PKG_CONFIG_LIBDIR
   pkg-config --exists softline
   test "$(pkg-config --modversion softline)" = "${VERSION}"
   "${CONSUMER_CC}" -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror \
@@ -248,6 +258,7 @@ smoke_mode() {
     $(pkg-config --libs softline) -Wl,-rpath,"${install_libdir}" \
     -o "${pkg_consumer}"
   "${pkg_consumer}"
+  test ! -e "$SOFTLINE_UNEXPECTED_CPKT_CALLS"
 
   echo "  ${mode}: OK"
 }

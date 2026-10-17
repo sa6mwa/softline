@@ -7,6 +7,8 @@ fixture="$work/source with spaces"
 mkdir -p "$fixture/scripts" "$fixture/cmake" "$fixture/build" "$fixture/dist" "$fixture/.cache" "$work/borrowed"
 cp "$root/scripts/"{require-workspace.sh,clean.sh,require-host-bash.sh,stage_lua_rock_sources.sh,release_version.sh} "$fixture/scripts/"
 cp "$root/cmake/softline_workspace.cmake" "$fixture/cmake/"
+entrypoints=(deps.sh fuzz.sh valgrind.sh test_clangd.sh package-verify.sh validate_luarocks.sh verify-artifact-runtime.sh)
+for script in "${entrypoints[@]}"; do cp "$root/scripts/$script" "$fixture/scripts/"; done
 printf keep > "$work/borrowed/sentinel"
 export XDG_CACHE_HOME="$work/global"
 unset CPKT_TOOLCHAIN_CACHE CPKT_DEPENDENCY_CACHE
@@ -30,6 +32,10 @@ for area in build dist .cache; do
   mv "$fixture/$area" "$fixture/saved"
   ln -s "$work/borrowed" "$fixture/$area"
   reject check
+  for script in "${entrypoints[@]}"; do
+    reject "$fixture/scripts/$script" "$work/borrowed"
+    grep -Fq "$area/ must be owned by this checkout" "$work/error"
+  done
   rm "$fixture/$area"
   mv "$fixture/saved" "$fixture/$area"
 done

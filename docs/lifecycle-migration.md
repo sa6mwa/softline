@@ -102,3 +102,7 @@ copies of the installed skill. Softline's native-host policy lives in
 from `osxcross-conf` and selects the matching installation's target tools.
 There is no local fork of the shared resolver interface. Python remains limited
 to the declared generators and small input servers described above.
+The vendored helpers execute independently of an installed cpkt command, SDK,
+checkout or lifecycle skill. Installed-consumer proof rejects cpkt CLI use and
+disables cpkt package discovery. Project options use Softline names or native
+CMake variables; the toolchain helpers retain their upstream environment contract.

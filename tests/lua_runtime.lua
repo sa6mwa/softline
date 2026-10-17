@@ -1,7 +1,7 @@
 local softline = require("softline")
 assert(softline.new())
 local maps = assert(io.open("/proc/self/maps")):read("a")
-local runtime_root = assert(os.getenv("CPKT_TOOLCHAIN_ROOT"))
+local runtime_root = assert(os.getenv("SOFTLINE_TOOLCHAIN_ROOT"))
 local libc = false
 for line in maps:gmatch("[^\n]+") do
   if line:find("libc.so", 1, true) then

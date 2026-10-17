@@ -5,7 +5,9 @@ mkdir -p "$root/build"
 work=$(mktemp -d "$root/build/artifact-portable.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/scripts" "$work/stage/sdk/tests/lifecycle" "$work/build/x86_64-linux-gnu-release"
-cp "$root/scripts/"{verify-artifact-runtime.sh,require-host-bash.sh} "$work/scripts/"
+cp "$root/scripts/"{verify-artifact-runtime.sh,require-host-bash.sh,require-workspace.sh} "$work/scripts/"
+mkdir -p "$work/cmake"
+cp "$root/cmake/softline_workspace.cmake" "$work/cmake/"
 # No producing configuration or resolver exists in this source-only fixture.
 printf '%s\n' 'cc=$cache/roots/x86-64--glibc--stable-2026.08-1/bin/x86_64-linux-gcc' > "$work/stage/sdk/tests/lifecycle/input.sh"
 tar -czf "$work/fixture.tar.gz" -C "$work/stage" sdk
