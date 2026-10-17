@@ -49,4 +49,10 @@ grep -q 'ELF inspection failed' "$work/log"
 printf ordinary > "$work/stage/sdk/payload"
 tar -czf "$work/fixture.tar.gz" -C "$work/stage" sdk
 "$work/scripts/verify-artifact-runtime.sh" "$work/fixture.tar.gz"
-echo 'Source-only scans do not require ELF tooling; encountered ELF fails without its inspector.'
+mkfifo "$work/stage/sdk/pipe"
+tar -czf "$work/fixture.tar.gz" -C "$work/stage" sdk
+if "$work/scripts/verify-artifact-runtime.sh" "$work/fixture.tar.gz" > "$work/log" 2>&1; then
+  echo 'ERROR: special archive member accepted' >&2; exit 1
+fi
+grep -q 'unsupported archive entry type' "$work/log"
+echo 'Source-only scans require no ELF tools; invalid ELF and special archive entries fail.'

@@ -22,6 +22,7 @@ cp "${ROOT_DIR}/lua/README.md" "${STAGE_ROOT}/lua/"
 cp "${ROOT_DIR}/lua/softline_lua.c" "${STAGE_ROOT}/lua/"
 cp "${ROOT_DIR}/scripts/build_lua_rock.sh" "${STAGE_ROOT}/scripts/"
 cp "${ROOT_DIR}/scripts/require-host-bash.sh" "${STAGE_ROOT}/scripts/"
+cp "${ROOT_DIR}/scripts/release_version.sh" "${STAGE_ROOT}/scripts/"
 cp "${ROOT_DIR}/scripts/render_lua_rockspec.sh" "${STAGE_ROOT}/scripts/"
 cp "${ROOT_DIR}/include/softline/softline.h" "${STAGE_ROOT}/include/softline/"
 cp "${ROOT_DIR}/tests/lua_smoke.lua" "${STAGE_ROOT}/tests/"
@@ -38,6 +39,7 @@ lua/README.md
 lua/softline_lua.c
 scripts/build_lua_rock.sh
 scripts/require-host-bash.sh
+scripts/release_version.sh
 scripts/render_lua_rockspec.sh
 include/softline/softline.h
 tests/lua_smoke.lua

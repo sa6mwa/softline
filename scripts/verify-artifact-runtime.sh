@@ -101,10 +101,12 @@ scan() {
       listing=$(cmake -E tar tvf "$file") || fail "$label: archive inspection failed"
       while IFS= read -r member; do
         case "$member" in
+          -*|d*) ;;
           l*|h*)
             link=${member##* -> }
             [[ "$link" != /* && "/$link/" != *'/../'* ]] || fail "$label: unsafe archive link $link"
             ;;
+          *) fail "$label: unsupported archive entry type" ;;
         esac
       done <<< "$listing"
       (cd "$extraction"; cmake -E tar xf "$file") || fail "$label: archive extraction failed"

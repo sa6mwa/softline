@@ -33,11 +33,11 @@ if [ -e "${DIST_DIR}/SHA256SUMS" ]; then
   exit 1
 fi
 
-if [ "$SCOPED" = 0 ]; then
 source "${ROOT_DIR}/scripts/release-targets.sh"
 required=("softline-${VERSION}.tar.gz" "softline-lua-${VERSION}.tar.gz"
   "softline-${VERSION}-1.rockspec" "softline-${VERSION}-1.src.rock")
 for target in $SOFTLINE_RELEASE_TARGETS; do required+=("softline-${VERSION}-${target}.tar.gz"); done
+if [ "$SCOPED" = 0 ]; then
 for name in "${required[@]}"; do
   [[ -f "$DIST_DIR/$name" && ! -L "$DIST_DIR/$name" ]] || {
     echo "ERROR: missing or unsafe required release payload: $name" >&2; exit 1;
@@ -54,6 +54,23 @@ for checksum in "${DIST_DIR}"/softline-*-CHECKSUMS; do
   fi
 done
 fi
+
+declare -A inventory=()
+while read -r checksum filename extra; do
+  [[ "$checksum" =~ ^[0-9a-fA-F]{64}$ && -n "$filename" && -z "$extra" ]] || {
+    echo 'ERROR: invalid checksum entry' >&2; exit 1;
+  }
+  found=0
+  for expected in "${required[@]}"; do [[ "$filename" != "$expected" ]] || found=1; done
+  ((found)) || { echo "ERROR: unexpected checksum artifact: $filename" >&2; exit 1; }
+  [[ -z ${inventory[$filename]:-} ]] || {
+    echo "ERROR: duplicate checksum artifact: $filename" >&2; exit 1;
+  }
+  [[ -f "$DIST_DIR/$filename" && ! -L "$DIST_DIR/$filename" ]] || {
+    echo "ERROR: missing or unsafe checksum artifact: $filename" >&2; exit 1;
+  }
+  inventory[$filename]=1
+done < "$CHECKSUM_FILE"
 
 target_from_basename() {
   basename="$1"
@@ -113,10 +130,6 @@ scan_for_local_paths() {
   if grep -R -a -F "file://${HOME}" "${root}" >/dev/null 2>&1; then
     fail_local_path "${artifact}" "${root}"
   fi
-}
-
-verify_elf_metadata() {
-  "${ROOT_DIR}/scripts/verify-artifact-runtime.sh" "$2" --readelf "${READELF}"
 }
 
 verify_darwin_metadata() {
@@ -331,34 +344,41 @@ done
 fi
 echo "Verifying package layouts..."
 while IFS= read -r filename; do
-  case "$filename" in *.tar.gz) ;; *) continue ;; esac
+  case "$filename" in
+    *.tar.gz) ;;
+    *) "$ROOT_DIR/scripts/verify-artifact-runtime.sh" "$DIST_DIR/$filename"; continue ;;
+  esac
   [[ "$filename" == "${filename##*/}" ]] || { echo 'ERROR: checksum artifact must be a basename' >&2; exit 1; }
   archive="${DIST_DIR}/${filename}"
   [ -f "${archive}" ] || continue
   basename="$(basename "${archive}" .tar.gz)"
   echo "  Checking ${basename}..."
   if [ "${basename}" = "softline-lua-${VERSION}" ]; then
+    "$ROOT_DIR/scripts/verify-artifact-runtime.sh" "$archive"
     echo "  ${basename}: Lua source archive, verified by validate-luarocks"
     continue
   fi
   if [ "${basename}" = "softline-${VERSION}" ]; then
+    "$ROOT_DIR/scripts/verify-artifact-runtime.sh" "$archive"
     echo "  ${basename}: source archive is verified only by package-source-smoke"
     continue
   fi
 
   target="$(target_from_basename "${basename}")"
+  members=$(tar -tzf "$archive")
+  while IFS= read -r member; do
+    case "$member" in
+      "$basename"|"$basename/"|"$basename/"*) ;;
+      *) echo "ERROR: unexpected SDK archive entry: $member" >&2; exit 1 ;;
+    esac
+  done <<< "$members"
   load_tools "${target}"
+  "$ROOT_DIR/scripts/verify-artifact-runtime.sh" "$archive" --readelf "${READELF:-}"
 
   rm -rf "${TMP_DIR:?}"/*
   tar -xzf "${archive}" -C "${TMP_DIR}"
 
-  root_count="$(ls -1 "${TMP_DIR}" | wc -l)"
-  if [ "${root_count}" -ne 1 ]; then
-    echo "ERROR: archive ${basename} has ${root_count} top-level entries (expected 1)"
-    exit 1
-  fi
-
-  pkg_root="${TMP_DIR}/$(ls -1 "${TMP_DIR}")"
+  pkg_root="${TMP_DIR}/${basename}"
   scan_for_local_paths "${basename}" "${pkg_root}"
 
   if [ ! -d "${pkg_root}/include" ]; then
@@ -376,7 +396,7 @@ while IFS= read -r filename; do
   fi
 
   case "${TARGET_OS}" in
-    linux) verify_elf_metadata "${basename}" "${pkg_root}" ;;
+    linux) ;;
     darwin) verify_darwin_metadata "${basename}" "${pkg_root}" ;;
     *)
       echo "ERROR: ${basename}: unknown target OS for ${target}"
@@ -476,7 +496,5 @@ if [ "$SCOPED" = 0 ] && { [ -f "${DIST_DIR}/softline-${VERSION}-1.src.rock" ] ||
    [ -f "${DIST_DIR}/softline-lua-${VERSION}.tar.gz" ]; }; then
   "${ROOT_DIR}/scripts/validate_luarocks.sh"
 fi
-
-SOFTLINE_CHECKSUM_FILE="${CHECKSUM_FILE}" "${ROOT_DIR}/scripts/verify-release-privacy.sh"
 
 echo "Package verification passed."

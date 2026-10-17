@@ -14,7 +14,7 @@ make_fixture() {
   fixture="$1"
   mkdir -p "${fixture}/scripts"
   cp "${ROOT_DIR}/scripts/release_version.sh" "${fixture}/scripts/"
-cp "${ROOT_DIR}/scripts/require-host-bash.sh" "${fixture}/scripts/"
+  cp "${ROOT_DIR}/scripts/require-host-bash.sh" "${fixture}/scripts/"
 }
 
 make_cmake_fixture() {
@@ -98,6 +98,16 @@ assert_eq "3.4.5" "$(SL_VERSION_ROOT="${child_archive}" bash "${child_archive}/s
 if command -v cmake >/dev/null 2>&1; then
   cmake -S "${child_archive}" -B "${TMP_DIR}/cmake-build" >/dev/null
   assert_eq "3.4.5" "$(cat "${TMP_DIR}/cmake-build/detected-version.txt")" "CMake source VERSION under parent git repo"
+  for malformed in 3.4.5junk 3.4.5-rc1 nonsense ''; do
+    printf '%s\n' "$malformed" > "$child_archive/VERSION"
+    if SL_VERSION_ROOT="$child_archive" "$child_archive/scripts/release_version.sh" > "$TMP_DIR/error" 2>&1; then
+      echo 'Shell accepted malformed source VERSION' >&2; exit 1
+    fi
+    if cmake -S "$child_archive" -B "$TMP_DIR/cmake-build" > "$TMP_DIR/error" 2>&1; then
+      echo "CMake accepted malformed source VERSION: $malformed" >&2; exit 1
+    fi
+  done
+  printf '3.4.5\n' > "$child_archive/VERSION"
 fi
 
 (
@@ -107,5 +117,21 @@ fi
 )
 assert_eq "1.2.4" "$(SL_VERSION_ROOT="${repo}" bash "${repo}/scripts/release_version.sh")" "lightweight tag"
 assert_eq "2.0.0" "$(SL_VERSION_ROOT="${repo}" SL_VERSION_OVERRIDE=v2.0.0 bash "${repo}/scripts/release_version.sh")" "override"
+ln -s "$repo" "$TMP_DIR/alias"
+assert_eq '1.2.4' "$(SL_VERSION_ROOT="$TMP_DIR/alias" "$repo/scripts/release_version.sh")" 'physical owning Git root'
+
+symbolic_repo="$TMP_DIR/symbolic"
+make_cmake_fixture "$symbolic_repo"
+init_git_fixture "$symbolic_repo"
+git -C "$symbolic_repo" tag anchor
+git -C "$symbolic_repo" symbolic-ref refs/tags/v4.5.6 refs/tags/anchor
+if SL_VERSION_ROOT="$symbolic_repo" "$symbolic_repo/scripts/release_version.sh" > "$TMP_DIR/error" 2>&1; then
+  echo 'Shell accepted a symbolic version tag' >&2; exit 1
+fi
+grep -q 'symbolic version tag' "$TMP_DIR/error"
+if cmake -S "$symbolic_repo" -B "$TMP_DIR/cmake-symbolic" > "$TMP_DIR/error" 2>&1; then
+  echo 'CMake accepted a symbolic version tag' >&2; exit 1
+fi
+grep -q 'symbolic version tag' "$TMP_DIR/error"
 
 echo "Release version tests passed."

@@ -52,6 +52,8 @@ for payload in "$work/extracted/softline-9.8.7" "$work/lua/softline-lua-9.8.7"; 
   [[ $(cat "$payload/VERSION") == 9.8.7 ]]
   [[ $(stat -c %a "$payload/scripts/require-host-bash.sh") == 755 ]]
   [[ $(stat -c %a "$payload/include/softline/softline.h") == 644 ]]
+  "$payload/scripts/render_lua_rockspec.sh" "$work/rendered.rockspec" >/dev/null
+  grep -Fxq 'version = "9.8.7-1"' "$work/rendered.rockspec"
 done
 mkdir "$work/rock"
 unzip -q "$fixture/dist/softline-9.8.7-1.src.rock" -d "$work/rock"

@@ -571,7 +571,7 @@ hashed. Repository-local extraction and runtime staging are disposable under
 `.cache/deps/x86_64-linux-gnu/terminal-tests`. No package manager installation
 or maintainer scripts run, and none of these tools enter the shipped libraries.
 
-The pinned native tools use official Ubuntu package archives, an explicit
+The pinned native tools use a dated official Ubuntu archive snapshot, an explicit
 source exception for test tools recorded with versions, URLs and SHA-256 hashes
 in `cmake/terminal-tests/archives.json`, including their libc, compiler runtime
 and desktop library closure. Provisioning verifies every ELF dependency and

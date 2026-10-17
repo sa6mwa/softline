@@ -19,6 +19,35 @@ unset SOFTLINE_DIST_DIR SL_VERSION_OVERRIDE SL_VERSION_ROOT
 [[ $(wc -l < "$work/dist/softline-9.8.7-CHECKSUMS") == 11 ]]
 cp "$root/Makefile" "$work/"
 cp "$work/dist/softline-9.8.7-CHECKSUMS" "$work/complete-manifest"
+reject_manifest() {
+  if SOFTLINE_CHECKSUM_FILE="$work/invalid-manifest" "$work/scripts/package-verify.sh" > "$work/error" 2>&1; then
+    echo 'Invalid checksum inventory accepted' >&2; exit 1
+  fi
+  grep -Fq "$1" "$work/error" || { cat "$work/error"; exit 1; }
+}
+cp "$work/complete-manifest" "$work/invalid-manifest"
+head -1 "$work/complete-manifest" >> "$work/invalid-manifest"
+reject_manifest 'duplicate checksum artifact'
+printf extra > "$work/dist/extra.txt"
+cp "$work/complete-manifest" "$work/invalid-manifest"
+(cd "$work/dist"; sha256sum extra.txt) >> "$work/invalid-manifest"
+reject_manifest 'unexpected checksum artifact'
+rm "$work/dist/extra.txt"
+printf 'invalid-digest  softline-9.8.7.tar.gz\n' > "$work/invalid-manifest"
+reject_manifest 'invalid checksum entry'
+sdk=softline-9.8.7-x86_64-linux-gnu.tar.gz
+cp "$work/dist/$sdk" "$work/saved-sdk"
+mkdir -p "$work/bad-sdk/${sdk%.tar.gz}" "$work/bad-sdk/.hidden"
+tar -czf "$work/dist/$sdk" -C "$work/bad-sdk" "${sdk%.tar.gz}" .hidden
+(cd "$work/dist"; sha256sum "$sdk") > "$work/invalid-manifest"
+reject_manifest 'unexpected SDK archive entry'
+mv "$work/saved-sdk" "$work/dist/$sdk"
+mv "$work/dist/$sdk" "$work/sdk-input"
+ln -s "$work/sdk-input" "$work/dist/$sdk"
+(cd "$work/dist"; sha256sum "$sdk") > "$work/invalid-manifest"
+reject_manifest 'missing or unsafe checksum artifact'
+rm "$work/dist/$sdk"
+mv "$work/sdk-input" "$work/dist/$sdk"
 printf 'x86_64-linux-gnu\n' > "$work/build/package-state/targets"
 "$work/scripts/package-checksums.sh" binary
 for omitted in softline-9.8.7.tar.gz softline-lua-9.8.7.tar.gz softline-9.8.7-1.rockspec softline-9.8.7-1.src.rock softline-9.8.7-aarch64-linux-gnu.tar.gz; do

@@ -8,6 +8,9 @@ find_program(BASH_EXECUTABLE bash REQUIRED)
 execute_process(COMMAND "${BASH_EXECUTABLE}" "${root}/scripts/require-host-bash.sh"
   COMMAND_ERROR_IS_FATAL ANY)
 enable_testing()
+add_test(NAME clangd_gate COMMAND "${BASH_EXECUTABLE}"
+  "${root}/tests/lifecycle/clangd-gate.sh" "${root}")
+set_tests_properties(clangd_gate PROPERTIES TIMEOUT 30 LABELS "host;lifecycle")
 add_test(NAME workspace_ownership COMMAND "${BASH_EXECUTABLE}"
   "${root}/tests/lifecycle/workspace.sh" "${root}")
 set_tests_properties(workspace_ownership PROPERTIES TIMEOUT 30 LABELS "host;lifecycle")
