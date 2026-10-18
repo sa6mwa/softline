@@ -86,7 +86,9 @@ SDK targets. Required payloads must exist and verify; stale/unlisted release-loo
 files are rejected. Verification inspects extracted layout, version, public exports,
 private dependency notices, ELF/Mach-O metadata, relocatable imports and real
 installed static/shared consumer links on every target. Header, CMake, pkg-config
-and package-metadata release versions must agree. Publication is a separate
+and package-metadata release versions must agree. SDK inventories reject extra
+or missing public files and empty private/generated directories. Bundled-dependency
+metadata must match the declared target closure. Publication is a separate
 explicitly authorized operation. Release failure stops; repairs do not
 retag/rebuild/publish inside it.
 Default-branch and release-tag pushes remain prohibited until the signed,
