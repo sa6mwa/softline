@@ -42,6 +42,20 @@ source_record=$(cd "$work/dist"; sha256sum softline-9.8.7.tar.gz)
 extra_record=$(cd "$work/dist"; sha256sum extra.txt)
 printf '%s' "$source_record" > "$work/invalid-manifest"
 SOFTLINE_CHECKSUM_FILE="$work/invalid-manifest" "$work/scripts/package-verify.sh"
+# Manifest and dist overrides retain their meaning across the verifier's cd.
+verify_from() {
+  (
+    cd "$1"
+    SOFTLINE_CHECKSUM_FILE="$2" SOFTLINE_DIST_DIR="$3" "$work/scripts/package-verify.sh"
+  ) > "$work/path-verification.log" 2>&1 || { cat "$work/path-verification.log"; exit 1; }
+  grep -q 'Checking softline-9.8.7' "$work/path-verification.log"
+  grep -q 'Artifact privacy and ELF runtime verification passed' "$work/path-verification.log"
+}
+verify_from "$root" "${work#$root/}/invalid-manifest" "$work/dist"
+mkdir "$work/caller with spaces"
+cp "$work/invalid-manifest" "$work/caller with spaces/CHECKSUMS with spaces"
+verify_from "$work/caller with spaces" 'CHECKSUMS with spaces' '../dist'
+verify_from "$work/caller with spaces" "$work/invalid-manifest" '../dist'
 printf '%s\n%s' "$source_record" "$extra_record" > "$work/invalid-manifest"
 reject_manifest 'unexpected checksum artifact'
 printf '%s\n%s' "$source_record" "$source_record" > "$work/invalid-manifest"

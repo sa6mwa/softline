@@ -8,6 +8,8 @@ source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 DIST_DIR="${SOFTLINE_DIST_DIR:-${ROOT_DIR}/dist}"
+# Keep caller-relative inputs stable when checksum verification changes cwd.
+[[ "$DIST_DIR" == /* ]] || DIST_DIR="$PWD/$DIST_DIR"
 mkdir -p "${ROOT_DIR}/build"
 # Relocated consumer proof also exercises ordinary SDK path spaces.
 TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package verify.XXXXXX")"
@@ -20,6 +22,7 @@ fi
 
 VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
 CHECKSUM_FILE="${SOFTLINE_CHECKSUM_FILE:-${DIST_DIR}/softline-${VERSION}-CHECKSUMS}"
+[[ "$CHECKSUM_FILE" == /* ]] || CHECKSUM_FILE="$PWD/$CHECKSUM_FILE"
 SCOPED=0
 [[ -z ${SOFTLINE_CHECKSUM_FILE:-} ]] || SCOPED=1
 SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
