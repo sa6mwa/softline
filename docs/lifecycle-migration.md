@@ -109,8 +109,11 @@ native runner exists.
 
 ## Installed skill synchronization
 
-The five lifecycle helper files and their resolver fixtures are exact vendored
-copies of the installed skill. Softline's native-host policy lives in
+The lifecycle helper files and shared resolver fixtures are vendored from the
+installed skill. `scripts/cpkt-toolchains.sh` carries one local completeness fix:
+Darwin candidates require executable `install_name_tool` before prefix selection.
+The other four helpers and shared resolver fixtures remain exact copies.
+Softline's native-host policy lives in
 `scripts/native-linux-target.sh`; its Darwin adapter obtains the prepared SDK
 from `osxcross-conf` and selects the matching installation's target tools.
 There is no local fork of the shared resolver interface. Python remains limited

@@ -143,7 +143,8 @@ osxcross_candidate() {
     [[ -x "$root/bin/$prefix-clang" ]] && [[ -x "$root/bin/$prefix-clang++" ]] &&
       [[ -x "$root/bin/$prefix-ld" ]] && [[ -x "$root/bin/$prefix-ar" ]] &&
       [[ -x "$root/bin/$prefix-ranlib" ]] && [[ -x "$root/bin/$prefix-strip" ]] &&
-      [[ -x "$root/bin/$prefix-nm" ]] && [[ -x "$root/bin/$prefix-otool" ]] || continue
+      [[ -x "$root/bin/$prefix-nm" ]] && [[ -x "$root/bin/$prefix-otool" ]] &&
+      [[ -x "$root/bin/$prefix-install_name_tool" ]] || continue
     printf 'osxcross|%s|%s\n' "$root" "$prefix"
     return 0
   done
