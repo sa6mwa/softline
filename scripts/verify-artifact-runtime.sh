@@ -127,7 +127,7 @@ if [[ -n "$manifest" ]]; then
   scan_paths "$manifest" "${manifest##*/}"
   declare -A seen=()
   count=0
-  while read -r digest member extra; do
+  while read -r digest member extra || [[ -n "$digest$member$extra" ]]; do
     [[ "$digest" =~ ^[a-f0-9]{64}$ && -z ${extra:-} && "$member" != */* && "$member" != . && "$member" != .. && -z ${seen[$member]:-} ]] || fail 'invalid or duplicate checksum entry'
     [[ -f "$path/$member" && ! -L "$path/$member" ]] || fail "missing or unsafe checksum artifact: $member"
     actual=$(sha256sum "$path/$member" | awk '{print $1}')

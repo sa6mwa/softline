@@ -4,7 +4,7 @@ root=$1
 work=$(mktemp -d "$root/build/checksum-inventory.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/scripts" "$work/dist" "$work/build/package-state"
-cp "$root/scripts/"{package-checksums.sh,package-verify.sh,release_version.sh,require-host-bash.sh,require-workspace.sh,release-targets.sh} "$work/scripts/"
+cp "$root/scripts/"{package-checksums.sh,package-verify.sh,verify-artifact-runtime.sh,release_version.sh,require-host-bash.sh,require-workspace.sh,release-targets.sh} "$work/scripts/"
 mkdir -p "$work/cmake"
 cp "$root/cmake/softline_workspace.cmake" "$work/cmake/"
 printf '9.8.7\n' > "$work/VERSION"
@@ -32,6 +32,21 @@ printf extra > "$work/dist/extra.txt"
 cp "$work/complete-manifest" "$work/invalid-manifest"
 (cd "$work/dist"; sha256sum extra.txt) >> "$work/invalid-manifest"
 reject_manifest 'unexpected checksum artifact'
+# A valid source-only scoped fixture reaches successful verification on the old
+# scanner, so an unterminated extra/duplicate record must itself cause failure.
+cp "$work/dist/softline-9.8.7.tar.gz" "$work/saved-source"
+mkdir -p "$work/source-fixture/softline-9.8.7"
+printf fixture > "$work/source-fixture/softline-9.8.7/README"
+tar -czf "$work/dist/softline-9.8.7.tar.gz" -C "$work/source-fixture" softline-9.8.7
+source_record=$(cd "$work/dist"; sha256sum softline-9.8.7.tar.gz)
+extra_record=$(cd "$work/dist"; sha256sum extra.txt)
+printf '%s' "$source_record" > "$work/invalid-manifest"
+SOFTLINE_CHECKSUM_FILE="$work/invalid-manifest" "$work/scripts/package-verify.sh"
+printf '%s\n%s' "$source_record" "$extra_record" > "$work/invalid-manifest"
+reject_manifest 'unexpected checksum artifact'
+printf '%s\n%s' "$source_record" "$source_record" > "$work/invalid-manifest"
+reject_manifest 'duplicate checksum artifact'
+mv "$work/saved-source" "$work/dist/softline-9.8.7.tar.gz"
 rm "$work/dist/extra.txt"
 printf 'invalid-digest  softline-9.8.7.tar.gz\n' > "$work/invalid-manifest"
 reject_manifest 'invalid checksum entry'

@@ -55,4 +55,29 @@ if "$work/scripts/verify-artifact-runtime.sh" "$work/fixture.tar.gz" > "$work/lo
   echo 'ERROR: special archive member accepted' >&2; exit 1
 fi
 grep -q 'unsupported archive entry type' "$work/log"
+# EOF terminates a checksum record even when its newline is absent.
+mkdir "$work/manifest-inputs"
+printf ordinary > "$work/manifest-inputs/first"
+manifest="$work/checksums"
+for ending in newline eof; do
+  printf ordinary > "$work/manifest-inputs/last"
+  for content in clean private; do
+    [[ $content != private ]] || printf '%s' "$HOME" > "$work/manifest-inputs/last"
+    (cd "$work/manifest-inputs"; sha256sum first) > "$manifest"
+    record=$(cd "$work/manifest-inputs"; sha256sum last)
+    printf '%s' "$record" >> "$manifest"
+    [[ $ending != newline ]] || printf '\n' >> "$manifest"
+    if "$work/scripts/verify-artifact-runtime.sh" "$work/manifest-inputs" --manifest "$manifest" > "$work/log" 2>&1; then
+      [[ $content == clean ]] || { echo 'ERROR: final checksum artifact escaped privacy verification' >&2; exit 1; }
+    else
+      [[ $content == private ]] || { cat "$work/log"; exit 1; }
+      grep -q 'last: forbidden local/cache path' "$work/log"
+    fi
+  done
+  printf changed > "$work/manifest-inputs/last"
+  if "$work/scripts/verify-artifact-runtime.sh" "$work/manifest-inputs" --manifest "$manifest" > "$work/log" 2>&1; then
+    echo 'ERROR: final checksum mismatch accepted' >&2; exit 1
+  fi
+  grep -q 'checksum mismatch: last' "$work/log"
+done
 echo 'Source-only scans require no ELF tools; invalid ELF and special archive entries fail.'

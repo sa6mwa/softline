@@ -57,7 +57,7 @@ done
 fi
 
 declare -A inventory=()
-while read -r checksum filename extra; do
+while read -r checksum filename extra || [[ -n "$checksum$filename$extra" ]]; do
   [[ "$checksum" =~ ^[0-9a-fA-F]{64}$ && -n "$filename" && -z "$extra" ]] || {
     echo 'ERROR: invalid checksum entry' >&2; exit 1;
   }
