@@ -25,6 +25,14 @@ export TMPDIR="$ROOT_DIR/build/toolchain-checks"
       chmod +x "$OSXCROSS_ROOT/bin/$prefix-$tool"
     done
   done
+  export TEST_DARWIN_SDK="$work/SDK with spaces"
+  mkdir -p "$TEST_DARWIN_SDK"
+  cat > "$OSXCROSS_ROOT/bin/osxcross-conf" <<'SH'
+#!/bin/sh
+test "${TEST_CONF_FAILURE:-0}" = 0 || exit 7
+printf 'export OSXCROSS_SDK="%s"\n' "$TEST_DARWIN_SDK"
+SH
+  chmod +x "$OSXCROSS_ROOT/bin/osxcross-conf"
   resolver="$ROOT_DIR/scripts/cpkt-toolchains.sh"
   description=$("$resolver" discover arm64-apple-darwin)
   revision=$(sed -n 's/^mig_revision=//p' <<< "$description")
@@ -61,6 +69,33 @@ export TMPDIR="$ROOT_DIR/build/toolchain-checks"
     if [[ $mode == missing ]]; then mv "$tool.saved" "$tool"
     else chmod +x "$tool"; fi
   done
+  prepared_sdk=$TEST_DARWIN_SDK
+  for mode in missing-conf nonexecutable-conf failed-conf empty-sdk missing-sdk; do
+    case "$mode" in
+      missing-conf) mv "$OSXCROSS_ROOT/bin/osxcross-conf" "$work/conf.saved" ;;
+      nonexecutable-conf) chmod -x "$OSXCROSS_ROOT/bin/osxcross-conf" ;;
+      failed-conf) export TEST_CONF_FAILURE=1 ;;
+      empty-sdk) export TEST_DARWIN_SDK='' ;;
+      missing-sdk) mv "$TEST_DARWIN_SDK" "$TEST_DARWIN_SDK.saved" ;;
+    esac
+    description=$("$resolver" discover arm64-apple-darwin)
+    grep -Fxq status=missing <<< "$description" || {
+      echo "ERROR: Darwin discovery accepted $mode" >&2; exit 1;
+    }
+    if "$resolver" env arm64-apple-darwin > "$work/exports" 2> "$work/error"; then
+      echo "ERROR: Darwin exports accepted $mode" >&2; exit 1
+    fi
+    [[ ! -s "$work/exports" ]]
+    case "$mode" in
+      missing-conf) mv "$work/conf.saved" "$OSXCROSS_ROOT/bin/osxcross-conf" ;;
+      nonexecutable-conf) chmod +x "$OSXCROSS_ROOT/bin/osxcross-conf" ;;
+      failed-conf) unset TEST_CONF_FAILURE ;;
+      empty-sdk) export TEST_DARWIN_SDK="$prepared_sdk" ;;
+      missing-sdk) mv "$TEST_DARWIN_SDK.saved" "$TEST_DARWIN_SDK" ;;
+    esac
+  done
+  check_prefix "$newer"
+  [[ $CPKT_SYSROOT == "$TEST_DARWIN_SDK" ]]
   rm "$OSXCROSS_ROOT/bin/$older-install_name_tool" "$OSXCROSS_ROOT/bin/$newer-install_name_tool"
   description=$("$resolver" discover arm64-apple-darwin)
   grep -Fxq status=missing <<< "$description"

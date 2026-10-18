@@ -123,8 +123,13 @@ bootlin_ready() {
 }
 
 osxcross_candidate() {
-  local root=${OSXCROSS_ROOT:-${HOME:-}/.local/cross/osxcross} prefix candidate
+  local root=${OSXCROSS_ROOT:-${HOME:-}/.local/cross/osxcross} prefix candidate conf sdk
   local -a prefixes=()
+  [[ -x "$root/bin/osxcross-conf" ]] || return 1
+  conf=$("$root/bin/osxcross-conf" 2>/dev/null) || return 1
+  sdk=$(sed -nE 's/^(export[[:space:]]+)?OSXCROSS_SDK=(.*)$/\2/p' <<< "$conf")
+  case "$sdk" in \"*\"|\'*\') sdk=${sdk:1:-1} ;; esac
+  [[ -n "$sdk" && -d "$sdk" ]] || return 1
   if [[ -n ${CPKT_OSXCROSS_HOST:-} ]]; then
     prefixes=("$CPKT_OSXCROSS_HOST")
   else
@@ -145,7 +150,7 @@ osxcross_candidate() {
       [[ -x "$root/bin/$prefix-ranlib" ]] && [[ -x "$root/bin/$prefix-strip" ]] &&
       [[ -x "$root/bin/$prefix-nm" ]] && [[ -x "$root/bin/$prefix-otool" ]] &&
       [[ -x "$root/bin/$prefix-install_name_tool" ]] || continue
-    printf 'osxcross|%s|%s\n' "$root" "$prefix"
+    printf 'osxcross|%s|%s|%s\n' "$root" "$prefix" "$sdk"
     return 0
   done
   return 1
@@ -283,10 +288,10 @@ print_bootlin_target() {
 }
 
 print_darwin_target() {
-  local candidate source root prefix values revision sha256 archive_name mig_root
+  local candidate source root prefix sdk values revision sha256 archive_name mig_root
   printf 'target=arm64-apple-darwin\ncache=%s\nsource=osxcross+bootlin-host-mig\ndownloadable=partially\n' "${resolved_cache}"
-  if ! candidate=$(osxcross_candidate); then printf 'status=missing\nnote=Configure OSXCROSS_ROOT with a complete local osxcross SDK toolchain, then run: %s ensure arm64-apple-darwin\n' "$0"; return; fi
-  IFS='|' read -r source root prefix <<<"$candidate"
+  if ! candidate=$(osxcross_candidate); then printf 'status=missing\nnote=Configure OSXCROSS_ROOT with complete target tools and an available OSXCROSS_SDK from osxcross-conf, then run: %s ensure arm64-apple-darwin\n' "$0"; return; fi
+  IFS='|' read -r source root prefix sdk <<<"$candidate"
   values=$(host_mig_values)
   IFS='|' read -r revision sha256 archive_name mig_root <<<"$values"
   if ! host_mig_ready "$mig_root"; then
@@ -294,8 +299,8 @@ print_darwin_target() {
       "$root" "$prefix" "$revision" "$0"
     return
   fi
-  printf 'status=ready\nroot=%s\nprefix=%s\ncc=%s\ncxx=%s\nld=%s\nar=%s\nranlib=%s\nstrip=%s\nnm=%s\notool=%s\nmig=%s\nmigcom=%s\nmig_root=%s\nmig_revision=%s\n' \
-    "$root" "$prefix" "$root/bin/$prefix-clang" "$root/bin/$prefix-clang++" "$root/bin/$prefix-ld" "$root/bin/$prefix-ar" "$root/bin/$prefix-ranlib" "$root/bin/$prefix-strip" "$root/bin/$prefix-nm" "$root/bin/$prefix-otool" \
+  printf 'status=ready\nroot=%s\nprefix=%s\nsysroot=%s\ncc=%s\ncxx=%s\nld=%s\nar=%s\nranlib=%s\nstrip=%s\nnm=%s\notool=%s\nmig=%s\nmigcom=%s\nmig_root=%s\nmig_revision=%s\n' \
+    "$root" "$prefix" "$sdk" "$root/bin/$prefix-clang" "$root/bin/$prefix-clang++" "$root/bin/$prefix-ld" "$root/bin/$prefix-ar" "$root/bin/$prefix-ranlib" "$root/bin/$prefix-strip" "$root/bin/$prefix-nm" "$root/bin/$prefix-otool" \
     "$mig_root/bin/mig" "$mig_root/libexec/migcom" "$mig_root" "$revision"
 }
 

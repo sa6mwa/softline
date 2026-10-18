@@ -110,12 +110,14 @@ native runner exists.
 ## Installed skill synchronization
 
 The lifecycle helper files and shared resolver fixtures are vendored from the
-installed skill. `scripts/cpkt-toolchains.sh` carries one local completeness fix:
-Darwin candidates require executable `install_name_tool` before prefix selection.
+installed skill. `scripts/cpkt-toolchains.sh` carries local Darwin completeness
+fixes: candidates require executable `install_name_tool`, and `osxcross-conf`
+must report an existing SDK. The resolver supplies that SDK to CMake, so optional
+packaging and final-release preflight use the same availability decision.
 The other four helpers and shared resolver fixtures remain exact copies.
 Softline's native-host policy lives in
-`scripts/native-linux-target.sh`; its Darwin adapter obtains the prepared SDK
-from `osxcross-conf` and selects the matching installation's target tools.
+`scripts/native-linux-target.sh`; its Darwin adapter consumes the resolver's
+validated SDK and matching installation's target tools.
 There is no local fork of the shared resolver interface. Python remains limited
 to the declared generators and small input servers described above.
 The vendored helpers execute independently of an installed cpkt command, SDK,

@@ -41,4 +41,35 @@ for theme in default riced; do
   output=$(SOFTLINE_CHAT_CHAR_MS=999 SOFTLINE_PROMPT_THEME=plain make --no-print-directory "$target")
   [[ "$output" == "0 $theme" ]]
 done
-echo 'Dependency selection and no-delay example targets passed.'
+# Packaging consumes resolver readiness: optional Darwin skips an unavailable
+# SDK, while required Darwin fails before any producer is invoked.
+cp "$root/scripts/"{package.sh,release-targets.sh,release_version.sh} "$work/scripts/"
+printf '9.8.7\n' > "$work/VERSION"
+cat > "$work/scripts/cpkt-toolchains.sh" <<'SH'
+#!/bin/sh
+printf 'status=%s\nnote=osxcross SDK unavailable\n' "${TEST_DARWIN_STATUS:-missing}"
+SH
+cat > "$work/scripts/package-sdk.sh" <<'SH'
+#!/bin/sh
+printf 'package %s\n' "$2" >> "$CALL_LOG"
+touch "$3/softline-9.8.7-$2.tar.gz"
+SH
+chmod +x "$work/scripts/cpkt-toolchains.sh" "$work/scripts/package-sdk.sh"
+export SOFTLINE_PACKAGE_TARGETS='x86_64-linux-musl arm64-apple-darwin'
+: > "$CALL_LOG"
+SOFTLINE_REQUIRE_DARWIN=0 "$work/scripts/package.sh" > "$work/package.log" 2>&1
+grep -q 'SKIP: arm64-apple-darwin' "$work/package.log"
+! grep -q arm64-apple-darwin "$CALL_LOG"
+grep -qx 'package x86_64-linux-musl' "$CALL_LOG"
+[[ $(cat "$work/build/package-state/targets") == x86_64-linux-musl ]]
+: > "$CALL_LOG"
+if SOFTLINE_REQUIRE_DARWIN=1 "$work/scripts/package.sh" > "$work/error" 2>&1; then
+  echo 'ERROR: required Darwin accepted missing SDK readiness' >&2; exit 1
+fi
+grep -q 'Darwin artifact is required' "$work/error"
+[[ ! -s "$CALL_LOG" ]]
+TEST_DARWIN_STATUS=ready SOFTLINE_REQUIRE_DARWIN=1 "$work/scripts/package.sh" > "$work/package.log" 2>&1
+grep -qx 'cmake --preset arm64-apple-darwin-release' "$CALL_LOG"
+grep -qx 'package arm64-apple-darwin' "$CALL_LOG"
+[[ $(wc -l < "$work/build/package-state/targets") == 2 ]]
+echo 'Dependency/example targets and optional/required Darwin packaging passed.'

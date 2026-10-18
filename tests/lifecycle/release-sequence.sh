@@ -12,7 +12,11 @@ cp "$root/cmake/softline_workspace.cmake" "$fixture/cmake/"
 cp "$root/Makefile" "$fixture/"
 cat > "$fixture/scripts/cpkt-toolchains.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'status=ready\n'
+if [[ $2 == arm64-apple-darwin && ${TEST_MISSING_DARWIN_SDK:-0} == 1 ]]; then
+  printf 'status=missing\nnote=osxcross SDK unavailable\n'
+else
+  printf 'status=ready\n'
+fi
 SH
 cat > "$fixture/scripts/cpkt-aflpp.sh" <<'SH'
 #!/usr/bin/env bash
@@ -59,6 +63,11 @@ if "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then echo 'Feat
 [[ -f "$fixture/build/retained" && ! -s "$CALL_LOG" ]]
 git -C "$fixture" checkout -q trunk
 "$fixture/scripts/release.sh" preflight
+if TEST_MISSING_DARWIN_SDK=1 "$fixture/scripts/release.sh" preflight > "$work/error" 2>&1; then
+  echo 'Release preflight accepted an unavailable Darwin SDK' >&2; exit 1
+fi
+grep -q 'required collection missing' "$work/error"
+[[ -f "$fixture/build/retained" && ! -s "$CALL_LOG" ]]
 for area in build .cache; do
   for kind in DEPENDENCY TOOLCHAIN; do
     mkdir -p "$fixture/$area/cache"

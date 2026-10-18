@@ -27,17 +27,7 @@ endif()
 
 _softline_osxcross_value(root _softline_osxcross_root)
 _softline_osxcross_value(prefix _softline_osxcross_host)
-# The lifecycle resolver owns compiler selection; osxcross reports its SDK.
-execute_process(COMMAND "${_softline_osxcross_root}/bin/osxcross-conf"
-  RESULT_VARIABLE _softline_conf_result OUTPUT_VARIABLE _softline_conf)
-if(NOT _softline_conf_result EQUAL 0)
-  message(FATAL_ERROR "osxcross-conf could not report the prepared Darwin SDK")
-endif()
-string(REGEX MATCH "OSXCROSS_SDK=([^\r\n]+)" _softline_sdk_match "${_softline_conf}")
-string(REGEX REPLACE "^['\"]|['\"]$" "" _softline_osxcross_sysroot "${CMAKE_MATCH_1}")
-if(NOT IS_DIRECTORY "${_softline_osxcross_sysroot}")
-  message(FATAL_ERROR "osxcross-conf did not report an available OSXCROSS_SDK")
-endif()
+_softline_osxcross_value(sysroot _softline_osxcross_sysroot)
 _softline_osxcross_value(cc _softline_osxcross_cc)
 _softline_osxcross_value(cxx _softline_osxcross_cxx)
 _softline_osxcross_value(ld _softline_osxcross_ld)
