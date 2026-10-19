@@ -1,9 +1,14 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="$(SL_VERSION_OVERRIDE=0.0.0 sh "${ROOT_DIR}/scripts/release_version.sh")"
-TMP_DIR="$(mktemp -d)"
+VERSION="$(SL_VERSION_OVERRIDE=0.0.0 bash "${ROOT_DIR}/scripts/release_version.sh")"
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/test_lua_artifact_privacy.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 write_good_artifacts() {
@@ -68,6 +73,12 @@ leak_rockspec() {
   printf '%s\n' "source = { url = \"file://${HOME}/softline-lua-${VERSION}.tar.gz\" }" \
     >> "${dist_dir}/softline-${VERSION}-1.rockspec"
 }
+leak_external_file_url() {
+  printf 'source = { url = "file:///other-builder/softline.tar.gz" }\n' >> "$1/softline-${VERSION}-1.rockspec"
+}
+leak_absolute_source_url() {
+  printf 'source = { url = "/other-builder/softline.tar.gz" }\n' >> "$1/softline-${VERSION}-1.rockspec"
+}
 
 leak_lua_archive() {
   dist_dir="$1"
@@ -101,6 +112,8 @@ leak_src_rock_nested_archive() {
 }
 
 expect_lua_validation_failure rockspec "local file URL" leak_rockspec
+expect_lua_validation_failure external-file "local file URL" leak_external_file_url
+expect_lua_validation_failure absolute-source "absolute source URL" leak_absolute_source_url
 expect_lua_validation_failure lua-archive "live-worktree source URL" leak_lua_archive
 expect_lua_validation_failure src-rock "package-manager temporary path" leak_src_rock_nested_archive
 

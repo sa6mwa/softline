@@ -10,6 +10,7 @@ local prompt_methods = {
   "next_prompt",
   "set_live_scroll_region",
   "output_stream_begin",
+  "output_stream_reconcile",
   "output_stream_write",
   "output_stream_write_quoted_prompt",
   "output_stream_end",
@@ -80,12 +81,15 @@ assert(sl:print_above(function(i)
   end
   return nil
 end))
+assert(not sl:output_stream_reconcile())
 assert(sl:output_stream_begin())
+assert(sl:output_stream_reconcile())
 assert(not sl:output_stream_begin())
 assert(sl:output_stream_write("delta"))
 assert(sl:output_stream_write(""))
 assert(sl:output_stream_write("-echo\n"))
 assert(sl:output_stream_end())
+assert(not sl:output_stream_reconcile())
 assert(not sl:output_stream_write("after end"))
 sl:close()
 

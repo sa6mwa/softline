@@ -24,17 +24,9 @@
       "displayName": "Debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "SL_TEST_TIMEOUT_SCALE": "1",
         "SL_BUILD_TESTS": "ON",
         "SL_BUILD_EXAMPLES": "ON"
-      }
-    },
-    {
-      "name": "debug-lua",
-      "inherits": "debug",
-      "displayName": "Debug Lua facade SDK",
-      "cacheVariables": {
-        "SL_BUILD_TESTS": "OFF",
-        "SL_BUILD_EXAMPLES": "OFF"
       }
     },
     {
@@ -67,8 +59,10 @@
       "name": "valgrind",
       "inherits": "linux-base",
       "displayName": "Native Valgrind",
+      "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "SL_TEST_TIMEOUT_SCALE": "5",
         "SL_BUILD_TESTS": "ON",
         "SL_BUILD_EXAMPLES": "ON"
       }
@@ -182,10 +176,6 @@
       "configurePreset": "debug"
     },
     {
-      "name": "debug-lua",
-      "configurePreset": "debug-lua"
-    },
-    {
       "name": "asan",
       "configurePreset": "asan"
     },
@@ -230,11 +220,6 @@
     {
       "name": "debug",
       "configurePreset": "debug",
-      "output": {"outputOnFailure": true}
-    },
-    {
-      "name": "debug-lua",
-      "configurePreset": "debug-lua",
       "output": {"outputOnFailure": true}
     },
     {

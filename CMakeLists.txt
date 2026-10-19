@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
+include(cmake/softline_workspace.cmake)
+softline_check_workspace("${CMAKE_CURRENT_SOURCE_DIR}")
 include(cmake/softline_version.cmake)
 project(softline VERSION "${PROJECT_VERSION}" LANGUAGES C)
 
@@ -14,6 +16,10 @@ option(SL_INSTALL "Generate install rules" ON)
 option(SL_ENABLE_COVERAGE "Enable code coverage" OFF)
 option(SL_BUILD_FUZZERS "Build native AFL++ fuzz targets" OFF)
 option(SL_WARNINGS_AS_ERRORS "Treat project warnings as errors" ON)
+set(SL_TEST_TIMEOUT_SCALE "1" CACHE STRING "Timeout multiplier for instrumented test configurations")
+if(NOT SL_TEST_TIMEOUT_SCALE MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "SL_TEST_TIMEOUT_SCALE must be a positive integer")
+endif()
 
 if(NOT SL_BUILD_STATIC AND NOT SL_BUILD_SHARED)
   message(FATAL_ERROR "At least one of SL_BUILD_STATIC or SL_BUILD_SHARED must be ON")
@@ -21,7 +27,7 @@ endif()
 
 set(SL_DIST_DIR "${CMAKE_SOURCE_DIR}/dist" CACHE PATH "Release artifact output directory")
 set(SL_TARGET_ID "" CACHE STRING "Release target identifier")
-set(SOFTLINE_ABI_VERSION "0" CACHE STRING "softline shared library ABI version")
+set(SOFTLINE_ABI_VERSION "1" CACHE STRING "softline shared library ABI version")
 
 if(NOT SOFTLINE_ABI_VERSION MATCHES "^[0-9]+$")
   message(FATAL_ERROR "SOFTLINE_ABI_VERSION must be a non-negative integer")
@@ -47,7 +53,7 @@ function(softline_reject_stale_linux_toolchain_cache)
   set(_softline_resolver "${CMAKE_SOURCE_DIR}/scripts/cpkt-toolchains.sh")
   if(NOT _softline_expected_target)
     execute_process(
-      COMMAND "${_softline_resolver}" native-linux-target
+      COMMAND "${CMAKE_SOURCE_DIR}/scripts/native-linux-target.sh"
       RESULT_VARIABLE _softline_native_result
       OUTPUT_VARIABLE _softline_expected_target
       ERROR_VARIABLE _softline_native_error
@@ -167,8 +173,8 @@ if(SL_BUILD_SHARED)
   endif()
   set(_softline_export_map "${CMAKE_CURRENT_BINARY_DIR}/softline.exports.map")
   set(_softline_darwin_exports "${CMAKE_CURRENT_BINARY_DIR}/softline.exports.darwin")
-  file(WRITE "${_softline_export_map}" "SOFTLINE_1 {\n  global:\n")
-  file(WRITE "${_softline_darwin_exports}" "")
+  set(_softline_export_map_content "SOFTLINE_1 {\n  global:\n")
+  set(_softline_darwin_export_content "")
   foreach(_softline_export_symbol IN LISTS _softline_export_symbols)
     string(STRIP "${_softline_export_symbol}" _softline_export_symbol)
     if(_softline_export_symbol STREQUAL "" OR _softline_export_symbol MATCHES "^#")
@@ -177,10 +183,14 @@ if(SL_BUILD_SHARED)
     if(NOT _softline_export_symbol MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
       message(FATAL_ERROR "Invalid shared-library export: ${_softline_export_symbol}")
     endif()
-    file(APPEND "${_softline_export_map}" "    ${_softline_export_symbol};\n")
-    file(APPEND "${_softline_darwin_exports}" "_${_softline_export_symbol}\n")
+    string(APPEND _softline_export_map_content "    ${_softline_export_symbol};\n")
+    string(APPEND _softline_darwin_export_content "_${_softline_export_symbol}\n")
   endforeach()
-  file(APPEND "${_softline_export_map}" "  local: *;\n};\n")
+  string(APPEND _softline_export_map_content "  local: *;\n};\n")
+  file(GENERATE OUTPUT "${_softline_export_map}"
+    CONTENT "${_softline_export_map_content}")
+  file(GENERATE OUTPUT "${_softline_darwin_exports}"
+    CONTENT "${_softline_darwin_export_content}")
 
   add_library(softline_shared SHARED)
   target_sources(softline_shared PRIVATE $<TARGET_OBJECTS:sl_lib_obj>
@@ -220,7 +230,7 @@ if(SL_BUILD_EXAMPLES)
 endif()
 
 if(SL_BUILD_TESTS)
-  enable_testing()
+  include(CTest)
   add_subdirectory(tests)
 endif()
 

@@ -1543,6 +1543,12 @@ static int softline_lua_output_stream_begin(lua_State *L) {
   return softline_lua_status(L, sl_output_stream_begin(handle->sl));
 }
 
+/** Lua editor:output_stream_reconcile(): observe resize outside feed writes. */
+static int softline_lua_output_stream_reconcile(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_output_stream_reconcile(handle->sl));
+}
+
 /** Lua editor:output_stream_write(bytes): forward a byte string immediately.
  * No newline or document boundary is inferred; an empty string is a no-op.
  * Printable UTF-8, LF/CR/Tab and ANSI SGR are accepted. Partial ANSI/UTF-8 is
@@ -1563,6 +1569,8 @@ static int softline_lua_output_stream_begin(lua_State *L) {
  * readline returns, uses a delta estimate. Earlier hard-ended ASCII reflow or
  * unknown terminal history can misplace continuation even after resize settles.
  * The active input loop observes resize before dispatching producer watches.
+ * Synchronous producers call output_stream_reconcile() between feeds after
+ * resize settles; this does not change observation-free feed behavior.
  * wrapping remains producer/terminal-owned. Width resize keeps the tracked
  * column of an opaque line and clamps it
  * only if offscreen. Continuation after Unicode/tab reflow can land in a gap or
@@ -1672,6 +1680,7 @@ static const luaL_Reg softline_lua_methods[] = {
     {"watch_clear", softline_lua_watch_clear},
     {"print_above", softline_lua_print_above},
     {"output_stream_begin", softline_lua_output_stream_begin},
+    {"output_stream_reconcile", softline_lua_output_stream_reconcile},
     {"output_stream_write", softline_lua_output_stream_write},
     {"output_stream_write_quoted_prompt",
      softline_lua_output_stream_write_quoted_prompt},

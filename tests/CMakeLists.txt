@@ -1,3 +1,8 @@
+foreach(terminal_root "${SOFTLINE_TERMINAL_TEST_ROOT}" "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}")
+  if(NOT terminal_root STREQUAL "")
+    softline_check_generated_path("${PROJECT_SOURCE_DIR}" "${terminal_root}")
+  endif()
+endforeach()
 find_package(Threads REQUIRED)
 add_executable(test_history test_history.c)
 target_link_libraries(test_history PRIVATE softline Threads::Threads)
@@ -11,19 +16,37 @@ target_link_libraries(test_softline PRIVATE softline)
 softline_apply_warnings(test_softline)
 softline_local_runtime(test_softline)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(test_reconcile test_reconcile.c)
+  target_link_libraries(test_reconcile PRIVATE softline util)
+  softline_apply_warnings(test_reconcile)
+  softline_local_runtime(test_reconcile)
+  add_test(NAME softline_reconcile COMMAND test_reconcile)
+  set_tests_properties(softline_reconcile PROPERTIES LABELS "unit;streaming" TIMEOUT 10)
+  add_executable(retained_resize_fixture retained_resize_fixture.c)
+  target_link_libraries(retained_resize_fixture PRIVATE softline)
+  softline_apply_warnings(retained_resize_fixture)
+  softline_local_runtime(retained_resize_fixture)
+  add_executable(test_stream_transport test_stream_transport.c)
+  target_link_libraries(test_stream_transport PRIVATE util)
+  softline_apply_warnings(test_stream_transport)
+  softline_local_runtime(test_stream_transport)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   if(TARGET example_chat)
-    add_test(NAME softline_chat_history COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_history.py" c
-      "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
+    add_executable(test_console_pty test_console_pty.c)
+    target_link_libraries(test_console_pty PRIVATE util)
+    softline_apply_warnings(test_console_pty)
+    softline_local_runtime(test_console_pty)
+    string(SHA256 chat_history_key "softline.examples.chat")
+    add_test(NAME softline_chat_history COMMAND test_console_pty store c
+      "$<TARGET_FILE:example_chat>" "${PROJECT_SOURCE_DIR}"
+      "${PROJECT_BINARY_DIR}" "${chat_history_key}.history")
     set_tests_properties(softline_chat_history PROPERTIES
       LABELS "integration;history;example-smoke" TIMEOUT 20)
   endif()
   if(TARGET example_chat AND NOT CMAKE_C_FLAGS MATCHES "sanitize")
     add_library(chat_no_sleep_guard SHARED chat_no_sleep_guard.c)
     softline_apply_warnings(chat_no_sleep_guard)
-    add_test(NAME softline_chat_no_sleep COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_no_sleep.py"
+    add_test(NAME softline_chat_no_sleep COMMAND test_stream_transport no_sleep
       "$<TARGET_FILE:example_chat>" "$<TARGET_FILE:chat_no_sleep_guard>")
     set_tests_properties(softline_chat_no_sleep PROPERTIES
       LABELS "integration;streaming;example-smoke" TIMEOUT 12)
@@ -32,68 +55,78 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(feed_latency_fixture PRIVATE softline)
   softline_apply_warnings(feed_latency_fixture)
   softline_local_runtime(feed_latency_fixture)
-  add_test(NAME softline_feed_latency COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_feed_latency.py" "$<TARGET_FILE:feed_latency_fixture>")
+  add_test(NAME softline_feed_latency COMMAND test_stream_transport feed
+    "$<TARGET_FILE:feed_latency_fixture>")
   set_tests_properties(softline_feed_latency PROPERTIES
     LABELS "integration;streaming" TIMEOUT 15)
   add_executable(late_scroll_region_fixture late_scroll_region_fixture.c)
   target_link_libraries(late_scroll_region_fixture PRIVATE softline)
   softline_apply_warnings(late_scroll_region_fixture)
   softline_local_runtime(late_scroll_region_fixture)
-  add_test(NAME softline_late_scroll_region COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_late_scroll_region.py" "$<TARGET_FILE:late_scroll_region_fixture>")
+  add_test(NAME softline_late_scroll_region COMMAND test_stream_transport late
+    "$<TARGET_FILE:late_scroll_region_fixture>")
   set_tests_properties(softline_late_scroll_region PROPERTIES
     LABELS "integration;streaming" TIMEOUT 10)
   # Exercise the private wire protocol without requiring an X server or GTK.
   add_executable(clipboard_protocol_fixture clipboard_protocol_fixture.c
     "${PROJECT_SOURCE_DIR}/src/softline_resolver.c"
     $<TARGET_OBJECTS:sl_cares_obj>)
+  add_dependencies(clipboard_protocol_fixture sl_cares_namespace)
   target_include_directories(clipboard_protocol_fixture SYSTEM PRIVATE
     "${PROJECT_SOURCE_DIR}/vendor/c-ares/include" "${PROJECT_BINARY_DIR}/private-cares")
   softline_apply_warnings(clipboard_protocol_fixture)
   softline_local_runtime(clipboard_protocol_fixture)
-  add_test(NAME softline_clipboard_protocol COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_clipboard_protocol.py"
-    "$<TARGET_FILE:clipboard_protocol_fixture>" "${PROJECT_BINARY_DIR}")
+  set(clipboard_inputs "${CMAKE_CURRENT_BINARY_DIR}/clipboard-inputs")
+  add_custom_command(OUTPUT "${clipboard_inputs}/small.png" "${clipboard_inputs}/large.png"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/clipboard_images.py" "${clipboard_inputs}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/clipboard_images.py" VERBATIM)
+  add_custom_target(clipboard_inputs DEPENDS "${clipboard_inputs}/small.png" "${clipboard_inputs}/large.png")
+  add_executable(test_clipboard_protocol test_clipboard_protocol.c)
+  add_dependencies(test_clipboard_protocol clipboard_inputs)
+  softline_apply_warnings(test_clipboard_protocol)
+  softline_local_runtime(test_clipboard_protocol)
+  add_test(NAME softline_clipboard_protocol COMMAND test_clipboard_protocol
+    "$<TARGET_FILE:clipboard_protocol_fixture>" "${PROJECT_BINARY_DIR}"
+    "${clipboard_inputs}/small.png" "${clipboard_inputs}/large.png")
   set_tests_properties(softline_clipboard_protocol PROPERTIES
     LABELS "integration;clipboard" TIMEOUT 30)
   add_executable(resolver_fixture resolver_fixture.c resolver_collision.c
     "${PROJECT_SOURCE_DIR}/src/softline_resolver.c"
     $<TARGET_OBJECTS:sl_cares_obj>)
+  add_dependencies(resolver_fixture sl_cares_namespace)
   target_include_directories(resolver_fixture PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(resolver_fixture SYSTEM PRIVATE
     "${PROJECT_SOURCE_DIR}/vendor/c-ares/include" "${PROJECT_BINARY_DIR}/private-cares")
   softline_apply_warnings(resolver_fixture)
   softline_local_runtime(resolver_fixture)
-  add_test(NAME softline_resolver COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_resolver.py"
+  add_test(NAME softline_resolver COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/resolver.sh"
     "$<TARGET_FILE:resolver_fixture>" "${PROJECT_BINARY_DIR}")
   set_tests_properties(softline_resolver PROPERTIES LABELS "integration;clipboard" TIMEOUT 15)
   if(TARGET softline_static AND NOT CMAKE_C_FLAGS MATCHES "sanitize")
     add_executable(resolver_fixture_static resolver_fixture.c resolver_collision.c)
+    add_dependencies(resolver_fixture_static sl_cares_namespace)
     target_include_directories(resolver_fixture_static PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_include_directories(resolver_fixture_static SYSTEM PRIVATE
       "${PROJECT_SOURCE_DIR}/vendor/c-ares/include" "${PROJECT_BINARY_DIR}/private-cares")
     target_link_libraries(resolver_fixture_static PRIVATE softline_static)
     target_link_options(resolver_fixture_static PRIVATE -static -Wl,--fatal-warnings)
     softline_apply_warnings(resolver_fixture_static)
-    add_test(NAME softline_resolver_static COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_resolver.py"
+    add_test(NAME softline_resolver_static COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/resolver.sh"
       "$<TARGET_FILE:resolver_fixture_static>" "${PROJECT_BINARY_DIR}")
     set_tests_properties(softline_resolver_static PROPERTIES
       LABELS "integration;clipboard;static" TIMEOUT 15)
   endif()
   if(TARGET softline_static)
-    add_test(NAME softline_resolver_symbols COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_resolver_symbols.py"
+    add_test(NAME softline_resolver_symbols COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/resolver-symbols.sh"
       "${CMAKE_NM}" "$<TARGET_FILE:softline_static>")
     set_tests_properties(softline_resolver_symbols PROPERTIES LABELS "unit;abi" TIMEOUT 10)
   endif()
-  add_test(NAME softline_resolver_provenance COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_resolver_provenance.py" "${PROJECT_SOURCE_DIR}")
-  set_tests_properties(softline_resolver_provenance PROPERTIES LABELS "unit;dependency" TIMEOUT 10)
   target_link_libraries(test_softline PRIVATE util)
 endif()
+
 add_test(NAME softline_unit COMMAND test_softline)
 set_tests_properties(softline_unit PROPERTIES LABELS "unit" TIMEOUT 30)
 
@@ -109,15 +142,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
 endif()
 
 if(TARGET softline_shared AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  add_test(NAME softline_exports COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_exports.py"
-    --nm "${CMAKE_NM}"
-    --library "$<TARGET_FILE:softline_shared>"
-    --allowlist "${PROJECT_SOURCE_DIR}/cmake/softline.exports")
+  add_test(NAME softline_exports COMMAND bash
+      "${PROJECT_SOURCE_DIR}/scripts/verify-public-exports.sh"
+    "${CMAKE_NM}" "$<TARGET_FILE:softline_shared>"
+    "${PROJECT_SOURCE_DIR}/cmake/softline.exports")
   set_tests_properties(softline_exports PROPERTIES LABELS "unit;abi" TIMEOUT 10)
-  add_test(NAME softline_export_reconfigure COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_export_reconfigure.py"
+  add_test(NAME softline_export_reconfigure COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/export-reconfigure.sh"
     "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${CMAKE_NM}"
     "${SL_TARGET_ID}" "${CMAKE_TOOLCHAIN_FILE}" "${CMAKE_C_COMPILER}"
     "${CMAKE_LINKER}")
@@ -143,7 +174,6 @@ endif()
 
 if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
    SL_TARGET_ID STREQUAL "x86_64-linux-gnu")
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_executable(runtime_probe runtime_probe.c)
   softline_apply_warnings(runtime_probe)
   softline_local_runtime(runtime_probe)
@@ -151,8 +181,8 @@ if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND
   if(TARGET example_simple AND TARGET example_chat)
     list(APPEND runtime_examples $<TARGET_FILE:example_simple> $<TARGET_FILE:example_chat>)
   endif()
-  add_test(NAME softline_runtime COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_runtime.py" "${CMAKE_SYSROOT}"
+  add_test(NAME softline_runtime COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/runtime.sh" "${CMAKE_SYSROOT}"
     "${CMAKE_READELF}"
     $<TARGET_FILE:runtime_probe> $<TARGET_FILE:test_softline>
     $<TARGET_FILE:test_libmdf_stream> ${runtime_examples})
@@ -196,9 +226,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET examp
     $<TARGET_FILE:example_chat>
   )
   set_tests_properties(softline_examples PROPERTIES LABELS "integration" TIMEOUT 60)
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  add_test(NAME softline_example_history_isolation COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_example_history_isolation.py"
+  add_test(NAME softline_example_history_isolation COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/example-history-isolation.sh"
     "$<TARGET_FILE:test_examples>" "$<TARGET_FILE:example_simple>"
     "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
   set_tests_properties(softline_example_history_isolation PROPERTIES
@@ -206,15 +235,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_simple AND TARGET examp
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  add_test(NAME softline_terminal_resize_coordination COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize_coordination.py"
-    "${PROJECT_BINARY_DIR}")
+  add_executable(test_terminal_coordination test_terminal_coordination.c)
+  softline_apply_warnings(test_terminal_coordination)
+  softline_local_runtime(test_terminal_coordination)
+  add_test(NAME softline_terminal_resize_coordination COMMAND test_terminal_coordination)
   set_tests_properties(softline_terminal_resize_coordination PROPERTIES
     LABELS "integration;streaming" TIMEOUT 15)
-  add_test(NAME softline_chat_shell COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_shell.py" c
-    "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
+  add_executable(test_chat_shell test_chat_shell.c)
+  target_link_libraries(test_chat_shell PRIVATE util)
+  softline_apply_warnings(test_chat_shell)
+  softline_local_runtime(test_chat_shell)
+  add_test(NAME softline_chat_shell COMMAND test_chat_shell c
+    "$<TARGET_FILE:example_chat>" "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}"
+    "${chat_history_key}.history" "$<TARGET_FILE:test_chat_shell>")
   set_tests_properties(softline_chat_shell PROPERTIES LABELS "integration" TIMEOUT 60)
   # A second real terminal engine catches erased blank-cell extent that tmux's
   # grid drops. Keep these host-only test dependencies out of the library.
@@ -222,12 +255,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   find_library(SOFTLINE_TEST_VTE NAMES vte-2.91 libvte-2.91.so.0
     NO_CMAKE_FIND_ROOT_PATH)
   if(SOFTLINE_TEST_XVFB_RUN AND SOFTLINE_TEST_VTE)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    set(terminal_python "${Python3_EXECUTABLE}")
     if(DEFINED ENV{SOFTLINE_TERMINAL_TEST_ROOT} AND
        NOT "$ENV{SOFTLINE_TERMINAL_TEST_ROOT}" STREQUAL "")
       set(terminal_test_environment "SOFTLINE_TERMINAL_TEST_ROOT=$ENV{SOFTLINE_TERMINAL_TEST_ROOT}")
-      foreach(variable PATH FONTCONFIG_PATH FONTCONFIG_FILE XKB_CONFIG_ROOT NO_AT_BRIDGE TMPDIR)
+      foreach(variable PATH FONTCONFIG_PATH FONTCONFIG_FILE XKB_CONFIG_ROOT NO_AT_BRIDGE TMPDIR
+          CPKT_TOOLCHAIN_CACHE CPKT_DEPENDENCY_CACHE)
         list(APPEND terminal_test_environment "${variable}=$ENV{${variable}}")
       endforeach()
       # Cached tool discovery survives ordinary CMake/Ninja regeneration, so
@@ -238,51 +270,84 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       set(SOFTLINE_TERMINAL_TEST_ENVIRONMENT "${terminal_test_environment}"
         CACHE INTERNAL "Prepared terminal test environment" FORCE)
     endif()
+    foreach(adapter output retained editor chat)
+      add_executable(test_vte_${adapter} test_vte_${adapter}.c)
+      target_link_libraries(test_vte_${adapter} PRIVATE util ${CMAKE_DL_LIBS})
+      softline_apply_warnings(test_vte_${adapter})
+      softline_local_runtime(test_vte_${adapter})
+      if(SOFTLINE_TERMINAL_TEST_ROOT)
+        set_property(TARGET test_vte_${adapter} APPEND PROPERTY BUILD_RPATH
+          "${SOFTLINE_TERMINAL_TEST_ROOT}/usr/lib/x86_64-linux-gnu"
+          "${SOFTLINE_TERMINAL_TEST_ROOT}/lib/x86_64-linux-gnu")
+      endif()
+    endforeach()
+    set(paste_inputs "${CMAKE_CURRENT_BINARY_DIR}/clipboard-paste-inputs")
+    add_custom_command(OUTPUT "${paste_inputs}/small.png" "${paste_inputs}/large.png"
+      "${paste_inputs}/oversized.png" "${paste_inputs}/sample.jpeg"
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/clipboard_paste_images.py" "${paste_inputs}"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/clipboard_paste_images.py" VERBATIM)
+    add_custom_target(clipboard_paste_inputs DEPENDS "${paste_inputs}/small.png" "${paste_inputs}/large.png"
+      "${paste_inputs}/oversized.png" "${paste_inputs}/sample.jpeg")
+    add_executable(test_clipboard_image test_clipboard_image.c)
+    add_dependencies(test_clipboard_image clipboard_paste_inputs)
+    target_link_libraries(test_clipboard_image PRIVATE util ${CMAKE_DL_LIBS})
+    softline_apply_warnings(test_clipboard_image)
+    softline_local_runtime(test_clipboard_image)
     if(SOFTLINE_TERMINAL_TEST_ROOT)
-      # xvfb-run's host shell utilities keep their own runtime. The terminal
-      # test interpreter loads staged GTK/VTE; fixture children keep their runtime.
-      set(terminal_python "${PROJECT_SOURCE_DIR}/scripts/terminal-test-runtime.sh"
-        "${Python3_EXECUTABLE}")
+      set_property(TARGET test_clipboard_image APPEND PROPERTY BUILD_RPATH
+        "${SOFTLINE_TERMINAL_TEST_ROOT}/usr/lib/x86_64-linux-gnu"
+        "${SOFTLINE_TERMINAL_TEST_ROOT}/lib/x86_64-linux-gnu")
+    endif()
+    if(SOFTLINE_TERMINAL_TEST_ROOT)
       set(terminal_test_environment "${SOFTLINE_TERMINAL_TEST_ENVIRONMENT}")
     endif()
-    function(softline_add_terminal_test name)
-      add_test(NAME "${name}"
-        COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a ${terminal_python} ${ARGN})
-      if(terminal_test_environment)
-        set_tests_properties("${name}" PROPERTIES ENVIRONMENT "${terminal_test_environment}")
-      endif()
-    endfunction()
-    softline_add_terminal_test(softline_clipboard_image_paste
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_clipboard_image_paste.py"
-      "$<TARGET_FILE:clipboard_fixture>" "${PROJECT_BINARY_DIR}")
+    add_test(NAME softline_clipboard_image_paste COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_clipboard_image>" "$<TARGET_FILE:clipboard_fixture>" "${PROJECT_BINARY_DIR}" "${paste_inputs}")
     set_tests_properties(softline_clipboard_image_paste PROPERTIES
-      LABELS "integration;clipboard" TIMEOUT 60)
-    softline_add_terminal_test(softline_terminal_native_output
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_native_output.py"
-      "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
+      ENVIRONMENT "${terminal_test_environment}" LABELS "integration;clipboard" TIMEOUT 60)
+    add_test(NAME softline_clipboard_image_transport COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_clipboard_image>" "$<TARGET_FILE:clipboard_fixture>" "${PROJECT_BINARY_DIR}" "${paste_inputs}" transport)
+    set_tests_properties(softline_clipboard_image_transport PROPERTIES
+      ENVIRONMENT "${terminal_test_environment}" LABELS "integration;clipboard" TIMEOUT 60)
+    add_test(NAME softline_terminal_native_output COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_vte_output>" native "$<TARGET_FILE:native_output_fixture>")
+    set_tests_properties(softline_terminal_native_output PROPERTIES ENVIRONMENT "${terminal_test_environment}")
     set_tests_properties(softline_terminal_native_output PROPERTIES
       LABELS "integration;streaming" TIMEOUT 120)
-    softline_add_terminal_test(softline_terminal_tab_expansion
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_tab_expansion.py"
-      "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
+    add_test(NAME softline_terminal_tab_expansion COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_vte_output>" tabs "$<TARGET_FILE:native_output_fixture>")
+    set_tests_properties(softline_terminal_tab_expansion PROPERTIES ENVIRONMENT "${terminal_test_environment}")
     set_tests_properties(softline_terminal_tab_expansion PROPERTIES
       LABELS "integration;streaming" TIMEOUT 30)
+    foreach(mode control boundaries)
+      add_test(NAME softline_terminal_${mode} COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+        "$<TARGET_FILE:test_vte_output>" "${mode}" "$<TARGET_FILE:native_output_fixture>")
+      set_tests_properties(softline_terminal_${mode} PROPERTIES
+        ENVIRONMENT "${terminal_test_environment}" LABELS "integration;streaming" TIMEOUT 90)
+    endforeach()
+    foreach(mode stream handoff finite tabs)
+      add_test(NAME softline_terminal_retained_${mode} COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+        "$<TARGET_FILE:test_vte_retained>" "${mode}" "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
+      set_tests_properties(softline_terminal_retained_${mode} PROPERTIES
+        ENVIRONMENT "${terminal_test_environment}" LABELS "integration;streaming" TIMEOUT 120)
+    endforeach()
     if(terminal_test_environment)
-      add_test(NAME softline_terminal_test_environment COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_test_environment.py"
-        "${PROJECT_BINARY_DIR}" "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}")
+      add_test(NAME softline_terminal_test_environment COMMAND "${CMAKE_COMMAND}"
+        "-DROOT=${PROJECT_SOURCE_DIR}" "-DBUILD=${PROJECT_BINARY_DIR}"
+        "-DCTEST=${CMAKE_CTEST_COMMAND}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/terminal-environment.cmake")
       set_tests_properties(softline_terminal_test_environment PROPERTIES
-        LABELS "integration;dependency" TIMEOUT 45)
+        ENVIRONMENT "${terminal_test_environment}" LABELS "integration;dependency" TIMEOUT 45)
     endif()
-    softline_add_terminal_test(softline_terminal_opaque_feed
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_opaque_feed.py"
-      "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
+    add_test(NAME softline_terminal_opaque_feed COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_vte_output>" opaque "$<TARGET_FILE:native_output_fixture>")
+    set_tests_properties(softline_terminal_opaque_feed PROPERTIES ENVIRONMENT "${terminal_test_environment}")
     set_tests_properties(softline_terminal_opaque_feed PROPERTIES
       LABELS "integration;streaming" TIMEOUT 30)
     if(TARGET example_simple)
-      softline_add_terminal_test(softline_terminal_readline_resize
-        "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_readline_resize.py"
-        "$<TARGET_FILE:example_simple>")
+      add_test(NAME softline_terminal_readline_resize COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+        "$<TARGET_FILE:test_vte_editor>" "$<TARGET_FILE:example_simple>")
+      set_tests_properties(softline_terminal_readline_resize PROPERTIES ENVIRONMENT "${terminal_test_environment}")
       set_tests_properties(softline_terminal_readline_resize PROPERTIES
         LABELS "integration" TIMEOUT 120)
     endif()
@@ -292,28 +357,28 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       softline_enable_dev_libmdf(unicode_output_fixture)
       softline_apply_warnings(unicode_output_fixture)
       softline_local_runtime(unicode_output_fixture)
-      softline_add_terminal_test(softline_terminal_unicode_output
-        "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_unicode_output.py"
+      add_test(NAME softline_terminal_unicode_output COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+        "$<TARGET_FILE:test_vte_output>" unicode
         "$<TARGET_FILE:unicode_output_fixture>" "${PROJECT_BINARY_DIR}")
+      set_tests_properties(softline_terminal_unicode_output PROPERTIES ENVIRONMENT "${terminal_test_environment}")
       set_tests_properties(softline_terminal_unicode_output PROPERTIES
         LABELS "integration;streaming;libmdf" TIMEOUT 120)
     endif()
-    softline_add_terminal_test(softline_terminal_blank_reflow
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_blank_reflow.py"
-      "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}")
+    add_test(NAME softline_terminal_blank_reflow COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_vte_chat>" blank "$<TARGET_FILE:example_chat>")
+    set_tests_properties(softline_terminal_blank_reflow PROPERTIES ENVIRONMENT "${terminal_test_environment}")
     set_tests_properties(softline_terminal_blank_reflow PROPERTIES
       LABELS "integration;streaming" TIMEOUT 60)
     foreach(_softline_chat_theme plain riced)
-      softline_add_terminal_test(softline_chat_width_${_softline_chat_theme}
-        "${CMAKE_CURRENT_SOURCE_DIR}/check_chat_width_resize.py"
-        "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
-        "${_softline_chat_theme}")
+      add_test(NAME softline_chat_width_${_softline_chat_theme} COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+        "$<TARGET_FILE:test_vte_chat>" width "$<TARGET_FILE:example_chat>" "${_softline_chat_theme}")
+      set_tests_properties(softline_chat_width_${_softline_chat_theme} PROPERTIES ENVIRONMENT "${terminal_test_environment}")
       set_tests_properties(softline_chat_width_${_softline_chat_theme} PROPERTIES
         LABELS "integration;streaming;libmdf" TIMEOUT 40)
     endforeach()
-    softline_add_terminal_test(softline_terminal_streaming_resize
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_blank_reflow.py"
-      "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}" --streaming)
+    add_test(NAME softline_terminal_streaming_resize COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_vte_chat>" streaming "$<TARGET_FILE:example_chat>")
+    set_tests_properties(softline_terminal_streaming_resize PROPERTIES ENVIRONMENT "${terminal_test_environment}")
     set_tests_properties(softline_terminal_streaming_resize PROPERTIES
       LABELS "integration;streaming" TIMEOUT 60)
   endif()
@@ -322,10 +387,29 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   find_program(SOFTLINE_TEST_TMUX tmux)
   if(SOFTLINE_TEST_TMUX)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    function(retained_resize_case name columns rows mode variant draft)
+      add_test(NAME "softline_retained_${name}" COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/retained-resize.sh"
+        "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:retained_resize_fixture>"
+        "${PROJECT_BINARY_DIR}" "${columns}" "${rows}" "${mode}" "${variant}" "${draft}")
+      set_tests_properties("softline_retained_${name}" PROPERTIES
+        LABELS "integration;streaming;retained-resize" TIMEOUT 30)
+    endfunction()
+    retained_resize_case(partial_shrink 60 18 retained-observed partial late)
+    retained_resize_case(complete_shrink 60 18 retained-observed complete late)
+    retained_resize_case(partial_width 60 30 retained-observed partial late)
+    retained_resize_case(partial_height 120 18 retained-observed partial late)
+    retained_resize_case(partial_growth 160 40 retained-observed partial late)
+    retained_resize_case(width_growth 160 30 retained-observed complete late)
+    retained_resize_case(watch_shrink 60 18 watch partial late)
+    retained_resize_case(yield_shrink 60 18 yield partial late)
+    retained_resize_case(watch_draft 60 18 watch partial early)
+    retained_resize_case(yield_draft 60 18 yield complete early)
+  endif()
+  if(SOFTLINE_TEST_TMUX)
     add_test(NAME softline_terminal_native_output_tmux
-      COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_native_output_tmux.py"
+      COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/native-output-tmux.sh"
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:native_output_fixture>"
       "${PROJECT_BINARY_DIR}")
     set_tests_properties(softline_terminal_native_output_tmux PROPERTIES
@@ -335,34 +419,31 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     softline_enable_dev_libmdf(terminal_resize_fixture)
     softline_apply_warnings(terminal_resize_fixture)
     softline_local_runtime(terminal_resize_fixture)
-    add_test(NAME softline_terminal_producer_resize COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+    add_executable(test_tmux_resize test_tmux_resize.c)
+    softline_apply_warnings(test_tmux_resize)
+    softline_local_runtime(test_tmux_resize)
+    add_test(NAME softline_terminal_producer_resize COMMAND test_tmux_resize
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
       "$<TARGET_FILE:terminal_resize_fixture>" --producer-only)
     set_tests_properties(softline_terminal_producer_resize PROPERTIES
       LABELS "integration;streaming" TIMEOUT 45)
-    add_test(NAME softline_terminal_resize COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+    add_test(NAME softline_terminal_resize COMMAND test_tmux_resize
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
       "$<TARGET_FILE:terminal_resize_fixture>")
-    add_test(NAME softline_terminal_growth COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+    add_test(NAME softline_terminal_growth COMMAND test_tmux_resize
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
       "$<TARGET_FILE:terminal_resize_fixture>" --grow-both)
     set_tests_properties(softline_terminal_growth PROPERTIES
       LABELS "integration;streaming" TIMEOUT 30)
-    add_test(NAME softline_terminal_quoted_resize COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+    add_test(NAME softline_terminal_quoted_resize COMMAND test_tmux_resize
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
       "$<TARGET_FILE:terminal_resize_fixture>" --quoted)
     set_tests_properties(softline_terminal_quoted_resize PROPERTIES
       LABELS "integration;streaming" TIMEOUT 30)
-    add_test(NAME softline_terminal_static_resize COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+    add_test(NAME softline_terminal_static_resize COMMAND test_tmux_resize
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
       "$<TARGET_FILE:terminal_resize_fixture>" --static)
-    add_test(NAME softline_terminal_height_roundtrip COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/check_terminal_resize.py"
+    add_test(NAME softline_terminal_height_roundtrip COMMAND test_tmux_resize
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
       "$<TARGET_FILE:terminal_resize_fixture>" --height-roundtrip)
     set_tests_properties(softline_terminal_height_roundtrip PROPERTIES
@@ -374,8 +455,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   endif()
 endif()
 
+# These C executable cases own native Memcheck coverage. Terminal engine
+# adapters keep their ordinary scope rather than instrumenting host tools.
+# The RLIMIT_AS budget check measures native memory use, without analysis overhead.
+set(_softline_memcheck_tests softline_history softline_unit
+  softline_libmdf_stream softline_examples softline_prompt_frames softline_native_resize)
 get_property(_softline_tests DIRECTORY PROPERTY TESTS)
 foreach(_softline_test IN LISTS _softline_tests)
+  get_test_property(${_softline_test} TIMEOUT _softline_timeout)
+  if(_softline_timeout AND SL_TEST_TIMEOUT_SCALE GREATER 1)
+    math(EXPR _softline_timeout "${_softline_timeout} * ${SL_TEST_TIMEOUT_SCALE}")
+    set_tests_properties(${_softline_test} PROPERTIES TIMEOUT ${_softline_timeout})
+  endif()
+  if(_softline_test IN_LIST _softline_memcheck_tests)
+    set_property(TEST ${_softline_test} APPEND PROPERTY LABELS memcheck)
+  endif()
   set_property(TEST "${_softline_test}" APPEND PROPERTY ENVIRONMENT
     "SOFTLINE_HISTORY_DIR=${PROJECT_BINARY_DIR}/test-history/${_softline_test}")
 endforeach()

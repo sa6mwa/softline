@@ -2,12 +2,16 @@
 #
 # Lifecycle spine: deps -> configure -> build -> test -> hardening -> package -> verify -> release
 
-ROOT_DIR := $(shell pwd)
+SHELL := bash
+.SHELLFLAGS := -euo pipefail -c
+.NOTPARALLEL:
+export CMAKE_BUILD_PARALLEL_LEVEL ?= 4
+
+ROOT_DIR := $(CURDIR)
 BUILD_DIR := $(ROOT_DIR)/build
 DIST_DIR  := $(ROOT_DIR)/dist
 CACHE_DIR := $(ROOT_DIR)/.cache
 
-NINJA := $(shell command -v ninja 2>/dev/null || command -v ninja-build 2>/dev/null)
 PRESET ?= debug
 
 ifneq ($(strip $(THEME)),)
@@ -19,14 +23,15 @@ help: ## Show this help
 	@echo "softline -- C89 multiline readline replacement derived from linenoise"
 	@echo ""
 	@echo "Lifecycle targets:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: format
-format: ## Format source files with clang-format
-	@command -v clang-format >/dev/null 2>&1 || { echo "ERROR: clang-format is required" >&2; exit 1; }
-	@find include src tests examples lua \( -name '*.c' -o -name '*.h' \) \
-		-exec clang-format -i -style=file --fallback-style=none {} +
+.PHONY: format format-check
+format: ## Format project-owned C sources with host clang-format
+	@./scripts/format.sh
+
+format-check: ## Assert formatting without changing source
+	@./scripts/format.sh check
 
 .PHONY: deps-debug
 deps-debug: ## Configure debug build dependencies
@@ -38,21 +43,15 @@ deps-release: ## Configure release build dependencies
 
 .PHONY: deps-cross
 deps-cross: ## Provision and inspect all pinned cross toolchains
-	@./scripts/cpkt-toolchains.sh ensure all
+	@source ./scripts/require-workspace.sh && ./scripts/cpkt-toolchains.sh ensure all
 
 .PHONY: deps
 deps: ## Configure one dependency closure (DEPENDENCY=libmdf|lua PRESET=debug)
-	@case "$(DEPENDENCY):$(PRESET)" in \
-		libmdf:debug) cmake --preset debug ;; \
-		lua:debug|lua:debug-lua) cmake --preset "$(PRESET)" && \
-			sh ./scripts/build-local-lua.sh "$(BUILD_DIR)/$(PRESET)" ;; \
-		*) echo "ERROR: use DEPENDENCY=libmdf PRESET=debug or DEPENDENCY=lua PRESET=debug|debug-lua" >&2; exit 2 ;; \
-	esac
+	@./scripts/deps.sh "$(DEPENDENCY)" "$(PRESET)"
 
 .PHONY: build
 build: ## Build debug target
-	@cmake --preset debug
-	@cmake --build --preset debug
+	@./scripts/build.sh build debug
 
 .PHONY: build-debug
 build-debug: build ## Build debug target
@@ -104,15 +103,15 @@ build-release: ## Build release target
 
 .PHONY: test
 test: ## Run debug tests with cached native terminal tools
-	@sh ./scripts/terminal-test-env.sh $(MAKE) test-native
+	@./scripts/test.sh
 
 .PHONY: test-native
-test-native: build-debug ## Run debug tests in the prepared test environment
-	@cd $(BUILD_DIR)/debug && ctest --output-on-failure
+test-native: ## Run debug tests in the prepared test environment
+	@./scripts/build.sh test debug
 
 .PHONY: deps-terminal-tests
 deps-terminal-tests: ## Cache pinned native GTK/VTE/Xvfb test tools without host installation
-	@sh ./scripts/terminal-test-env.sh
+	@./scripts/terminal-test-env.sh
 
 .PHONY: test-terminal
 test-terminal: ## Run native debug tests with lifecycle-cached terminal test tools
@@ -122,54 +121,43 @@ test-terminal: ## Run native debug tests with lifecycle-cached terminal test too
 test-debug: test ## Run debug tests
 
 .PHONY: test-all
-test-all: test test-terminal-cache test-runtime-config test-artifact-runtime test-lua-env test-lua-platform asan valgrind-portable fuzz-portable lua-test test-tool-discovery test-toolchain-contract test-darwin-linker-route test-lifecycle-surface test-lua-artifact-privacy test-public-header-docs ## Run all deterministic local tests
+test-all: test test-host asan valgrind-portable fuzz-portable lua-test ## Complete missing native, host, hardening, fuzz and Lua proof
+
+.PHONY: test-host
+test-host: ## Run host lifecycle fixtures
+	@./scripts/test-host.sh
 
 .PHONY: test-terminal-cache
 test-terminal-cache: ## Verify offline reconstruction of cached terminal test tools
-	@python3 tests/check_terminal_test_cache.py
+	@./scripts/test-host.sh -R "^(terminal_cache)$$"
 
 .PHONY: test-lua-platform
 test-lua-platform: ## Verify local Lua builds with Darwin platform settings
-	@python3 tests/check_lua_platform.py
+	@./scripts/test-host.sh -R "^(lua_platform)$$"
 
 .PHONY: test-lua-env
 test-lua-env: ## Verify Lua environments reject missing local interpreters
-	@python3 tests/check_lua_env.py
-	@python3 tests/check_lua_runtime_selection.py
+	@./scripts/test-host.sh -R "^(lua_env|lua_runtime_selection)$$"
 
 .PHONY: test-artifact-runtime
 test-artifact-runtime: ## Reject local runtime paths in release artifacts
-	@python3 tests/check_artifact_portability.py
-	@python3 tests/check_artifact_runtime.py
+	@./scripts/test-host.sh -R "^(artifact_portability|artifact_runtime)$$"
 
 .PHONY: test-runtime-config
 test-runtime-config: ## Verify missing-runtime and archive cache failures
-	@python3 tests/check_runtime_config.py "$(ROOT_DIR)"
+	@./scripts/test-host.sh -R "^(runtime_config)$$"
 
 .PHONY: asan
-asan: ## Run ASan+UBSan tests with cached native terminal tools
-	@sh ./scripts/terminal-test-env.sh $(MAKE) asan-native
+asan: ## Run the selected ASan+UBSan core tests
+	@./scripts/build.sh test asan
 
 .PHONY: asan-native
 asan-native: ## Run ASan+UBSan in the prepared test environment
-	@cmake --preset asan && cmake --build --preset asan && \
-		cd $(BUILD_DIR)/asan && ctest --output-on-failure
+	@./scripts/build.sh test asan
 
 .PHONY: valgrind
-valgrind: ## Run native Valgrind Memcheck tests
-	@command -v valgrind >/dev/null 2>&1 || { echo "ERROR: valgrind is required for the native memory-check gate" >&2; exit 1; }
-	@cmake --preset valgrind
-	@cmake --build --preset valgrind
-	@cd $(BUILD_DIR)/valgrind && \
-		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 ./tests/test_softline
-	@cd $(BUILD_DIR)/valgrind && \
-		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 \
-			--trace-children=yes --log-file=memcheck-%p.log \
-			./tests/test_examples \
-			./examples/example_simple ./examples/example_chat
-	@cd $(BUILD_DIR)/valgrind && \
-		valgrind --leak-check=full --track-origins=yes --error-exitcode=1 \
-			./tests/test_libmdf_stream
+valgrind: ## Run native C executable CTests under Valgrind Memcheck
+	@./scripts/valgrind.sh
 
 .PHONY: valgrind-portable
 valgrind-portable: ## Run native Valgrind on supported Linux hosts, skip where unsupported
@@ -178,12 +166,13 @@ valgrind-portable: ## Run native Valgrind on supported Linux hosts, skip where u
 		*) echo "SKIP: valgrind requires native x86_64 Linux" ;; \
 	esac
 
+.PHONY: deps-fuzz
+deps-fuzz: ## Explicitly provision pinned native AFL++ instrumentation
+	@source ./scripts/require-workspace.sh && ./scripts/cpkt-aflpp.sh ensure
+
 .PHONY: fuzz-smoke
-fuzz-smoke: ## Build and execute a bounded native AFL++ smoke run
-	@timeout 600 ./scripts/cpkt-aflpp.sh ensure
-	@cmake --preset fuzz
-	@cmake --build --preset fuzz
-	@timeout 15 "$${CPKT_AFL_SHOWMAP:-$$(./scripts/cpkt-aflpp.sh discover | sed -n 's/^afl_showmap=//p')}" -q -o /dev/null -- ./build/fuzz/softline_stdin_fuzz < fuzz/corpus/basic
+fuzz-smoke: ## Build and execute a bounded native AFL++ smoke run (prepare with deps-fuzz)
+	@./scripts/fuzz.sh
 
 .PHONY: fuzz-portable
 fuzz-portable: ## Run native fuzz smoke on x86_64 hosts, skip where unsupported
@@ -197,9 +186,7 @@ fuzz: fuzz-smoke ## Run the standard bounded native AFL++ fuzz gate
 
 .PHONY: fuzz-long
 fuzz-long: ## Run a longer opt-in native AFL++ fuzz session
-	@cmake --preset fuzz
-	@cmake --build --preset fuzz
-	@"$$(./scripts/cpkt-aflpp.sh discover | sed -n 's/^afl_fuzz=//p')" -i fuzz/corpus -o build/fuzz-findings -- ./build/fuzz/softline_stdin_fuzz
+	@./scripts/fuzz.sh long
 
 .PHONY: lua-rock
 lua-rock: ## Build and install Lua facade into repo-local LuaRocks tree
@@ -238,12 +225,12 @@ package: ## Build release packages
 	@./scripts/package.sh
 
 .PHONY: package-checksums
-package-checksums: ## Generate checksums for release artifacts
-	@./scripts/package-checksums.sh
+package-checksums: ## Generate the selected binary inventory under build/
+	@./scripts/package-checksums.sh binary
 
 .PHONY: package-verify
 package-verify: package-checksums ## Verify release packages
-	@./scripts/package-verify.sh
+	@SOFTLINE_CHECKSUM_FILE="$(BUILD_DIR)/package-state/softline-$$(./scripts/release_version.sh)-BINARY-CHECKSUMS" ./scripts/package-verify.sh
 
 .PHONY: package-source
 package-source: ## Create source archive
@@ -259,30 +246,27 @@ package-consumer-smoke: ## Verify installed CMake package from an external consu
 
 .PHONY: test-tool-discovery
 test-tool-discovery: ## Verify cross-target tool discovery
-	@./scripts/test_discover_target_tools.sh
+	@./scripts/test-host.sh -R "^(tool_discovery)$$"
 
 .PHONY: test-darwin-linker-route
 test-darwin-linker-route: ## Verify osxcross Darwin links use the target linker
-	@./scripts/test_darwin_linker_route.sh
+	@./scripts/test-host.sh -R "^(darwin_linker_route)$$"
 
 .PHONY: test-release-version
 test-release-version: ## Verify release version source precedence
-	@./scripts/test_release_version.sh
+	@./scripts/test-host.sh -R "^(release_version)$$"
 
 .PHONY: test-package-source-worktree
 test-package-source-worktree: ## Verify source packaging from a linked Git worktree
-	@./scripts/test_package_source_worktree.sh
+	@./scripts/test-host.sh -R "^(package_source_worktree)$$"
 
 .PHONY: test-toolchain-contract
 test-toolchain-contract: ## Verify toolchain provisioning and environment contracts
-	@./scripts/test_toolchain_contract.sh
+	@./scripts/test-host.sh -R "^(toolchain_contract)$$"
 
 .PHONY: test-lifecycle-surface
 test-lifecycle-surface: ## Verify standard lifecycle command and preset surfaces
-	@./scripts/test_lifecycle_surface.sh
-	@python3 tests/test_deps_target.py "$(ROOT_DIR)"
-	@python3 tests/test_chat_targets.py "$(ROOT_DIR)"
-	@python3 tests/check_source_smoke_workspace.py "$(ROOT_DIR)"
+	@./scripts/test-host.sh -R "^(lifecycle_surface|deps_target|source_workspace)$$"
 
 .PHONY: test-clangd
 test-clangd: deps-debug ## Verify clangd project configuration and semantic parsing
@@ -290,7 +274,7 @@ test-clangd: deps-debug ## Verify clangd project configuration and semantic pars
 
 .PHONY: test-public-header-docs
 test-public-header-docs: ## Verify public headers have API documentation comments
-	@./scripts/test_public_header_docs.sh
+	@./scripts/test-host.sh -R "^(public_header_docs)$$"
 
 .PHONY: release-lua-artifacts
 release-lua-artifacts: ## Build Lua source package, release rockspec, and source rock
@@ -302,10 +286,11 @@ validate-luarocks: ## Verify LuaRocks release artifacts
 
 .PHONY: test-lua-artifact-privacy
 test-lua-artifact-privacy: ## Verify Lua release artifacts fail on local path leaks
-	@./scripts/test_lua_artifact_privacy.sh
+	@./scripts/test-host.sh -R "^(lua_artifact_privacy)$$"
 
 .PHONY: verify-release-archives
-verify-release-archives: package-verify ## Verify all release archives
+verify-release-archives: ## Verify the complete release manifest and all archives
+	@SOFTLINE_CHECKSUM_FILE= ./scripts/package-verify.sh
 
 .PHONY: verify-release-privacy
 verify-release-privacy: ## Scan release artifacts for local paths
@@ -316,33 +301,24 @@ release-matrix: ## Build, package, checksum, and verify all release targets
 	@./scripts/run_linux_release_matrix.sh
 
 .PHONY: finalize-slice
-finalize-slice: format test ## Pre-commit gate: format + debug tests
+finalize-slice: format test format-check ## Pre-commit gate: format + debug tests
 
 .PHONY: prerelease
-prerelease: ## Deterministic pre-release verification
-	@$(MAKE) release-pipeline
+prerelease: prerelease-checks release-matrix release-lua-artifacts validate-luarocks ## Incremental preparation and binary/Lua rehearsal
 
 .PHONY: prerelease-hardening
-prerelease-hardening: ## Expensive hardening gate
-	@$(MAKE) release-pipeline
+prerelease-hardening: prerelease ## Run the deterministic preparation gate
 
 .PHONY: release
-release: ## Clean final release build, including source reconstruction
+release: ## Final tagged release only: clean, reconstruct source, verify complete artifacts
 	@$(MAKE) lifecycle-version-contract
+	@./scripts/release.sh preflight
 	@$(MAKE) clean
-	@SOFTLINE_REQUIRE_DARWIN=1 $(MAKE) release-pipeline
-	@$(MAKE) package-source
-	@$(MAKE) package-source-smoke
-	@$(MAKE) package-checksums
-	@$(MAKE) package-verify
+	@./scripts/release.sh
 
-.PHONY: release-pipeline
-release-pipeline: ## Ordinary proof graph plus binary release matrix
-	@$(MAKE) prerelease-checks
-	@$(MAKE) release-matrix
-
-.PHONY: prerelease-checks
-prerelease-checks: format test-all test-release-version test-package-source-worktree test-clangd package-consumer-smoke
+.PHONY: prerelease-checks prerelease-runtime-checks
+prerelease-checks: prerelease-runtime-checks package-consumer-smoke
+prerelease-runtime-checks: format-check test-all test-clangd
 
 .PHONY: lifecycle-version-contract
 lifecycle-version-contract: ## Verify exact lightweight-tag release version behavior
@@ -358,4 +334,4 @@ clean: ## Remove all generated build and dist artifacts
 
 .PHONY: clean-dist
 clean-dist: ## Remove dist/ artifacts only
-	@rm -rf $(DIST_DIR)
+	@./scripts/clean.sh dist

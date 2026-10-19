@@ -27,7 +27,7 @@ endif()
 
 _softline_osxcross_value(root _softline_osxcross_root)
 _softline_osxcross_value(prefix _softline_osxcross_host)
-_softline_osxcross_value(sdk _softline_osxcross_sysroot)
+_softline_osxcross_value(sysroot _softline_osxcross_sysroot)
 _softline_osxcross_value(cc _softline_osxcross_cc)
 _softline_osxcross_value(cxx _softline_osxcross_cxx)
 _softline_osxcross_value(ld _softline_osxcross_ld)
@@ -35,7 +35,11 @@ _softline_osxcross_value(ar _softline_osxcross_ar)
 _softline_osxcross_value(ranlib _softline_osxcross_ranlib)
 _softline_osxcross_value(strip _softline_osxcross_strip)
 _softline_osxcross_value(otool _softline_osxcross_otool)
-_softline_osxcross_value(install_name_tool _softline_osxcross_install_name_tool)
+set(_softline_osxcross_install_name_tool
+  "${_softline_osxcross_root}/bin/${_softline_osxcross_host}-install_name_tool")
+if(NOT EXISTS "${_softline_osxcross_install_name_tool}")
+  message(FATAL_ERROR "Darwin install_name_tool is required")
+endif()
 
 get_filename_component(_softline_osxcross_bin
   "${_softline_osxcross_cc}" DIRECTORY)
@@ -64,7 +68,7 @@ set(CMAKE_STRIP
 set(CMAKE_INSTALL_NAME_TOOL
   "${_softline_osxcross_install_name_tool}"
   CACHE FILEPATH "Darwin install_name_tool" FORCE)
-set(CPKT_OTOOL
+set(CMAKE_OTOOL
   "${_softline_osxcross_otool}"
   CACHE FILEPATH "Darwin otool" FORCE)
 

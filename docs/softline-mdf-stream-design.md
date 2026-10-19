@@ -21,7 +21,7 @@ Softline never infers libmdf margins. The example supplies its borrowed stdout
 fd to libmdf's destination-aware ANSI AUTO policy: terminal output is themed,
 and redirected output is escape-free. Renderer handles are rebuilt against
 libmdf 0.14.0's options layout; this private example dependency does not change
-Softline ABI 0.
+Softline's ABI.
 
 ## Generic Softline output session
 
@@ -194,23 +194,21 @@ accepts one-byte fragments indefinitely.
 
 ## Compatibility and public surfaces
 
-The C and Lua surfaces expose a single native chat layout. ABI 0 is retained
-while Softline and its sole consumer evolve together. Equivalent free functions validate NULL handles.
+The C and Lua surfaces expose a single native chat layout. ABI 1 includes the
+public `output_stream_reconcile` receiver method. Equivalent free functions validate NULL handles.
 Public declarations document ownership, thread context, lifecycle, errors,
 and chunk semantics for clangd. Lua methods document the same contract in the
 Lua reference and adjacent public binding comments. Lua cannot invoke its VM
 from a foreign producer thread; a watched descriptor supplies owner-thread
 events. The core and Lua libraries do not import libmdf.
 
-### Review exception: development ABI 0
+### Shared-library ABI
 
-The production executive explicitly reaffirmed ABI 0 on 2026-09-28. This is a
-deliberate exception to incrementing the shared-library ABI after an incompatible
-public layout change. Release v0.2.0 already used ABI 0 and v0.7.0 used ABI 1;
-the current public layouts are not binary compatible with those releases.
-Softline and its sole consumer are rebuilt together. Loading this development
-library into an older compiled consumer is unsupported. Reconsider this exception
-before making a binary compatibility commitment to independently built consumers.
+The current ABI policy supersedes the earlier development ABI 0 exception.
+The added receiver method changes the exposed C layout. Released v0.10.0
+used ABI 0; the new layout therefore uses ABI 1. Both C and Lua consumers must
+rebuild against the matching header and library. Local release rehearsal tags
+are not the released baseline for this decision.
 
 ### Review exception: active-prompt right-edge continuation
 
@@ -277,14 +275,15 @@ worker did not establish a settled resize boundary: a status repaint could
 cross GTK allocation and overwrite the input row. No production timing,
 buffering or repaint behavior is changed by this fixture coordination.
 It verifies continuation, prompt placement and unchanged transcript cells
-once the terminal geometry agrees with the PTY. `--streaming-race` retains
-the unpaused diagnostic; passing that diagnostic does not prove race-free
-VT output. The separately paced tmux check has the same scope restriction.
+once the terminal geometry agrees with the PTY. The former Python
+`--streaming-race` diagnostic is no longer exposed by the native harness;
+the paced gate does not prove race-free VT output. The separately paced tmux
+check has the same scope restriction.
 The themed width-sweep gate likewise pauses its private producer during each
 sweep and freezes the editor only for each physical allocation, resuming it
-before checking prompt updates. `check_chat_width_resize.py --resize-race`
-(after its normal arguments) retains the unpaused width diagnostic. Both
-diagnostic modes leave the worker and editor running. The shared coordination
+before checking prompt updates. The former Python `--resize-race` diagnostic
+is likewise no longer exposed; its unpaused behavior is outside the paced
+gate's proof. The shared coordination
 helper has explicit stop/poll and input barriers, including pending replies
 needed to finish a frame, with resume checks after resize/drain failures.
 Input responsiveness is tested with the editor running.
@@ -297,6 +296,15 @@ Softline scrollback model. This applies only when a retained editor frame is
 resized without an input-owned cursor observation, including writes after
 `readline()` has returned and resizes performed inside a producer callback.
 The active chat loop observes resize before dispatching producer watches.
+
+Synchronous producers now have an explicit owner operation:
+`sl_output_stream_reconcile()`. Call it after resize settles and before the
+next producer write. It may wait up to 100 ms for a cursor report, reconciles
+and repaints only the owned prompt frame, and preserves queued input, draft,
+cursor, queue, history, status and incremental UTF-8/SGR state. A missing report
+returns `SL_ERROR_IO`; callers must handle that failure before continuing.
+No transcript is stored or replayed. This does not change observation-free
+feeds or repair a resize that races a physical write.
 
 The fallback uses bottom-relative deltas and current-line scalar geometry.
 It cannot infer reflow of earlier hard-ended lines, or distinguish empty history
@@ -316,10 +324,9 @@ The native-output regression runs both scenarios with readline still active
 and asserts exact direct-terminal continuation. Feed latency checks assert no
 cursor requests even when a feed must reconcile resize itself.
 
-Reconsider only if the developer permits a feed cursor-report wait or a
-transcript reflow model, or introduces a terminal protocol that supplies resize
-coordinates without either. A missing input-owned observation is separate from
-the concurrent physical resize race above.
+Callers that omit owner reconciliation retain this fallback limitation.
+A missing input-owned observation is separate from the concurrent physical
+resize race above.
 
 ### Review exception: opaque feed
 
@@ -424,7 +431,7 @@ opaque-feed/latency contract. The CR-tail diagnostic retains a reproducer.
   while changing its grid immediately. Faster successive resizes can leave the
   visible grid and reported PTY geometry different while output is emitted;
   that case can still corrupt output. The `--queued-resize` diagnostic in
-  `tests/check_terminal_resize.py` retains this reproducer. The standard paced
+  `tests/test_tmux_resize.c` retains this reproducer. The standard paced
   test does not prove that diagnostic passes. There is no tmux-specific
   production workaround or transcript replay.
 - The Unicode output matrix compares actual raw and libmdf sink emissions

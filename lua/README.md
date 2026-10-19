@@ -230,6 +230,12 @@ live scroll regions, status lines, and spinners are off; the theme is
   while a source function is running.
   Failed native finite output discards partial ANSI/UTF-8 bytes so the next
   call starts cleanly.
+- `sl:output_stream_reconcile()` observes a settled resize before synchronous
+  producer continuation, outside feeds on the owner thread. It preserves draft,
+  cursor, queue, history, status, queued input, terminal modes and split stream
+  parsing while repainting only owned prompt cells. A required cursor reply
+  waits up to 100 ms; failure returns `nil, error`. An open stream is required;
+  redirected sessions are a no-op. Check success before resuming output.
 - `sl:output_stream_begin()` opens one persistent output session above the
   prompt. Transcript output starts at the existing terminal cursor; the editable
   prompt starts at the bottom. Physical resize preserves the terminal's native
@@ -452,6 +458,9 @@ softline_lua_env="$(make lua-env)" && eval "${softline_lua_env}"
 lua examples/simple.lua
 lua examples/chat.lua
 ```
+
+The facade loads the installed public shared `libsoftline`; a static-only SDK
+is rejected. Local SDK tests install from the common Debug library producer.
 
 `examples/chat.lua` accepts the same `SOFTLINE_PROMPT_THEME` values as the C
 chat example. It uses the default native persistent output session: transcript

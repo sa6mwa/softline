@@ -1,205 +1,117 @@
 #!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
 set -euo pipefail
-
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RESOLVER="${ROOT_DIR}/scripts/cpkt-toolchains.sh"
-
-native_target="$(CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE=x86_64 "$RESOLVER" native-linux-target)"
-if [ "${native_target}" != "x86_64-linux-gnu" ]; then
-  echo "ERROR: x86_64 Linux hosts must select the x86_64 GNU Bootlin target" >&2
-  exit 1
-fi
-if CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE=aarch64 "$RESOLVER" native-linux-target >/dev/null 2>&1; then
-  echo "ERROR: aarch64 Linux hosts must not select x86_64-hosted Bootlin compilers as native" >&2
-  exit 1
-fi
-if CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE=armv7l "$RESOLVER" native-linux-target >/dev/null 2>&1; then
-  echo "ERROR: armv7 Linux hosts must not select x86_64-hosted Bootlin compilers as native" >&2
-  exit 1
-fi
-if CPKT_HOST_SYSTEM=Linux CPKT_HOST_MACHINE=riscv64 "$RESOLVER" native-linux-target >/dev/null 2>&1; then
-  echo "ERROR: unsupported Linux host architectures must not select a Bootlin fallback" >&2
-  exit 1
-fi
-if CPKT_HOST_SYSTEM=Darwin CPKT_HOST_MACHINE=arm64 "$RESOLVER" native-linux-target >/dev/null 2>&1; then
-  echo "ERROR: non-Linux hosts must not select a Bootlin Linux target" >&2
-  exit 1
-fi
-
-if OSXCROSS_ROOT=/definitely/missing "$RESOLVER" ensure arm64-apple-darwin >/dev/null 2>&1; then
-  echo "ERROR: explicit Darwin ensure must fail when osxcross is unavailable" >&2
-  exit 1
-fi
-if grep -Eq '(^|[[:space:]])(mapfile|readarray)([[:space:]]|$)|\$\{[A-Za-z_][A-Za-z0-9_]*\^\^\}' "${RESOLVER}"; then
-  echo "ERROR: toolchain resolver must remain compatible with stock macOS Bash 3.2" >&2
-  exit 1
-fi
-
-mkdir -p "${ROOT_DIR}/build"
-tmp_osxcross="$(mktemp -d "${ROOT_DIR}/build/toolchain-contract.XXXXXX")"
-stale_build="${ROOT_DIR}/build/toolchain-contract-stale-cache"
-cleanup() {
-  rm -rf "${tmp_osxcross}" "${stale_build}"
-}
-trap cleanup EXIT
-darwin_bin="${tmp_osxcross}/bin"
-darwin_sdk="${tmp_osxcross}/SDK/MacOSX15.sdk"
-old_darwin_sdk="${tmp_osxcross}/SDK/MacOSX9.sdk"
-darwin_host=arm64-apple-darwin99
-mkdir -p "${darwin_bin}" "${darwin_sdk}" "${old_darwin_sdk}"
-for tool in clang clang++ ld ar ranlib strip nm otool; do
-  printf '#!/bin/sh\nexit 0\n' > "${darwin_bin}/${darwin_host}-${tool}"
-  chmod +x "${darwin_bin}/${darwin_host}-${tool}"
-done
-if OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST="${darwin_host}" "$RESOLVER" ensure arm64-apple-darwin >/dev/null 2>&1; then
-  echo "ERROR: Darwin ensure must fail without install_name_tool" >&2
-  exit 1
-fi
-printf '#!/bin/sh\nexit 0\n' > "${darwin_bin}/${darwin_host}-install_name_tool"
-chmod +x "${darwin_bin}/${darwin_host}-install_name_tool"
-darwin_description="$(OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST="${darwin_host}" "$RESOLVER" ensure arm64-apple-darwin)"
-for key in status root prefix sdk cc cxx ld ar ranlib strip nm otool install_name_tool; do
-  if ! grep -q "^${key}=" <<<"${darwin_description}"; then
-    echo "ERROR: Darwin resolver must report ${key}" >&2
-    exit 1
-  fi
-done
-if ! grep -qx "sdk=${darwin_sdk}" <<<"${darwin_description}"; then
-  echo "ERROR: Darwin resolver must select the newest SDK using the CMake toolchain ordering" >&2
-  exit 1
-fi
-cmake_probe="${tmp_osxcross}/probe"
-mkdir -p "${cmake_probe}"
-cat > "${cmake_probe}/CMakeLists.txt" <<'EOF'
-cmake_minimum_required(VERSION 3.16)
-project(darwin_toolchain_probe LANGUAGES NONE)
-file(WRITE "${CMAKE_BINARY_DIR}/sdk.txt" "${CMAKE_OSX_SYSROOT}\n")
-EOF
-OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST="${darwin_host}" \
-  cmake -S "${cmake_probe}" -B "${cmake_probe}/build" \
-    -DCMAKE_TOOLCHAIN_FILE="${ROOT_DIR}/cmake/toolchains/osxcross-darwin.cmake" \
-    >/dev/null
-if [ "$(cat "${cmake_probe}/build/sdk.txt")" != "${darwin_sdk}" ]; then
-  echo "ERROR: Darwin CMake toolchain must select the resolver SDK" >&2
-  exit 1
-fi
-
-# Installed osxcross tools are symlinks and may have only a dotted prefix,
-# without any major-version aliases. Discovery must rank complete collections.
-printf '#!/bin/sh\nexit 0\n' > "${darwin_bin}/fixture-wrapper"
-chmod +x "${darwin_bin}/fixture-wrapper"
-for version in 25.4 25.9 25.10 25.11; do
-  for tool in clang clang++ ld ar ranlib strip nm otool install_name_tool; do
-    if [ "$version" = 25.11 ] && [ "$tool" = install_name_tool ]; then
-      continue
-    fi
-    ln -s fixture-wrapper "${darwin_bin}/arm64-apple-darwin${version}-${tool}"
-  done
-done
-description="$(OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST= \
-  "$RESOLVER" discover arm64-apple-darwin)"
-if ! grep -qx 'status=ready' <<<"${description}" ||
-   ! grep -qx 'prefix=arm64-apple-darwin25.10' <<<"${description}"; then
-  echo "ERROR: auto-discovery must select the newest complete dotted prefix" >&2
-  printf '%s\n' "$description" >&2
-  exit 1
-fi
-description="$(OSXCROSS_ROOT="${tmp_osxcross}" \
-  CPKT_OSXCROSS_HOST=arm64-apple-darwin25.4 "$RESOLVER" env arm64-apple-darwin)"
-if ! grep -q 'arm64-apple-darwin25.4-clang' <<<"${description}"; then
-  echo "ERROR: exact prefix overrides must take precedence over discovery" >&2
-  exit 1
-fi
-if OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST=arm64-apple-darwin25.11 \
-     "$RESOLVER" ensure arm64-apple-darwin >/dev/null 2>&1; then
-  echo "ERROR: an incomplete exact override must not fall back to another prefix" >&2
-  exit 1
-fi
-description="$(OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST=arm64-apple-darwin25 \
-  "$RESOLVER" discover arm64-apple-darwin)"
-if ! grep -qx 'status=missing' <<<"${description}"; then
-  echo "ERROR: a missing exact override must not fall back to a dotted prefix" >&2
-  exit 1
-fi
-OSXCROSS_ROOT="${tmp_osxcross}" CPKT_OSXCROSS_HOST= \
-  cmake -S "${cmake_probe}" -B "${cmake_probe}/auto-build" \
-    -DCMAKE_TOOLCHAIN_FILE="${ROOT_DIR}/cmake/toolchains/osxcross-darwin.cmake" \
-    >/dev/null
-if ! grep -q 'arm64-apple-darwin25.10-clang' "${cmake_probe}/auto-build/CMakeCache.txt"; then
-  echo "ERROR: CMake must consume the automatically discovered compiler prefix" >&2
-  exit 1
-fi
-
-rm -rf "${stale_build}"
-mkdir -p "${stale_build}"
-if CPKT_HOST_SYSTEM=Darwin CPKT_HOST_MACHINE=arm64 \
-  cmake -S "${ROOT_DIR}" -B "${stale_build}" -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake" \
-  -DSL_BUILD_TESTS=OFF \
-  -DSL_BUILD_EXAMPLES=OFF \
-  -DSL_INSTALL=OFF \
-  >/dev/null 2>"${stale_build}/reconfigure.err"; then
-  echo "ERROR: unsupported native Linux hosts must not configure through host tools" >&2
-  exit 1
-fi
-if ! grep -q 'No supported native Bootlin Linux target is available' "${stale_build}/reconfigure.err"; then
-  echo "ERROR: unsupported-host CMake rejection must explain the missing Bootlin target" >&2
-  cat "${stale_build}/reconfigure.err" >&2
-  exit 1
-fi
-
-sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    shasum -a 256 "$1" | awk '{print $1}'
-  fi
-}
-
-while IFS='|' read -r target archive expected_sha256; do
-  description="$("$RESOLVER" ensure "${target}")"
-  cache="$(sed -n 's/^cache=//p' <<<"${description}")"
-  if ! grep -qx "archive=${archive}.tar.xz" <<<"${description}"; then
-    echo "ERROR: ${target} must resolve ${archive}.tar.xz" >&2
-    exit 1
-  fi
-  if [ "$(sha256_file "${cache}/archives/${archive}.tar.xz")" != "${expected_sha256}" ]; then
-    echo "ERROR: ${target} must retain the pinned ${archive} checksum" >&2
-    exit 1
-  fi
-done <<'EOF'
-x86_64-linux-gnu|x86-64--glibc--stable-2026.08-1|cde893afab04ac7dcd15c46aac214ff550441b982536124c88a71146a0eeedd3
-x86_64-linux-musl|x86-64--musl--stable-2026.08-1|78d3a4683d6ac47b5ee73bd5bce210b55eb93dff1b137c61298af97eb0d2b5a6
-aarch64-linux-gnu|aarch64--glibc--stable-2026.08-1|0213efac9b5577f20d58de9431960a191347ffc2257b27ffe7250522bf1f7867
-aarch64-linux-musl|aarch64--musl--stable-2026.08-1|b388c480a48e8e9f9b99e3d14e69219c4d61e5a2424a82faecb88a015b781a60
-armhf-linux-gnu|armv7-eabihf--glibc--stable-2026.08-1|9b7e25a74e87dac1e05d399444295e254a3073a056101e3197a859490e5701cd
-armhf-linux-musl|armv7-eabihf--musl--stable-2026.08-1|9147bafae4aa272321a3c6440d04d83b7e23411b2d344f875541d84c4444ba9b
-EOF
-
-description="$("$RESOLVER" ensure x86_64-linux-gnu)"
-if ! grep -qx 'status=ready' <<<"${description}"; then
-  echo "ERROR: x86_64-linux-gnu toolchain must be ready for the lifecycle contract" >&2
-  exit 1
-fi
-
-expected_cc="$(sed -n 's/^cc=//p' <<<"${description}")"
-expected_ld="$(sed -n 's/^ld=//p' <<<"${description}")"
-expected_ar="$(sed -n 's/^ar=//p' <<<"${description}")"
-expected_libstdcxx="$(sed -n 's/^libstdcxx_a=//p' <<<"${description}")"
-expected_libgcc="$(sed -n 's/^libgcc_a=//p' <<<"${description}")"
-if [ ! -f "${expected_libstdcxx}" ] || [ ! -f "${expected_libgcc}" ]; then
-  echo "ERROR: toolchain resolver must report existing static runtime archives" >&2
-  exit 1
-fi
-env_output="$("$RESOLVER" env x86_64-linux-gnu)"
+ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
+mkdir -p "$ROOT_DIR/build/toolchain-checks"
+export TMPDIR="$ROOT_DIR/build/toolchain-checks"
+"$ROOT_DIR/scripts/test-cpkt-toolchain-resolvers.sh"
+"$ROOT_DIR/scripts/test-cpkt-aflpp-resolver.sh"
+# Prefer the newest complete Darwin prefix; a broken newer installation must
+# not shadow a usable older one. Explicit prefix selection never falls back.
 (
-  eval "${env_output}"
-  [[ "${CC}" == "${expected_cc}" ]]
-  [[ "${LD}" == "${expected_ld}" ]]
-  [[ "${AR}" == "${expected_ar}" ]]
-  [[ "${CPKT_TOOLCHAIN_CC}" == "${expected_cc}" ]]
-  [[ "${CPKT_TOOLCHAIN_LIBSTDCXX_A}" == "${expected_libstdcxx}" ]]
-  [[ "${CPKT_TOOLCHAIN_LIBGCC_A}" == "${expected_libgcc}" ]]
+  work=$(mktemp -d "$TMPDIR/darwin resolver.XXXXXXXX")
+  trap 'rm -rf -- "$work"' EXIT
+  export OSXCROSS_ROOT="$work/osxcross" CPKT_TOOLCHAIN_CACHE="$work/cache"
+  unset CPKT_OSXCROSS_HOST
+  mkdir -p "$OSXCROSS_ROOT/bin"
+  older=arm64-apple-darwin25.2
+  newer=arm64-apple-darwin25.4
+  for prefix in "$older" "$newer"; do
+    for tool in clang clang++ ld ar ranlib strip nm otool install_name_tool; do
+      printf '#!/bin/sh\nexit 0\n' > "$OSXCROSS_ROOT/bin/$prefix-$tool"
+      chmod +x "$OSXCROSS_ROOT/bin/$prefix-$tool"
+    done
+  done
+  export TEST_DARWIN_SDK="$work/SDK with spaces"
+  mkdir -p "$TEST_DARWIN_SDK"
+  cat > "$OSXCROSS_ROOT/bin/osxcross-conf" <<'SH'
+#!/bin/sh
+test "${TEST_CONF_FAILURE:-0}" = 0 || exit 7
+printf 'export OSXCROSS_SDK="%s"\n' "$TEST_DARWIN_SDK"
+SH
+  chmod +x "$OSXCROSS_ROOT/bin/osxcross-conf"
+  resolver="$ROOT_DIR/scripts/cpkt-toolchains.sh"
+  description=$("$resolver" discover arm64-apple-darwin)
+  revision=$(sed -n 's/^mig_revision=//p' <<< "$description")
+  [[ -n "$revision" ]]
+  mig="$CPKT_TOOLCHAIN_CACHE/roots/host-mig-puredarwin-$revision-x86_64-linux-gnu"
+  mkdir -p "$mig/bin" "$mig/libexec"
+  for tool in bin/mig bin/mig-upstream libexec/migcom; do
+    printf '#!/bin/sh\nexit 0\n' > "$mig/$tool"
+    chmod +x "$mig/$tool"
+  done
+  touch "$mig/TOOLCHAIN"
+  check_prefix() {
+    description=$("$resolver" discover arm64-apple-darwin)
+    grep -Fxq status=ready <<< "$description"
+    grep -Fxq "prefix=$1" <<< "$description" || {
+      printf 'ERROR: expected Darwin prefix %s, got:\n%s\n' "$1" "$description" >&2; exit 1;
+    }
+    environment=$("$resolver" env arm64-apple-darwin)
+    eval "$environment"
+    [[ "$CC" == "$OSXCROSS_ROOT/bin/$1-clang" ]]
+  }
+  check_prefix "$newer"
+  for mode in missing nonexecutable; do
+    tool="$OSXCROSS_ROOT/bin/$newer-install_name_tool"
+    if [[ $mode == missing ]]; then mv "$tool" "$tool.saved"
+    else chmod -x "$tool"; fi
+    check_prefix "$older"
+    description=$(CPKT_OSXCROSS_HOST="$newer" "$resolver" discover arm64-apple-darwin)
+    grep -Fxq status=missing <<< "$description"
+    if CPKT_OSXCROSS_HOST="$newer" "$resolver" env arm64-apple-darwin > "$work/exports" 2> "$work/error"; then
+      echo 'ERROR: incomplete pinned Darwin prefix accepted' >&2; exit 1
+    fi
+    [[ ! -s "$work/exports" ]]
+    if [[ $mode == missing ]]; then mv "$tool.saved" "$tool"
+    else chmod +x "$tool"; fi
+  done
+  prepared_sdk=$TEST_DARWIN_SDK
+  for mode in missing-conf nonexecutable-conf failed-conf empty-sdk missing-sdk; do
+    case "$mode" in
+      missing-conf) mv "$OSXCROSS_ROOT/bin/osxcross-conf" "$work/conf.saved" ;;
+      nonexecutable-conf) chmod -x "$OSXCROSS_ROOT/bin/osxcross-conf" ;;
+      failed-conf) export TEST_CONF_FAILURE=1 ;;
+      empty-sdk) export TEST_DARWIN_SDK='' ;;
+      missing-sdk) mv "$TEST_DARWIN_SDK" "$TEST_DARWIN_SDK.saved" ;;
+    esac
+    description=$("$resolver" discover arm64-apple-darwin)
+    grep -Fxq status=missing <<< "$description" || {
+      echo "ERROR: Darwin discovery accepted $mode" >&2; exit 1;
+    }
+    if "$resolver" env arm64-apple-darwin > "$work/exports" 2> "$work/error"; then
+      echo "ERROR: Darwin exports accepted $mode" >&2; exit 1
+    fi
+    [[ ! -s "$work/exports" ]]
+    case "$mode" in
+      missing-conf) mv "$work/conf.saved" "$OSXCROSS_ROOT/bin/osxcross-conf" ;;
+      nonexecutable-conf) chmod +x "$OSXCROSS_ROOT/bin/osxcross-conf" ;;
+      failed-conf) unset TEST_CONF_FAILURE ;;
+      empty-sdk) export TEST_DARWIN_SDK="$prepared_sdk" ;;
+      missing-sdk) mv "$TEST_DARWIN_SDK.saved" "$TEST_DARWIN_SDK" ;;
+    esac
+  done
+  check_prefix "$newer"
+  [[ $CPKT_SYSROOT == "$TEST_DARWIN_SDK" ]]
+  rm "$OSXCROSS_ROOT/bin/$older-install_name_tool" "$OSXCROSS_ROOT/bin/$newer-install_name_tool"
+  description=$("$resolver" discover arm64-apple-darwin)
+  grep -Fxq status=missing <<< "$description"
+  if "$resolver" env arm64-apple-darwin > "$work/exports" 2> "$work/error"; then
+    echo 'ERROR: Darwin exports accepted without a complete prefix' >&2; exit 1
+  fi
+  [[ ! -s "$work/exports" ]]
 )
-
-echo "Toolchain contract tests passed."
+resolver="$ROOT_DIR/scripts/native-linux-target.sh"
+[[ $(SOFTLINE_HOST_SYSTEM=Linux SOFTLINE_HOST_MACHINE=x86_64 "$resolver") == x86_64-linux-gnu ]]
+for machine in aarch64 armv7l riscv64; do
+  if SOFTLINE_HOST_SYSTEM=Linux SOFTLINE_HOST_MACHINE="$machine" "$resolver" >/dev/null 2>&1; then
+    echo "ERROR: unsupported native compiler host accepted: $machine" >&2; exit 1
+  fi
+done
+if SOFTLINE_HOST_SYSTEM=Darwin SOFTLINE_HOST_MACHINE=arm64 "$resolver" >/dev/null 2>&1; then
+  echo 'ERROR: non-Linux host accepted as a native Bootlin host' >&2; exit 1
+fi
+echo 'Toolchain fixture contracts passed without acquiring real dependencies.'

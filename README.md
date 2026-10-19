@@ -326,7 +326,8 @@ persistent session API.
 Open a session once, forward each external renderer sink fragment, and close it
 when the conversation ends. The receiver and free-function C APIs are
 equivalent; Lua exposes `sl:output_stream_begin()`,
-`sl:output_stream_write(bytes)`, and `sl:output_stream_end()`.
+`sl:output_stream_reconcile()`, `sl:output_stream_write(bytes)`, and
+`sl:output_stream_end()`.
 
 ```c
 sl->output_stream_begin(sl);
@@ -334,6 +335,15 @@ sl->output_stream_begin(sl);
 sl->output_stream_write(sl, bytes, length);
 sl->output_stream_end(sl);
 ```
+
+Before resuming synchronous output after a settled terminal resize, call
+`sl_output_stream_reconcile(sl)` on the owner thread outside producer feeds.
+It observes the cursor and repaints only owned prompt cells, preserving input,
+queue, history, status and incremental stream parsing. A required cursor reply
+may wait up to 100 ms; check for `SL_OK` before continuing. Redirected sessions
+are a no-op. Feed writes themselves never wait for cursor reports. The active
+input loop already reconciles before dispatching producer watches; a resize
+inside a long producer callback requires returning to the owner between feeds.
 
 Ending the session between editor calls closes the native prompt and restores
 normal terminal input and the full scroll region. By default it clears only
@@ -543,7 +553,7 @@ make build
 make test
 make test-terminal-cache
 make deps DEPENDENCY=libmdf
-make deps DEPENDENCY=lua PRESET=debug-lua
+make deps DEPENDENCY=lua PRESET=debug
 make asan
 make valgrind
 make package-consumer-smoke
@@ -555,13 +565,13 @@ On native x86_64 Linux, `make test` provisions checksum-pinned GTK/VTE,
 Xvfb, keyboard, font and clipboard test tools from the lifecycle's shared
 verified archive cache. `make deps-terminal-tests` prepares them independently.
 The cache is selected by `CPKT_DEPENDENCY_CACHE`, otherwise
-`${XDG_CACHE_HOME:-$HOME/.cache}/c.pkt.systems/deps`; every reused archive is
+`${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps`; every reused archive is
 hashed. Repository-local extraction and runtime staging are disposable under
 `.cache/deps-build/x86_64-linux-gnu/terminal-tests` and
 `.cache/deps/x86_64-linux-gnu/terminal-tests`. No package manager installation
 or maintainer scripts run, and none of these tools enter the shipped libraries.
 
-The pinned native tools use official Ubuntu package archives, an explicit
+The pinned native tools use a dated official Ubuntu archive snapshot, an explicit
 source exception for test tools recorded with versions, URLs and SHA-256 hashes
 in `cmake/terminal-tests/archives.json`, including their libc, compiler runtime
 and desktop library closure. Provisioning verifies every ELF dependency and
@@ -587,14 +597,18 @@ the caller's normal chat history. These test stores remain available for
 diagnosis until `make clean`.
 
 Every project-owned C target is compiled as C89 with POSIX terminal APIs.
-Shared builds use `SOFTLINE_ABI_VERSION=0` for SONAME/SOVERSION during current
-development. Softline and its sole consumer change together; API changes in
-this development phase do not establish a new ABI compatibility commitment.
-Both are rebuilt together; older compiled consumers are unsupported. The
-[development ABI exception](docs/softline-mdf-stream-design.md#review-exception-development-abi-0)
-records this explicit decision and its scope.
+Shared builds use `SOFTLINE_ABI_VERSION=1` for SONAME/SOVERSION. The public
+receiver layout gains `output_stream_reconcile`; rebuild consumers against the
+new header/library pair. ABI 1 advances exactly once from released v0.10.0's
+ABI 0, independently of the project release version.
 
-Ordinary Linux debug, sanitizer, Valgrind, package-consumer, and release package
+Builds require no installed cpkt CLI, cpkt SDK or cpkt checkout. The standalone
+lifecycle helper scripts are vendored here; their `cpkt-*` filenames and shared
+cache namespace follow the lifecycle skill. Source archives include those helpers
+and do not need an installed skill. Installed-consumer checks disable cpkt package
+discovery and restrict pkg-config lookup to the installed Softline SDK.
+
+Linux debug, sanitizer, Valgrind, package-consumer, and release package
 builds use the pinned native GNU Bootlin toolchain. The current pinned Bootlin
 compiler executables are x86_64-hosted, so ordinary Linux lifecycle work is
 supported on native x86_64 Linux hosts. Unsupported Linux hosts fail closed
@@ -628,15 +642,46 @@ from the shared dependency cache; disposable extraction state stays under
 LuaRocks remains a host packaging tool. This runtime selection is not hermetic
 execution and does not establish compatibility with older deployment libcs.
 
-`make prerelease` is the deterministic local gate: formatting, debug and
-sanitizer tests, native Valgrind, Lua, toolchain, editor, header, and
-install-tree consumer checks. `make release-matrix` builds the standard Linux GNU/musl target matrix,
-generates binary and Lua release artifacts, writes checksums, and verifies
-package layout, runtime loader metadata, and release privacy. The rehearsal
-matrix may skip Darwin when osxcross is unavailable. `make release` is stricter:
-it requires the Darwin toolchain and a verified Darwin artifact, then creates
-and reconstructs the source archive; packaged Darwin artifacts require
-target-correct Mach-O inspection.
+`make prerelease` performs incremental preparation: formatting, native Debug,
+sanitizer, Memcheck, Lua, host, editor and installed-consumer checks, followed by
+binary and Lua artifact rehearsals. Memcheck shares the Debug producer;
+consumer install variants share matching library objects. `make release-matrix`
+is binary-only, with a scoped checksum inventory under `build/package-state/`.
+Its ordinary rehearsal may omit Darwin when osxcross is unavailable.
+`make verify-release-archives` verifies the existing complete release manifest
+and every source/Lua artifact and SDK it names, without regenerating checksums.
+
+`make release` is only for the final exact lightweight `vX.Y.Z` tag on a clean,
+signed commit attached to the default branch resolved by `origin/HEAD`, without
+a candidate version override. Complete implementation and review on one
+development branch, then squash onto the local default branch before engineer
+amendment/signing. Keep remote refs unchanged during preparation. The gate
+verifies the signature, branch, tag and prepared tools before `make clean`,
+including that the selected toolchain and dependency caches survive that cleanup,
+then builds fresh local proof and all
+seven SDK targets. Delivered source supplies the native Release lane; cross
+lanes stay in the checkout. All source/Lua products and SDKs must appear in the
+complete checksum manifest. Packaged Darwin bytes require target-correct Mach-O
+inspection. A failed release stops; repair is a separate iteration.
+
+Only after that complete local gate passes may an explicitly authorized release
+push the default-branch commit and its lightweight tag, then upload the exact
+checksum-selected local artifacts. Never push to obtain CI feedback. Hosted
+native checks are optional diagnostics; local osxcross supplies Darwin release
+proof. Publication remains a separate, explicitly authorized operation.
+
+Builds default to four jobs through `CMAKE_BUILD_PARALLEL_LEVEL`; set it explicitly
+to choose another limit. Operational helpers and direct CMake configuration reject
+symlinked `build/`, `dist/`, or `.cache/` roots and borrowed cache overrides.
+Direct CMake binary directories must also resolve inside this checkout's
+`build/`, `.cache/`, or `dist/`; in-source and external builds are rejected.
+Cache overrides use this checkout's `build/` or `.cache/`, or the declared global
+`${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/{toolchains,deps}` caches. Staging and local
+dependency paths must resolve inside this checkout before cleanup or extraction.
+Source reconstruction (`make package-source-smoke` and final release) requires
+the declared shared cpkt caches: checkout-local overrides would belong to the
+parent checkout and cannot be reused by the extracted source. Incompatible
+cache selections fail before extraction or release cleanup.
 
 osxcross discovery selects the newest complete `arm64-apple-darwin25.x`
 compiler prefix, including installations with only dotted executable names.
@@ -662,16 +707,19 @@ Resolver sources are checked in; configuring/building never downloads c-ares.
 
 Source archive smoke extracts and builds under the repository's `build/`,
 independently of the caller's working directory or `TMPDIR`, and removes its
-workspace on success, failure, or interruption.
+workspace on ordinary success or failure. The terminal/job runner owns the
+whole operation and its cancellation; helpers stay in the foreground.
 
 `cmake/softline.exports` is the source-controlled dynamic export contract for
 `libsoftline`. Build and extracted-package checks fail if a public symbol is
 missing or an accidental symbol becomes linkable. The lifecycle migration record
 is maintained in [docs/lifecycle-migration.md](docs/lifecycle-migration.md).
 
-`v99.99.99` is permanently reserved for the release-version contract check and
-is never a valid softline release tag. The Lua facade supports Lua 5.5 only;
-LuaRocks builds must select Lua 5.5.
+Version/tag variations are tested in disposable Git fixtures without changing
+active release refs. The signed release fixtures require Git SSH signing support
+and `ssh-keygen`; their temporary keys and trust files stay under ignored `build/`.
+No release version is reserved for a lifecycle test. The
+Lua facade supports Lua 5.5 only; LuaRocks builds must select Lua 5.5.
 
 Installed CMake consumers should use the canonical imported target:
 

@@ -1,5 +1,9 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="${SL_VERSION_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
@@ -41,7 +45,7 @@ is_git_worktree() {
     return 1
   fi
   git_root="$(git -C "${ROOT_DIR}" rev-parse --show-toplevel 2>/dev/null || true)"
-  [ -n "${git_root}" ] && [ "$(cd "${git_root}" && pwd)" = "$(cd "${ROOT_DIR}" && pwd)" ]
+  [ -n "${git_root}" ] && [ "$(cd "${git_root}" && pwd -P)" = "$(cd "${ROOT_DIR}" && pwd -P)" ]
 }
 
 is_exact_version_tag() {
@@ -52,8 +56,12 @@ exact_lightweight_version_tag() {
   tags="$(git -C "${ROOT_DIR}" tag --points-at HEAD 2>/dev/null || true)"
   found=""
   for tag in ${tags}; do
-    if is_exact_version_tag "${tag}" &&
-      [ "$(git -C "${ROOT_DIR}" cat-file -t "refs/tags/${tag}" 2>/dev/null || true)" = "commit" ]; then
+    is_exact_version_tag "${tag}" || continue
+    if git -C "${ROOT_DIR}" symbolic-ref -q "refs/tags/${tag}" >/dev/null 2>&1; then
+      echo "ERROR: symbolic version tag is not a lightweight release identity: ${tag}" >&2
+      exit 1
+    fi
+    if [ "$(git -C "${ROOT_DIR}" cat-file -t "refs/tags/${tag}" 2>/dev/null || true)" = "commit" ]; then
       if [ -n "${found}" ]; then
         echo "ERROR: multiple exact lightweight version tags on HEAD: ${found} ${tag}" >&2
         exit 1

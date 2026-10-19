@@ -1,52 +1,42 @@
-#!/usr/bin/env sh
-set -eu
-
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# This impossible project version is permanently reserved for this contract
-# check. It is never a releasable softline version. Deleting it recovers an
-# interrupted prior contract run before exact-tag detection or artifact work.
-RESERVED_TAG="v99.99.99"
-
-cleanup() {
-  # Deliberately remove only the permanently reserved test-only tag.
-  git -C "${ROOT_DIR}" tag -d "${RESERVED_TAG}" >/dev/null 2>&1 || true
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
+ROOT_DIR=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd -P)
+[[ -z ${SL_VERSION_OVERRIDE:-} ]] || {
+  echo 'ERROR: final release requires an exact lightweight tag, without SL_VERSION_OVERRIDE' >&2; exit 1;
 }
-trap cleanup EXIT HUP INT TERM
-
-git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null
-git -C "${ROOT_DIR}" tag -d "${RESERVED_TAG}" >/dev/null 2>&1 || true
-
-exact_tag=""
-for tag in $(git -C "${ROOT_DIR}" tag --points-at HEAD); do
-  if ! printf '%s\n' "${tag}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-    continue
-  fi
-  if [ "$(git -C "${ROOT_DIR}" cat-file -t "refs/tags/${tag}")" != commit ]; then
-    echo "ERROR: exact release tag ${tag} must be lightweight" >&2
-    exit 1
-  fi
-  if [ -n "${exact_tag}" ]; then
-    echo "ERROR: multiple exact lightweight release tags on HEAD: ${exact_tag} ${tag}" >&2
-    exit 1
-  fi
-  exact_tag="${tag}"
-done
-
-if [ -n "${exact_tag}" ]; then
-  expected="${exact_tag#v}"
-else
-  git -C "${ROOT_DIR}" -c tag.gpgSign=false tag "${RESERVED_TAG}"
-  if [ "$(git -C "${ROOT_DIR}" cat-file -t "refs/tags/${RESERVED_TAG}")" != commit ]; then
-    echo "ERROR: ${RESERVED_TAG} must be a lightweight tag" >&2
-    exit 1
-  fi
-  expected="${RESERVED_TAG#v}"
+[[ $(git -C "$ROOT_DIR" rev-parse --show-toplevel) == "$ROOT_DIR" ]] || {
+  echo 'ERROR: final release requires the owning Git checkout' >&2; exit 1;
+}
+[[ -z $(git -C "$ROOT_DIR" status --porcelain) ]] || {
+  echo 'ERROR: final release requires a clean committed worktree' >&2; exit 1;
+}
+default_ref=$(git -C "$ROOT_DIR" symbolic-ref --quiet refs/remotes/origin/HEAD) || {
+  echo 'ERROR: resolve the default branch with git remote set-head origin before final release' >&2; exit 1;
+}
+default_branch=${default_ref#refs/remotes/origin/}
+branch=$(git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD) || {
+  echo 'ERROR: final release requires an attached default branch, not detached HEAD' >&2; exit 1;
+}
+[[ "$branch" == "$default_branch" ]] || {
+  echo "ERROR: final release requires default branch $default_branch; current branch is $branch" >&2; exit 1;
+}
+git -C "$ROOT_DIR" verify-commit HEAD || {
+  echo 'ERROR: final release requires the amended final commit with a verified signature' >&2; exit 1;
+}
+version=$("$ROOT_DIR/scripts/release_version.sh")
+[[ "$version" != 0.0.0 ]] || {
+  echo 'ERROR: final release requires one exact lightweight vX.Y.Z tag on HEAD' >&2; exit 1;
+}
+tag="refs/tags/v$version"
+if git -C "$ROOT_DIR" symbolic-ref -q "$tag" >/dev/null; then
+  echo 'ERROR: symbolic release tags are not lightweight release identities' >&2; exit 1
 fi
-
-actual="$(make -s -C "${ROOT_DIR}" print-release-version)"
-if [ "${actual}" != "${expected}" ]; then
-  echo "ERROR: release version contract expected ${expected}, got ${actual}" >&2
-  exit 1
-fi
-
-echo "Lifecycle version contract passed: ${expected}"
+[[ $(git -C "$ROOT_DIR" cat-file -t "$tag") == commit &&
+   $(git -C "$ROOT_DIR" rev-parse "$tag") == $(git -C "$ROOT_DIR" rev-parse HEAD) ]] || {
+  echo 'ERROR: release tag must identify HEAD directly' >&2; exit 1;
+}
+echo "Final release identity: v$version ($(git -C "$ROOT_DIR" rev-parse --short HEAD))"

@@ -1,10 +1,16 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
+source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${SOFTLINE_DIST_DIR:-${ROOT_DIR}/dist}"
-VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
-TMP_DIR="$(mktemp -d)"
+VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
+mkdir -p "${ROOT_DIR}/build"
+TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/validate_luarocks.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 ROCKSPEC="${DIST_DIR}/softline-${VERSION}-1.rockspec"
@@ -27,6 +33,14 @@ scan_release_paths() {
   fi
   if grep -R -a -F "file://${HOME}" "${path}" >/dev/null 2>&1; then
     echo "ERROR: ${artifact} contains local file URL" >&2
+    exit 1
+  fi
+  if grep -R -a -F --include='*.rockspec' 'file://' "${path}" >/dev/null 2>&1; then
+    echo "ERROR: ${artifact} contains local file URL" >&2
+    exit 1
+  fi
+  if grep -R -a -E --include='*.rockspec' "url[[:space:]]*=[[:space:]]*['\"]/" "${path}" >/dev/null 2>&1; then
+    echo "ERROR: ${artifact} contains absolute source URL" >&2
     exit 1
   fi
   if grep -R -a -F "${ROOT_DIR}" "${path}" >/dev/null 2>&1; then

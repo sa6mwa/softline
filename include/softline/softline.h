@@ -661,6 +661,15 @@ struct sl {
    * an unfinished externally written line; otherwise known spacing remains.
    * A session retained by an active editor keeps its continuation. */
   int (*output_stream_begin)(sl_t *self);
+  /** Reconcile a settled resize before resuming synchronous producer writes.
+   * Call on the owner thread, outside a feed/callback producer. Repaint only
+   * owned prompt cells, preserving draft, cursor, queue, history, status,
+   * queued input and incremental producer parsing. No transcript is retained
+   * or replayed. A needed cursor report may wait up to 100 ms; failure returns
+   * SL_ERROR_IO, and the caller must not resume output assuming reconciliation.
+   * An open stream is required (otherwise SL_ERROR_INVALID). Redirected
+   * sessions are a no-op. Terminal modes are restored before return. */
+  int (*output_stream_reconcile)(sl_t *self);
   /** Forward exactly length bytes into the open session. Complete parsed
    * input is visible before return; a write boundary adds no newline or
    * document boundary. bytes may be NULL only when
@@ -683,7 +692,8 @@ struct sl {
    * after readline returns) uses a delta estimate. Earlier hard-ended ASCII
    * reflow and unknown terminal history can misplace continuation even after
    * resize settles. The active input loop observes resize before dispatching
-   * producer watches; no feed wait or transcript model repairs this fallback.
+   * producer watches. Between synchronous writes, use output_stream_reconcile()
+   * after resize settles and before feeding again; feeds never observe input.
    * Wrapping remains producer/terminal-owned. Width reflow of a Unicode/tab
    * line can misplace continuation, including CR tails; its tracked column is
    * retained and clamped only if offscreen. No grapheme buffering or
@@ -1122,6 +1132,16 @@ int sl_print_above(sl_t *self, sl_stream_callback_t callback, void *userdata);
  * continuation state. */
 int sl_output_stream_begin(sl_t *self);
 
+/** Observe a settled resize and repaint the retained prompt before producer
+ * continuation. Call on the owner thread outside producer feeds. An open
+ * session is required; invalid/reentrant calls return SL_ERROR_INVALID.
+ * Preserves draft/cursor, queue/history/status, queued input, terminal modes
+ * and split UTF-8/SGR parsing. Never retains or replays transcript bytes.
+ * A required cursor report waits at most 100 ms; failure returns SL_ERROR_IO.
+ * Do not resume output assuming reconciliation after failure. No-op off-TTY.
+ * Call before the first write after resize; feeds remain observation-free. */
+int sl_output_stream_reconcile(sl_t *self);
+
 /** Forward length bytes immediately to the live output session. Zero length
  * is a no-op; no newline or response boundary is implied. Valid bytes are
  * printable UTF-8, LF/CR/Tab, and ANSI SGR; malformed or unsupported control
@@ -1144,7 +1164,8 @@ int sl_output_stream_begin(sl_t *self);
  * readline returns, uses a delta estimate. Earlier hard-ended ASCII reflow or
  * unknown terminal history can misplace continuation even after resize settles.
  * The active input loop observes resize before dispatching producer watches.
- * No feed wait or transcript model is used to repair this fallback.
+ * Synchronous producers use sl_output_stream_reconcile() after resize settles
+ * and before the next feed. Feeds never observe input or model transcript text.
  * Width reflow of an unfinished Unicode/tab line
  * can misplace continuation, including CR tails; its tracked
  * column is retained and clamped only if offscreen. No grapheme buffering or

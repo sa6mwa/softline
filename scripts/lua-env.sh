@@ -1,7 +1,12 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SOFTLINE_GENERATED_PATH="$ROOT_DIR/build/local-lua/lua" source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 if [ ! -f "${ROOT_DIR}/build/local-lua/lua" ] || [ ! -x "${ROOT_DIR}/build/local-lua/lua" ]; then
   echo "ERROR: local Lua interpreter missing or not executable; run make lua-test first" >&2
   exit 1

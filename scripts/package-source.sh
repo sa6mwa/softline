@@ -1,13 +1,18 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
+source "${BASH_SOURCE[0]%/*}/require-workspace.sh" || exit $?
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DIST_DIR="${ROOT_DIR}/dist"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+DIST_DIR="${SOFTLINE_DIST_DIR:-${ROOT_DIR}/dist}"
 mkdir -p "${ROOT_DIR}/build"
 TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/package-source.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-VERSION="$(sh "${ROOT_DIR}/scripts/release_version.sh")"
+VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
 ARCHIVE="${DIST_DIR}/softline-${VERSION}.tar.gz"
 
 mkdir -p "${DIST_DIR}"
@@ -59,5 +64,6 @@ printf '%s\n' VERSION >> "${STAGE_DIR}/RELEASE_MANIFEST"
 printf '%s\n' RELEASE_MANIFEST >> "${STAGE_DIR}/RELEASE_MANIFEST"
 sort -u "${STAGE_DIR}/RELEASE_MANIFEST" -o "${STAGE_DIR}/RELEASE_MANIFEST"
 
-tar -czf "${ARCHIVE}" -C "${TMP_DIR}" "softline-${VERSION}"
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+  --mode='u+rwX,go+rX,go-w' -cf - -C "${TMP_DIR}" "softline-${VERSION}" | gzip -n > "${ARCHIVE}"
 echo "Source archive: ${ARCHIVE}"

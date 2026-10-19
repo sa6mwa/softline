@@ -1,17 +1,20 @@
 include_guard(GLOBAL)
+include("${CMAKE_CURRENT_LIST_DIR}/softline_workspace.cmake")
 
 # External dependencies share one verified-archive cache.  Each CMake root
 # resolves it exactly once; this helper only consumes that resolved contract.
 function(softline_configure_dependency_cache)
+  get_filename_component(owner "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+  softline_check_workspace("${owner}")
   if(DEFINED CPKT_DEPENDENCY_CACHE)
     set(_softline_dependency_cache "${CPKT_DEPENDENCY_CACHE}")
   elseif(DEFINED ENV{CPKT_DEPENDENCY_CACHE} AND
          NOT "$ENV{CPKT_DEPENDENCY_CACHE}" STREQUAL "")
     set(_softline_dependency_cache "$ENV{CPKT_DEPENDENCY_CACHE}")
   elseif(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
-    set(_softline_dependency_cache "$ENV{XDG_CACHE_HOME}/c.pkt.systems/deps")
+    set(_softline_dependency_cache "$ENV{XDG_CACHE_HOME}/cpkt/deps")
   elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-    set(_softline_dependency_cache "$ENV{HOME}/.cache/c.pkt.systems/deps")
+    set(_softline_dependency_cache "$ENV{HOME}/.cache/cpkt/deps")
   else()
     message(FATAL_ERROR
       "CPKT_DEPENDENCY_CACHE is unset and neither XDG_CACHE_HOME nor HOME is available")
@@ -36,6 +39,21 @@ function(softline_verified_archive component url digest name output)
   endif()
   file(MAKE_DIRECTORY "${CPKT_DEPENDENCY_CACHE}/locks" "${directory}")
   file(LOCK "${CPKT_DEPENDENCY_CACHE}/locks/${digest}.lock" GUARD FUNCTION TIMEOUT 600)
+  # Names and URLs are aliases: a digest hit must stay offline, including a
+  # fresh source-archive build requesting the same bytes under another name.
+  file(GLOB candidates LIST_DIRECTORIES FALSE "${directory}/*")
+  foreach(candidate IN LISTS candidates)
+    get_filename_component(candidate_name "${candidate}" NAME)
+    if(candidate_name MATCHES "^(download-|\\.)" OR
+       candidate_name MATCHES "\\.(tmp|part)-")
+      continue()
+    endif()
+    file(SHA256 "${candidate}" candidate_digest)
+    if(candidate_digest STREQUAL digest)
+      set(${output} "${candidate}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
   if(EXISTS "${archive}")
     file(SHA256 "${archive}" actual)
     if(actual STREQUAL digest)

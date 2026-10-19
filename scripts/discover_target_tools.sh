@@ -1,5 +1,9 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+case ${BASH_SOURCE[0]} in
+  */*) source "${BASH_SOURCE[0]%/*}/require-host-bash.sh" ;;
+  *) source ./require-host-bash.sh ;;
+esac || exit $?
+set -euo pipefail
 
 usage() {
   echo "usage: $0 <build-dir> <target-id>" >&2
@@ -31,12 +35,6 @@ is_executable_path() {
   [ -n "$1" ] && [ -x "$1" ]
 }
 
-command_path() {
-  if [ -n "$1" ]; then
-    command -v "$1" 2>/dev/null || true
-  fi
-}
-
 dirname_of() {
   case "$1" in
     */*) dirname "$1" ;;
@@ -58,7 +56,7 @@ derive_host_prefix() {
     *-cc) echo "${base%-cc}" ;;
     *-gcc) echo "${base%-gcc}" ;;
     *-clang) echo "${base%-clang}" ;;
-    *) echo "${CPKT_OSXCROSS_HOST:-arm64-apple-darwin25}" ;;
+    *) echo "${CPKT_TOOLCHAIN_PREFIX:-}" ;;
   esac
 }
 
@@ -84,12 +82,14 @@ find_tool() {
   compiler="$3"
   tool="$4"
   default_path="$5"
-  allow_path="$6"
-  path_tool=""
 
   if is_executable_path "${override}"; then
     echo "${override}"
     return 0
+  fi
+  if [ -n "${override}" ]; then
+    echo "ERROR: selected ${tool} is not executable: ${override}" >&2
+    return 1
   fi
   cache_value="$(cache_get "${cache_key}")"
   if is_executable_path "${cache_value}"; then
@@ -103,13 +103,6 @@ find_tool() {
   if is_executable_path "${default_path}"; then
     echo "${default_path}"
     return 0
-  fi
-  if [ "${allow_path}" = "1" ]; then
-    path_tool="$(command_path "${tool}")"
-    if [ -n "${path_tool}" ]; then
-      echo "${path_tool}"
-      return 0
-    fi
   fi
   echo ""
 }
@@ -130,54 +123,37 @@ DEFAULT_LINKER=""
 DEFAULT_READELF=""
 DEFAULT_STRIP=""
 DEFAULT_NM=""
-ALLOW_PATH_FALLBACK=0
+DEFAULT_OTOOL=""
+DEFAULT_INSTALL_NAME_TOOL=""
 
 case "${TARGET_OS}" in
-  linux)
-    lifecycle_env="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${TARGET_ID}" 2>/dev/null || true)"
-    if [ -n "${lifecycle_env}" ]; then
-      eval "${lifecycle_env}"
-      DEFAULT_CC="${CPKT_TOOLCHAIN_CC:-${CC:-}}"
-      DEFAULT_LINKER="${CPKT_TOOLCHAIN_LD:-${LD:-}}"
-      DEFAULT_READELF="${CPKT_TOOLCHAIN_READELF:-${READELF:-}}"
-      DEFAULT_STRIP="${CPKT_TOOLCHAIN_STRIP:-${STRIP:-}}"
-      DEFAULT_NM="${CPKT_TOOLCHAIN_NM:-${NM:-}}"
+  linux|darwin)
+    lifecycle_env="$("${ROOT_DIR}/scripts/cpkt-toolchains.sh" env "${TARGET_ID}")" || exit $?
+    eval "${lifecycle_env}"
+    DEFAULT_CC="${CPKT_TOOLCHAIN_CC:-${CC:-}}"
+    DEFAULT_LINKER="${CPKT_TOOLCHAIN_LD:-${LD:-}}"
+    DEFAULT_READELF="${CPKT_TOOLCHAIN_READELF:-${READELF:-}}"
+    DEFAULT_STRIP="${CPKT_TOOLCHAIN_STRIP:-${STRIP:-}}"
+    DEFAULT_NM="${CPKT_TOOLCHAIN_NM:-${NM:-}}"
+    if [ "${TARGET_OS}" = darwin ]; then
+      DEFAULT_READELF=""
+      DEFAULT_OTOOL="${CPKT_TOOLCHAIN_OTOOL:-}"
+      DEFAULT_INSTALL_NAME_TOOL="${CPKT_TOOLCHAIN_ROOT}/bin/${CPKT_TOOLCHAIN_PREFIX}-install_name_tool"
     fi
     ;;
-  darwin)
-    ALLOW_PATH_FALLBACK=1
-    ;;
+  *) echo "ERROR: unsupported target: ${TARGET_ID}" >&2; exit 2 ;;
 esac
 
 if [ -z "${CC_VALUE}" ]; then
   CC_VALUE="${DEFAULT_CC}"
 fi
 
-OSXCROSS_ROOT_VALUE="${OSXCROSS_ROOT:-${HOME}/.local/cross/osxcross}"
-OSXCROSS_HOST_VALUE="${CPKT_OSXCROSS_HOST:-arm64-apple-darwin25}"
-DEFAULT_OTOOL="${OSXCROSS_ROOT_VALUE}/bin/${OSXCROSS_HOST_VALUE}-otool"
-DEFAULT_INSTALL_NAME_TOOL="${OSXCROSS_ROOT_VALUE}/bin/${OSXCROSS_HOST_VALUE}-install_name_tool"
-DEFAULT_DARWIN_STRIP="${OSXCROSS_ROOT_VALUE}/bin/${OSXCROSS_HOST_VALUE}-strip"
-DEFAULT_DARWIN_LINKER="${OSXCROSS_ROOT_VALUE}/bin/${OSXCROSS_HOST_VALUE}-ld"
-
-case "${TARGET_OS}" in
-  linux) DEFAULT_LINKER_PATH="${DEFAULT_LINKER}" ;;
-  *) DEFAULT_LINKER_PATH="${DEFAULT_DARWIN_LINKER}" ;;
-esac
-
-LINKER_VALUE="$(find_tool "${SOFTLINE_LINKER:-}" CMAKE_LINKER "${CC_VALUE}" ld "${DEFAULT_LINKER_PATH}" "${ALLOW_PATH_FALLBACK}")"
-READELF_VALUE="$(find_tool "${SOFTLINE_READELF:-}" CMAKE_READELF "${CC_VALUE}" readelf "${DEFAULT_READELF}" "${ALLOW_PATH_FALLBACK}")"
-OTOOL_VALUE="$(find_tool "${SOFTLINE_OTOOL:-}" CPKT_OTOOL "${CC_VALUE}" otool "${DEFAULT_OTOOL}" "${ALLOW_PATH_FALLBACK}")"
-if [ -z "${OTOOL_VALUE}" ]; then
-  OTOOL_VALUE="$(find_tool "" CMAKE_OTOOL "${CC_VALUE}" otool "${DEFAULT_OTOOL}" "${ALLOW_PATH_FALLBACK}")"
-fi
-INSTALL_NAME_TOOL_VALUE="$(find_tool "${SOFTLINE_INSTALL_NAME_TOOL:-}" CMAKE_INSTALL_NAME_TOOL "${CC_VALUE}" install_name_tool "${DEFAULT_INSTALL_NAME_TOOL}" "${ALLOW_PATH_FALLBACK}")"
-case "${TARGET_OS}" in
-  linux) DEFAULT_STRIP_PATH="${DEFAULT_STRIP}" ;;
-  *) DEFAULT_STRIP_PATH="${DEFAULT_DARWIN_STRIP}" ;;
-esac
-STRIP_VALUE="$(find_tool "${SOFTLINE_STRIP:-}" CMAKE_STRIP "${CC_VALUE}" strip "${DEFAULT_STRIP_PATH}" "${ALLOW_PATH_FALLBACK}")"
-NM_VALUE="$(find_tool "${SOFTLINE_NM:-}" CMAKE_NM "${CC_VALUE}" nm "${DEFAULT_NM}" "${ALLOW_PATH_FALLBACK}")"
+LINKER_VALUE="$(find_tool "${SOFTLINE_LINKER:-}" CMAKE_LINKER "${CC_VALUE}" ld "${DEFAULT_LINKER}")"
+READELF_VALUE="$(find_tool "${SOFTLINE_READELF:-}" CMAKE_READELF "${CC_VALUE}" readelf "${DEFAULT_READELF}")"
+OTOOL_VALUE="$(find_tool "${SOFTLINE_OTOOL:-}" CMAKE_OTOOL "${CC_VALUE}" otool "${DEFAULT_OTOOL}")"
+INSTALL_NAME_TOOL_VALUE="$(find_tool "${SOFTLINE_INSTALL_NAME_TOOL:-}" CMAKE_INSTALL_NAME_TOOL "${CC_VALUE}" install_name_tool "${DEFAULT_INSTALL_NAME_TOOL}")"
+STRIP_VALUE="$(find_tool "${SOFTLINE_STRIP:-}" CMAKE_STRIP "${CC_VALUE}" strip "${DEFAULT_STRIP}")"
+NM_VALUE="$(find_tool "${SOFTLINE_NM:-}" CMAKE_NM "${CC_VALUE}" nm "${DEFAULT_NM}")"
 
 print_assignment TARGET_ID "${TARGET_ID}"
 print_assignment TARGET_OS "${TARGET_OS}"

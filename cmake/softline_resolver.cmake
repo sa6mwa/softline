@@ -9,13 +9,16 @@ set(_sl_cares_source "${CMAKE_CURRENT_SOURCE_DIR}/vendor/c-ares")
 set(_sl_cares_binary "${CMAKE_CURRENT_BINARY_DIR}/private-cares")
 file(MAKE_DIRECTORY "${_sl_cares_binary}")
 set(_sl_cares_namespace "${_sl_cares_binary}/softline_cares_namespace.h")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/cares-namespace.py"
-  "${_sl_cares_source}/provenance.json")
-execute_process(COMMAND "${Python3_EXECUTABLE}"
-  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/cares-namespace.py"
-  "${_sl_cares_source}" "${_sl_cares_namespace}"
-  COMMAND_ERROR_IS_FATAL ANY)
+file(GLOB_RECURSE _sl_cares_namespace_inputs CONFIGURE_DEPENDS
+  "${_sl_cares_source}/*.c" "${_sl_cares_source}/*.h")
+add_custom_command(OUTPUT "${_sl_cares_namespace}"
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/cares-namespace.py"
+    "${_sl_cares_source}" "${_sl_cares_namespace}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/cares-namespace.py"
+    "${_sl_cares_source}/provenance.json" ${_sl_cares_namespace_inputs}
+  VERBATIM)
+add_custom_target(sl_cares_namespace DEPENDS "${_sl_cares_namespace}")
+add_dependencies(sl_lib_obj sl_cares_namespace)
 
 function(softline_configure_cares)
   # Each paste owns its channel and drives its sockets; no event threads or
@@ -35,6 +38,7 @@ function(softline_configure_cares)
   get_target_property(_sources c-ares SOURCES)
   list(TRANSFORM _sources PREPEND "${_sl_cares_source}/src/lib/")
   add_library(sl_cares_obj OBJECT ${_sources})
+  add_dependencies(sl_cares_obj sl_cares_namespace)
   # Retain upstream's generic RR union accessor. GCC 15 at -O3 warns about
   # other union members despite its key/type checks selecting the 16-byte
   # IPv6 member. Upstream compilation stays outside the project warning gate;
