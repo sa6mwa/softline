@@ -35,6 +35,7 @@ struct api {
   long (*char_height)(void *);
   long (*columns)(void *);
   long (*rows)(void *);
+  const char *(*title)(void *);
   void *(*adjustment)(void *);
   double (*adjustment_value)(void *);
   void (*size)(void *, long, long);
@@ -57,15 +58,23 @@ static double now(void) {
   return (double)t.tv_sec + (double)t.tv_nsec / 1000000000.0;
 }
 
-static void pump(void) {
+/* Polling callers own their readiness condition and deadline. One event-loop
+ * turn must not impose a 30 ms settling delay on every successful check. */
+static void pump_once(void) {
   struct timespec nap;
-  double deadline = now() + 0.03;
+  int dispatched = 0;
+  while (v.iterate(NULL, 0))
+    dispatched = 1;
   nap.tv_sec = 0;
   nap.tv_nsec = 1000000;
-  do {
-    while (v.iterate(NULL, 0)) {
-    }
+  if (!dispatched)
     nanosleep(&nap, NULL);
+}
+
+static void pump(void) {
+  double deadline = now() + 0.03;
+  do {
+    pump_once();
   } while (now() < deadline);
 }
 
@@ -108,6 +117,7 @@ static int load(void) {
   BIND(vte, char_height, "vte_terminal_get_char_height");
   BIND(vte, columns, "vte_terminal_get_column_count");
   BIND(vte, rows, "vte_terminal_get_row_count");
+  BIND(vte, title, "vte_terminal_get_window_title");
   BIND(vte, size, "vte_terminal_set_size");
   BIND(vte, feed, "vte_terminal_feed");
   BIND(vte, send, "vte_terminal_feed_child");
@@ -139,7 +149,7 @@ static struct screen create(void) {
   pump();
   return s;
 }
-static void resize(struct screen *s, int columns, int rows) {
+static void resize_geometry(struct screen *s, int columns, int rows) {
   int pixels = v.width(s->terminal) + (columns - (int)v.columns(s->terminal)) *
                                           (int)v.char_width(s->terminal);
   double deadline = now() + 2;
@@ -148,13 +158,16 @@ static void resize(struct screen *s, int columns, int rows) {
   v.size(s->terminal, columns, rows);
   v.resize(s->window, pixels, height);
   do {
-    pump();
+    pump_once();
   } while ((v.columns(s->terminal) != columns || v.rows(s->terminal) != rows) &&
            now() < deadline);
   if (v.columns(s->terminal) != columns || v.rows(s->terminal) != rows) {
     fprintf(stderr, "VTE resize did not settle\n");
     ++errors;
   }
+}
+static void resize(struct screen *s, int columns, int rows) {
+  resize_geometry(s, columns, rows);
   pump();
 }
 static struct snapshot snapshot(struct screen *s, int handoff) {

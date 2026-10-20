@@ -172,6 +172,95 @@ ordinary readline and native chat sessions. The panel is not built with `print_a
 queue entries must be removable and must reflow with the active editor.
 Application key bindings retain precedence over the Tab and Alt-E defaults.
 
+Each entry has a nonzero opaque ID, allocated monotonically per handle and
+never reused, and an approval hold independent of QUEUED/STEER intent. C
+`sl_prompt_queue_append()` and `sl_prompt_queue_insert()` take a hold flag and
+optional ID output. Lua `queue_append`/`queue_insert` take an optional boolean
+hold and return the ID. `sl_prompt_queue_info()` / Lua `queue_info()` expose
+`id`, `mode`, and `held`. Held entries appear in the approval panel/count;
+ordinary Q/S previews remain visible and use their own preview limit.
+
+Automatic delivery skips held entries while preserving FIFO order among
+eligible ordinary entries. Held entries cannot be taken or promoted. The host
+calls `sl_prompt_queue_approve()` or `sl_prompt_queue_reject()` by ID (Lua:
+`queue_approve` / `queue_reject`); approval releases only the hold and respects
+busy, manual delivery and steering. Approval decisions are FIFO by arrival,
+including entries created with insert/append and an entry being edited.
+Out-of-order approve/reject calls fail with `SL_ERROR_INVALID` without mutation.
+Rejection removes only the selected entry. Conversation-wide auto-approval
+releases all waiting holds as described below.
+
+Alt-E retains the entry's identity, mode and hold while editing and reserves
+its queue slot. `sl_prompt_queue_draft_info()` / `queue_draft_info()` expose
+that origin. Requeueing or submitting a held edit retains the same ID, hold and
+arrival position for delivery, including when auto-approval releases waiting holds;
+editing is never implicit approval. Empty submission, cancellation, EOF or read
+failure restores the original entry, discarding edits. The host may approve or
+reject an active edit by ID; rejection clears its draft. Clearing the queue preserves an active
+edit; disabling it during an edit fails. A held edit is visibly marked.
+
+Hosts inject messages through `sl_inject_queued_prompt()` or
+`sl_inject_steer_prompt()` (Lua: `inject_queued_prompt`, `inject_steer_prompt`).
+Both return stable identities and use the same conversation-wide approval
+policy. Queueing must be enabled; calls run on the editor owner thread,
+including from descriptor-watch callbacks. Queued injections use ordinary
+FIFO delivery. Steering injections retain STEER intent for the host to take
+at a safe response seam. Approval never changes the selected destination.
+
+`sl_set_auto_approval()` / Lua `set_auto_approval()` sets automatic approval
+for the entire conversation's Softline instance. It is off initially.
+Enabling it immediately approves **all** waiting entries, including an active
+edit and explicit holds created through queue insert/append, and future
+injections bypass approval. It preserves text, identity, ordering, busy state,
+delivery mode and steering intent, and does not submit an active draft.
+Disabling it does not revoke approvals. `sl_get_auto_approval()` / Lua
+`get_auto_approval()` reads the setting, which survives queue clear/disable.
+
+Softline renders and handles inline approval controls. The oldest held entry
+is offered only when the input buffer is empty and pending terminal input has
+been consumed; paste, history search and an active queued edit defer it.
+A nonempty draft defers a new question and shows a passive pending count.
+Once offered, a question stays visible when typing resumes; the input keeps
+its contents, cursor and keyboard focus. Sending or clearing a draft permits
+a new question at the next empty input boundary. Editing, requeueing, cancellation
+and reopening input cannot move another approval ahead of the first. Submitting
+an empty queued edit restores the original entry and releases the editor for
+approval review; it never approves or delivers that entry. Later
+held messages remain hidden except in the waiting count until it is decided.
+The question shows the message and its queued/steering route:
+Alt-A explicitly focuses the approval, inverting the foreground/background of
+its compact heading and moving the cursor onto its approval controls.
+Alt-Y approves and Alt-N rejects
+(case-insensitive), only while focused. Enter never answers an approval;
+arrow keys retain ordinary editor/history behavior. Escape or Alt-A returns
+focus to the ordinary input without answering. Alt-E edits the full offered
+entry with either focus state,
+even if newer entries exist. Approval headings use `A ` in the two-column
+gutter; normal text and wrapped continuations start with two spaces.
+Editing/submitting/requeueing retains
+its hold until explicit approval or auto-approval. Other keys return to normal
+editing; plain Y/N are ordinary text even when focused. Focused Alt-Y/Alt-N,
+focus dismissal and offered-entry Alt-E take precedence over application
+bindings; other bindings keep their usual behavior.
+Non-TTY handles use the same holds and APIs without interactive
+approval controls. Ordinary typed prompts never acquire approval holds.
+
+The approval area uses an `A ` heading combining the count, controls and
+Queued/Steering route, followed by at most three indented message rows.
+The singular count reads `1 approval`; plural counts read `N awaiting approval`.
+Headings and message text wrap at word boundaries to the terminal width;
+tokens wider than a row wrap at grapheme boundaries. Message previews count
+wrapped rows toward the three-row limit and append `...` to the final row when
+text is omitted, keeping whole words where they fit beside the ellipsis.
+Only presentation is truncated: editing and delivery retain
+the full original text. Page Up/Down keep their ordinary binding behavior.
+
+`sl_last_prompt_id()` / Lua `last_prompt_id()` reports the ID delivered by the
+last read/take, including directly submitted queued edits. Ordinary direct
+input and unsuccessful reads/takes report zero. Lua `next_prompt()` returns
+`line, source, id`, and `queue_take()` returns `text, id`. This receiver/API
+extension uses ABI 2, one increment from released v0.11.0's ABI 1.
+
 ### Prompt Themes And Status Lines
 
 The renderer owns prompt presentation so the marker, typed text, queue panel,
@@ -411,10 +500,11 @@ Current build surfaces include:
 
 - CMake presets
 - static and shared library builds
-- shared-library ABI/SOVERSION policy through `SOFTLINE_ABI_VERSION`, currently
-  `1`, decoupled from the project release version. Adding the public receiver
-  method `output_stream_reconcile` breaks the exposed C layout and advances
-  exactly once from released v0.10.0's ABI 0. Consumers must rebuild.
+- shared-library ABI/SOVERSION policy through the source-owned
+  `SOFTLINE_ABI_VERSION`, currently `2`, decoupled from the project release
+  version and not a CMake cache option. Queue approval methods change the
+  exposed C receiver layout and existing insertion signatures, advancing
+  exactly once from released v0.11.0's ABI 1. Consumers must rebuild.
 - installed CMake package exports with canonical target `softline::softline`
 - installed pkg-config metadata
 - Lua 5.5 facade packaged as LuaRocks source artifacts

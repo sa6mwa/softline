@@ -1,0 +1,32 @@
+local softline = require("softline")
+local sl = assert(softline.new({prompt_queue = true}))
+local id = assert(sl:inject_queued_prompt("suggestion"))
+local requeued = false
+assert(sl:set_queue_delivery("manual"))
+assert(sl:output_stream_begin())
+assert(sl:set_idle_callback(function()
+  local draft = sl:queue_draft_info()
+  if draft then
+    assert(draft.id == id and draft.held, "Alt-E lost held identity")
+  elseif sl:queue_count() == 1 and sl:queue_peek(1) == "suggestion-edited" then
+    local info = assert(sl:queue_info(1))
+    assert(info.id == id and info.held, "requeue lost held identity")
+    assert(sl:set_queue_delivery("auto"))
+    local steer = assert(sl:inject_steer_prompt("steering suggestion"))
+    assert(sl:queue_info(2).held)
+    assert(sl:set_auto_approval(true))
+    assert(not sl:queue_info(1).held and not sl:queue_info(2).held)
+    assert(sl:queue_info(2).mode == softline.QUEUE_MODE_STEER)
+    local text, taken_id = sl:queue_take(2)
+    assert(text == "steering suggestion" and taken_id == steer)
+    requeued = true
+  end
+end))
+local text, source, delivered_id = sl:next_prompt("p> ")
+assert(requeued and text == "suggestion-edited")
+assert(source == softline.PROMPT_SOURCE_QUEUED and delivered_id == id)
+assert(sl:last_prompt_id() == id and sl:queue_count() == 0)
+assert(sl:set_idle_callback(nil))
+assert(sl:output_stream_end())
+sl:close()
+print("lua queue approval passed")

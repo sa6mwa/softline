@@ -593,17 +593,19 @@ static void test_prompt_queue_control_api(void) {
   TEST("prompt queue control API manages bounded FIFO state");
   sl = sl_create();
   ASSERT_TRUE(sl != NULL, "create failed");
-  ASSERT_TRUE(sl_prompt_queue_append(sl, "disabled") == SL_ERROR_INVALID,
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "disabled", 0, NULL) ==
+                  SL_ERROR_INVALID,
               "disabled queue accepted mutation");
   ASSERT_TRUE(sl_set_prompt_queue(sl, 1, 3, 2) == SL_OK, "queue enable failed");
   ASSERT_TRUE(sl_prompt_queue_count(sl) == 0, "initial queue count mismatch");
   ASSERT_TRUE(sl_prompt_queue_capacity(sl) == 3, "queue capacity mismatch");
-  ASSERT_TRUE(sl_prompt_queue_append(sl, "one") == SL_OK, "append one failed");
-  ASSERT_TRUE(sl_prompt_queue_append(sl, "three") == SL_OK,
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "one", 0, NULL) == SL_OK,
+              "append one failed");
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "three", 0, NULL) == SL_OK,
               "append three failed");
-  ASSERT_TRUE(sl_prompt_queue_insert(sl, 1, "two") == SL_OK,
+  ASSERT_TRUE(sl_prompt_queue_insert(sl, 1, "two", 0, NULL) == SL_OK,
               "insert two failed");
-  ASSERT_TRUE(sl_prompt_queue_append(sl, "full") == SL_ERROR_FULL,
+  ASSERT_TRUE(sl_prompt_queue_append(sl, "full", 0, NULL) == SL_ERROR_FULL,
               "full queue did not report SL_ERROR_FULL");
   text = NULL;
   ASSERT_TRUE(sl_prompt_queue_peek(sl, 1, &text) == SL_OK, "peek two failed");
@@ -632,7 +634,7 @@ static void test_prompt_queue_control_api(void) {
   ASSERT_TRUE(strcmp(text, "one") == 0, "take FIFO entry mismatch");
   sl_free_string(sl, text);
   ASSERT_TRUE(sl_prompt_queue_count(sl) == 2, "take count mismatch");
-  ASSERT_TRUE(sl_prompt_queue_insert(sl, 9, "bad") == SL_ERROR_INVALID,
+  ASSERT_TRUE(sl_prompt_queue_insert(sl, 9, "bad", 0, NULL) == SL_ERROR_INVALID,
               "invalid insertion index accepted");
   ASSERT_TRUE(sl_prompt_queue_replace(sl, 0, "") == SL_ERROR_INVALID,
               "empty replacement accepted");
@@ -4362,13 +4364,13 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
       SL_PROMPT_THEME_MONOCHROME, SL_PROMPT_THEME_MONOGREEN,
       SL_PROMPT_THEME_OUTRUN,     SL_PROMPT_THEME_SYNTHWAVE};
   static const char *const control_styles[] = {
-      "\033[38;2;98;114;164mQ ",  "\033[38;2;131;165;152mQ ",
-      "\033[38;2;125;110;72mQ ",  "\033[38;2;42;107;58mQ ",
-      "\033[38;2;122;107;143mQ ", "\033[38;2;130;120;156mQ "};
+      "\033[38;2;255;184;108mQ ", "\033[38;2;211;134;155mQ ",
+      "\033[38;2;224;184;90mQ ",  "\033[38;2;51;255;51mQ ",
+      "\033[38;2;255;42;109mQ ",  "\033[38;2;185;103;255mQ "};
   static const char *const text_styles[] = {
-      "\033[38;2;195;183;201mfirst", "\033[38;2;213;196;161mfirst",
-      "\033[38;2;169;152;101mfirst", "\033[38;2;95;158;111mfirst",
-      "\033[38;2;184;169;201mfirst", "\033[38;2;179;169;192mfirst"};
+      "\033[38;2;255;184;108mfirst", "\033[38;2;211;134;155mfirst",
+      "\033[38;2;224;184;90mfirst",  "\033[38;2;51;255;51mfirst",
+      "\033[38;2;255;42;109mfirst",  "\033[38;2;185;103;255mfirst"};
   char terminal[16384];
   char result[512];
   int status;
@@ -4397,8 +4399,8 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "accent prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "accent prompt queue dispatch mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;6;182;212mQ ") &&
-                  contains_bytes(terminal, "\033[38;2;148;163;184mfirst") &&
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;244;114;182mQ ") &&
+                  contains_bytes(terminal, "\033[38;2;244;114;182mfirst") &&
                   contains_bytes(terminal, "\033[1;36mchat> \033[0m"),
               "accent full prompt treatment missing");
 
@@ -4411,8 +4413,8 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "riced prompt queue dispatch mismatch");
   ASSERT_TRUE(
-      contains_bytes(terminal, "\033[38;2;255;126;219mQ ") &&
-          contains_bytes(terminal, "\033[38;2;172;164;184mfirst") &&
+      contains_bytes(terminal, "\033[38;2;255;139;139mQ ") &&
+          contains_bytes(terminal, "\033[38;2;255;139;139mfirst") &&
           contains_bytes(terminal, "\033[1;38;2;255;255;255mchat> \033[0m"),
       "riced full prompt treatment missing");
   ASSERT_TRUE(run_pty_prompt_queue_case(
@@ -4423,8 +4425,8 @@ static void test_prompt_queue_dispatches_fifo_with_themes(void) {
               "default prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "default prompt queue dispatch mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[90mQ ") &&
-                  contains_bytes(terminal, "\033[90mfirst") &&
+  ASSERT_TRUE(contains_bytes(terminal, "\033[34mQ ") &&
+                  contains_bytes(terminal, "\033[34mfirst") &&
                   contains_bytes(terminal, "\033[1;97mchat> \033[0m") &&
                   !contains_bytes(terminal, "\033[38;2;"),
               "default ANSI queue treatment missing");
@@ -4458,7 +4460,7 @@ static void test_prompt_queue_dispatches_fifo_in_normal_scrollback(void) {
               "normal prompt queue child failed");
   ASSERT_TRUE(strcmp(result, "1:second|2:first") == 0,
               "normal prompt queue dispatch mismatch");
-  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;6;182;212mQ ") &&
+  ASSERT_TRUE(contains_bytes(terminal, "\033[38;2;244;114;182mQ ") &&
                   contains_bytes(terminal, "\033[1;36mchat> \033[0m"),
               "normal prompt queue preview missing");
   PASS();
@@ -7500,7 +7502,7 @@ static void test_queued_turns_cancellation_pauses_auto_delivery(void) {
         sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
             SL_OK ||
         sl_set_status_busy(sl, 1) != SL_OK ||
-        sl_prompt_queue_append(sl, "queued") != SL_OK)
+        sl_prompt_queue_append(sl, "queued", 0, NULL) != SL_OK)
       _exit(2);
     idle_state.calls = 0;
     idle_state.text = NULL;
@@ -7642,7 +7644,7 @@ static void test_watch_prints_while_editing(void) {
     sl = sl_create_with_config(&cfg);
     if (!sl || sl_set_statusline(sl, 1, 0) != SL_OK ||
         sl_set_status_element(sl, 0, "waiting") != SL_OK ||
-        sl_prompt_queue_append(sl, "queued") != SL_OK)
+        sl_prompt_queue_append(sl, "queued", 0, NULL) != SL_OK)
       _exit(2);
     state.fd = wake_pipe[0];
     state.calls = 0;
@@ -7963,7 +7965,7 @@ static void test_queued_turns_auto_dispatches_on_watch(void) {
         sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
             SL_OK ||
         sl_set_status_busy(sl, 1) != SL_OK ||
-        sl_prompt_queue_append(sl, "queued") != SL_OK)
+        sl_prompt_queue_append(sl, "queued", 0, NULL) != SL_OK)
       _exit(2);
     watch_id = 0;
     if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ,
@@ -8058,7 +8060,7 @@ static void test_queued_turns_preserve_alt_enter_during_completion(void) {
         sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
             SL_OK ||
         sl_set_status_busy(sl, 1) != SL_OK ||
-        sl_prompt_queue_append(sl, "queued") != SL_OK)
+        sl_prompt_queue_append(sl, "queued", 0, NULL) != SL_OK)
       _exit(2);
     watch_id = 0;
     if (sl_watch_add(sl, wake_pipe[0], SL_WATCH_READ,
@@ -8169,7 +8171,7 @@ test_queued_turns_prioritize_input_arriving_during_completion(void) {
         sl_set_prompt_queue_profile(sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) !=
             SL_OK ||
         sl_set_status_busy(sl, 1) != SL_OK ||
-        sl_prompt_queue_append(sl, "queued") != SL_OK)
+        sl_prompt_queue_append(sl, "queued", 0, NULL) != SL_OK)
       _exit(2);
     race_state.wake_fd = wake_pipe[0];
     race_state.entered_fd = entered_pipe[1];

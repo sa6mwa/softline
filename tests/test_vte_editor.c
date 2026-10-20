@@ -3,7 +3,22 @@
 struct editor {
   struct screen screen;
   pid_t child;
+  unsigned long serial;
 };
+static int rendered(struct editor *e) {
+  char expected[64];
+  double deadline = now() + 3;
+  snprintf(expected, sizeof(expected), "rendered-%lu", ++e->serial);
+  v.send(e->screen.terminal, "\033m", 2);
+  do {
+    const char *title = v.title(e->screen.terminal);
+    if (title && !strcmp(title, expected))
+      return 0;
+    pump_once();
+  } while (now() < deadline);
+  fprintf(stderr, "Editor render barrier timed out: %s\n", expected);
+  return 1;
+}
 static void stop_editor(struct editor *e) {
   int status;
   if (e->child > 0) {
@@ -11,7 +26,7 @@ static void stop_editor(struct editor *e) {
     waitpid(e->child, &status, 0);
   }
   v.destroy(e->screen.window);
-  pump();
+  pump_once();
 }
 static int wait_marker(struct editor *e, const char *marker) {
   double deadline = now() + 3;
@@ -19,7 +34,7 @@ static int wait_marker(struct editor *e, const char *marker) {
     struct snapshot current = transcript(&e->screen);
     if (strstr(current.text, marker))
       return 0;
-    pump();
+    pump_once();
   } while (now() < deadline);
   fprintf(stderr, "Readline marker missing: %s\n", marker);
   return 1;
@@ -29,12 +44,12 @@ static int start_editor(struct editor *e, const char *example, int width,
                         const char *position) {
   struct winsize size;
   void *pty;
-  int master, slave, index;
+  int master, slave;
   e->child = -1;
+  e->serial = 0;
   e->screen = create();
   resize(&e->screen, width, 8);
   v.feed(e->screen.terminal, prior, (long)strlen(prior));
-  pump();
   memset(&size, 0, sizeof(size));
   size.ws_col = (unsigned short)width;
   size.ws_row = 8;
@@ -65,9 +80,7 @@ static int start_editor(struct editor *e, const char *example, int width,
     return 1;
   v.send(e->screen.terminal, source, (long)strlen(source));
   v.send(e->screen.terminal, position, (long)strlen(position));
-  for (index = 0; index < 10; ++index)
-    pump();
-  return 0;
+  return rendered(e);
 }
 static int prompt(struct editor *e, struct snapshot *result) {
   struct snapshot body;
@@ -103,9 +116,9 @@ static int case_editor(const char *example, const char *source,
     goto cleanup;
   for (stage = 0; stage < 3; ++stage) {
     width = widths[stage];
-    resize(&actual.screen, width, 8);
-    for (index = 0; index < 10; ++index)
-      pump();
+    resize_geometry(&actual.screen, width, 8);
+    if (rendered(&actual))
+      goto cleanup;
     current = transcript(&actual.screen);
     keep_used = 0;
     for (line = current.text; *line; line = end + 1) {
@@ -147,8 +160,8 @@ static int case_editor(const char *example, const char *source,
     goto cleanup;
   /* Wait for the next editable prompt, then concatenate only submission rows.
    */
-  for (index = 0; index < 10; ++index)
-    pump();
+  if (rendered(&actual))
+    goto cleanup;
   current = transcript(&actual.screen);
   begin = strstr(current.text, "submitted: ");
   if (!begin)

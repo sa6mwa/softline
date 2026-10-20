@@ -110,6 +110,30 @@ Currently implemented:
   palette. The chat examples load keyed history at startup and save accepted
   nonempty prompts immediately, including queued and steered drafts.
   `Up`/`Down` and `Ctrl-P`/`Ctrl-N` recall history while Alt-E edits queued drafts.
+- Queued and steering injections share conversation-wide automatic approval,
+  including already waiting messages. Softline presents approval controls when
+  input is empty, preserving ordinary drafts and stable identities through edits.
+  C insertion/append APIs take a `held` flag and optional stable ID output;
+  Lua insertion/append return the ID and accept an optional hold boolean.
+  New approval prompts wait for empty input; an already displayed approval
+  remains visible while typing. Q/S previews remain visible alongside it.
+  The chat example keeps its thinking/reasoning row below the approval panel,
+  blank while idle. Normal queue previews appear above approvals.
+  Approval decisions follow arrival order across editing and requeue; later
+  requests appear only in the waiting count until the first is decided.
+  At an empty prompt,
+  Alt-A visibly focuses the approval; only then do Alt-Y/Alt-N approve or reject.
+  Alt-E edits with either focus state, and Escape returns to typing.
+  Approval prompts use `A ` in the two-column gutter; normal text is indented
+  with two spaces. Hosts can also approve or reject by ID.
+  Count, controls and route share one heading above the message, using
+  `1 approval` or `N awaiting approval`.
+  The message preview wraps at word boundaries into at most three lines,
+  ending in `...` when truncated; editing and delivery retain the full text.
+  Alt-E, editing and requeue preserve identity and hold. Submitting a held
+  edit requeues it until explicitly approved. Submitting an empty queued edit
+  restores its original text for review. See the [queue contract](docs/softline-spec.md#prompt-queue)
+  and [Lua queue API](lua/README.md).
 - Interactive handles can watch application-owned file descriptors. Softline
   waits for terminal and watch readiness together, then invokes the watch
   callback on the editor owner thread so streamed output can redraw above a
@@ -136,7 +160,7 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` is the C streaming Markdown demo. It links pinned libmdf 0.14.0
+`example_chat` is the C streaming Markdown demo. It links pinned libmdf 0.15.0
 only as an example dependency: libsoftline and its installed package remain
 independent of libmdf. The composer gives libmdf a two-column left margin and its default
 ANSI palette for terminal output (escape-free when redirected), updating both
@@ -204,6 +228,20 @@ make run-chat-without-delay-riced
 ```
 
 The chat convenience targets build the C example before launching it.
+They also enable simulated approval requests, alternating queued and steering
+messages at random 10-20 second intervals, with at most four waiting queue entries.
+The first request is short; later requests randomly mix short text, multiple
+lines, long paragraphs and longer checklists.
+Use `/approve` to toggle automatic approval, or `/approve on` and `/approve off`
+to set it explicitly. Enabling approves all waiting requests and future injections;
+disabling restores approval for subsequent requests. Ordinary typed
+prompts stay unheld. Set `CHAT_APPROVAL_DEMO=0` to disable the simulation. Direct
+execution defaults to no simulation; `SOFTLINE_CHAT_APPROVAL_DEMO=1` enables it,
+`SOFTLINE_CHAT_APPROVAL_MS=...` selects a fixed interval for testing, and
+`SOFTLINE_CHAT_APPROVAL_SEED=...` makes the random sequence reproducible.
+Alt-A focuses approval controls by inverting the heading; the cursor stays in
+the input prompt. While focused, Alt-Y approves, Alt-N rejects, Alt-E edits,
+and Esc or Alt-A returns to ordinary input.
 The two `without-delay` targets set `SOFTLINE_CHAT_CHAR_MS=0`, removing the
 example producer's simulated typing delay, with default and riced themes.
 `run-chat` uses Gruvbox by default; pass `THEME=...` to override it. Both C
@@ -407,8 +445,10 @@ entries exceed the configured preview count. Alt-E removes the newest queued
 entry and restores it to the editor. Explicit key bindings continue to override
 these defaults. Prompt appearance is renderer-owned so it remains safe with
 layout: `default` uses only standard ANSI colours: a bold bright-white marker,
-normal terminal-colour input, subdued dark-gray queue text and separators,
-standard-colour status elements, and red/green busy markers. `plain` keeps the
+normal terminal-colour input, blue queue and approval text, dark-gray separators,
+standard-colour status elements, and red/green busy markers. Queue and approval
+labels and text use each theme's fourth status-element colour; approval focus
+retains its inverted heading. `plain` keeps the
 editor and queue uncoloured while quoted prompts and status messages use
 neutral ANSI styling. `accent`, Dracula, Gruvbox, monochrome, monogreen,
 Outrun, Riced, and Synthwave use their embedded palettes. The selected theme
@@ -421,7 +461,13 @@ palettes.
 
 The queue remains renderer-owned, but an embedding application can inspect and
 mutate it without synthetic terminal input or a parallel queue. Queue indexes
-are oldest-first and returned strings are released with `sl_free_string()`.
+follow delivery order and returned strings are released with `sl_free_string()`.
+Editing reserves the entry's position as well as its capacity. Cancellation,
+empty submission and requeue restore it there, preserving identity, mode and
+approval hold. Insertions and removals before that position move the reservation;
+an insertion exactly at it follows the edited entry, as do new appends. Clearing
+the visible queue retains the edit at its front. Approval decisions still follow
+arrival identity, independently of explicit queue positions.
 
 ```c
 sl->set_prompt_queue(sl, 1, 64, 3);
@@ -597,10 +643,14 @@ the caller's normal chat history. These test stores remain available for
 diagnosis until `make clean`.
 
 Every project-owned C target is compiled as C89 with POSIX terminal APIs.
-Shared builds use `SOFTLINE_ABI_VERSION=1` for SONAME/SOVERSION. The public
-receiver layout gains `output_stream_reconcile`; rebuild consumers against the
-new header/library pair. ABI 1 advances exactly once from released v0.10.0's
-ABI 0, independently of the project release version.
+Shared builds use `SOFTLINE_ABI_VERSION=2` for SONAME/SOVERSION. Per-entry queue
+approval and identity methods extend the public receiver layout, and queue
+insertion now takes a hold flag and optional identity output. Rebuild consumers
+against the new header/library pair. ABI 2 advances exactly once from released
+v0.11.0's ABI 1, independently of the project release version.
+The ABI is fixed by the source, not a CMake option. Reconfiguring an existing
+build discards any obsolete cached ABI value before generating library names
+and installed metadata.
 
 Builds require no installed cpkt CLI, cpkt SDK or cpkt checkout. The standalone
 lifecycle helper scripts are vendored here; their `cpkt-*` filenames and shared

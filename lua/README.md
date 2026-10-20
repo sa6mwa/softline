@@ -68,7 +68,8 @@ live scroll regions, status lines, and spinners are off; the theme is
 - While terminal raw mode is owned, kernel tab expansion (`TAB3`/`OXTABS`) is
   disabled so the terminal handles tabs. OPOST/ONLCR and other output flags are
   preserved; original flags are restored on release.
-- `sl:next_prompt([prompt])` returns `line, source`. Automatic queue delivery
+- `sl:next_prompt([prompt])` returns `line, source, id`. The ID is zero for a
+  direct draft without queued origin. Automatic queue delivery
   dispatches FIFO entries before opening an editor; manual delivery retains
   them for explicit take or Alt-Enter promotion. `source` is
   `PROMPT_SOURCE_QUEUED`, `PROMPT_SOURCE_DIRECT`, or
@@ -135,10 +136,60 @@ live scroll regions, status lines, and spinners are off; the theme is
   Alt-E to edit the newest queued entry. Disabling the queue clears it;
   reducing `max_entries` below the current queue length fails.
 - `sl:queue_count()` and `sl:queue_capacity()` return the queue state.
-- `sl:queue_peek(index)`, `sl:queue_insert(index, text)`,
-  `sl:queue_append(text)`, `sl:queue_replace(index, text)`, and
+- `sl:inject_queued_prompt(text)` and `sl:inject_steer_prompt(text)` are the
+  host injection calls, returning a stable entry ID. Both require an enabled
+  queue and hold the message unless automatic approval is enabled. Approval
+  preserves queued versus steering delivery; the host takes approved steering
+  entries at a safe seam. Call on the editor owner thread, including from a
+  watch callback.
+- `sl:set_auto_approval(enabled)` takes a boolean for the entire conversation's
+  Softline instance, initially false. Enabling approves every waiting entry
+  (including edited entries and explicit queue holds) and future injections;
+  disabling affects future approval requests without revoking approvals.
+  The setting survives queue clear/disable. `sl:get_auto_approval()` reads it.
+  Softline presents an inline message above the input only after the
+  input buffer and pending terminal input are empty. Drafts, paste and history
+  search defer new questions, leaving a passive pending count. An already
+  displayed question remains visible when typing resumes; Q/S previews stay
+  visible alongside it. Approval decisions follow FIFO arrival order through
+  editing, requeueing and cancellation. Later held messages appear only in
+  the count until the first is decided. Out-of-order `queue_approve` and
+  `queue_reject` calls fail without changing the queue. Alt-A focuses
+  approval with inverted foreground/background on the compact heading,
+  and the cursor on its controls.
+  Only focused Alt-Y/Alt-N approve/reject (case-insensitive); Enter never approves.
+  Escape returns to typing. Alt-E edits the full
+  offered entry in either focus state; submission/requeue
+  keeps its identity, hold, destination and approval priority. Ordinary typing
+  returns keyboard focus to input and remains unheld; plain Y/N remain
+  ordinary text in either focus state.
+  The approval prompt uses `A `; normal text starts with two spaces.
+  One heading combines count, controls and route. The message preview shows
+  up to three wrapped lines, with `...` on the last when text is omitted.
+  Editing and delivery retain the full message. Counts read `1 approval` or
+  `N awaiting approval`.
+  Focused panel actions and offered-entry Alt-E precede
+  application bindings; other keys retain their usual binding behavior.
+- `sl:queue_peek(index)`, `sl:queue_insert(index, text[, held])`,
+  `sl:queue_append(text[, held])`, `sl:queue_replace(index, text)`, and
   `sl:queue_take(index)` inspect or mutate oldest-first queue entries. Lua
-  indexes are one-based; `peek` and `take` return ordinary Lua strings.
+  indexes are one-based. `peek` returns text; `take` returns `text, id` and
+  refuses held entries. Insert/append return a new opaque per-handle ID, never
+  reused, with `held` defaulting to false. Automatic approval overrides explicit
+  holds. Replacement preserves ID and hold.
+- `sl:queue_info(index)` returns `{id, mode, held}`. `sl:queue_draft_info()`
+  returns the same metadata for an Alt-E edit, or nil for an ordinary draft.
+  `sl:last_prompt_id()` returns the last read/take ID, or zero for direct input,
+  cancellation or failure. IDs remain integers across C and Lua (1..LONG_MAX).
+- `sl:queue_approve(id)` releases a hold without changing delivery mode;
+  `sl:queue_reject(id)` discards that entry. Both also operate on an active
+  queued edit, where rejection clears only that draft. Held entries display
+  `H` and are skipped during automatic delivery; ordinary user prompts proceed.
+  Alt-E, edits, Tab/Enter requeue and busy steering preserve identity and hold.
+  Submitting a held edit requeues it; it never implicitly approves or delivers.
+  Editing reserves one queue slot; cancellation/EOF/read failure restores the
+  original entry. Clear preserves an active edit, and disable is refused until
+  that edit is requeued, delivered, cancelled or explicitly rejected.
 - `sl:queue_clear()` clears queued entries without changing the active draft;
   `sl:queue_draft()` atomically queues an active nonempty draft.
 - `sl:queue_mode(index)` returns `softline.QUEUE_MODE_QUEUED` or
@@ -429,7 +480,10 @@ without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 - `softline.KEY_F8`
 - `softline.KEY_F9`
 - `softline.KEY_F10`
+- `softline.KEY_ALT_A`
 - `softline.KEY_ALT_E`
+- `softline.KEY_PAGE_UP`
+- `softline.KEY_PAGE_DOWN`
 - `softline.KEY_ALT_BASE`
 - `softline.KEY_ALT_M`
 - `softline.KEY_ACTION_PASS`

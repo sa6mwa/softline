@@ -28,7 +28,7 @@ mkdir -p "${ROOT_DIR}/build"
 # Exercise ordinary path spaces in both CMake and pkg-config consumers.
 TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/consumer with spaces.XXXXXX")"
 VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
-SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-1}"
+SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-2}"
 BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
 BOOTLIN_TARGET=""
 BOOTLIN_TOOLCHAIN_ARG=""
@@ -103,6 +103,9 @@ int main(void) {
   sl_t *sl;
   char *line;
   struct stream_state stream;
+  sl_prompt_id_t held, ordinary;
+  sl_prompt_queue_entry_info_t info;
+  sl_prompt_source_t source;
 
   if (pipe(input_pipe) != 0 || pipe(output_pipe) != 0)
     return 2;
@@ -113,6 +116,7 @@ int main(void) {
   sl_config_init(&cfg);
   cfg.input_fd = input_pipe[0];
   cfg.output_fd = output_pipe[1];
+  cfg.prompt_queue = 1;
   sl = sl_create_with_config(&cfg);
   if (!sl)
     return 4;
@@ -141,6 +145,32 @@ int main(void) {
     return 13;
 
   sl_free_string(sl, line);
+  if (sl_prompt_queue_append(sl, "approval", 1, &held) != SL_OK ||
+      sl_prompt_queue_append(sl, "ordinary", 0, &ordinary) != SL_OK ||
+      sl_prompt_queue_info(sl, 0, &info) != SL_OK ||
+      info.id != held || !info.held)
+    return 14;
+  line = sl_next_prompt(sl, NULL, &source);
+  if (!line || strcmp(line, "ordinary") || sl_last_prompt_id(sl) != ordinary)
+    return 15;
+  sl_free_string(sl, line);
+  if (sl_prompt_queue_approve(sl, held) != SL_OK)
+    return 16;
+  line = sl_next_prompt(sl, NULL, &source);
+  if (!line || strcmp(line, "approval") || sl_last_prompt_id(sl) != held)
+    return 17;
+  sl_free_string(sl, line);
+  if (sl_prompt_queue_append(sl, "rejected", 1, &held) != SL_OK ||
+      sl_prompt_queue_reject(sl, held) != SL_OK || sl_prompt_queue_count(sl))
+    return 18;
+  if (sl_inject_queued_prompt(sl, "queued injection", &held) != SL_OK ||
+      sl_inject_steer_prompt(sl, "steering injection", &ordinary) != SL_OK ||
+      sl_set_auto_approval(sl, 1) != SL_OK ||
+      sl_prompt_queue_info(sl, 0, &info) != SL_OK || info.held || info.id != held ||
+      sl_prompt_queue_info(sl, 1, &info) != SL_OK || info.held ||
+      info.id != ordinary || info.mode != SL_PROMPT_QUEUE_MODE_STEER ||
+      sl_prompt_queue_clear(sl) != SL_OK)
+    return 19;
   if (sl->output_stream_begin(sl) != SL_OK ||
       sl->output_stream_reconcile(sl) != SL_OK ||
       sl_output_stream_reconcile(sl) != SL_OK ||
@@ -165,7 +195,6 @@ install_disabled_smoke() {
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    -DSOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION}" \
     -DSL_BUILD_STATIC=ON -DSL_BUILD_SHARED=ON \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DSL_INSTALL=OFF \
@@ -229,7 +258,6 @@ smoke_mode() {
     -DSL_BUILD_EXAMPLES=OFF \
     -DSL_BUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    -DSOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION}" \
     -DSL_BUILD_STATIC="${build_static}" \
     -DSL_BUILD_SHARED="${build_shared}" \
     -DSL_INSTALL=ON \

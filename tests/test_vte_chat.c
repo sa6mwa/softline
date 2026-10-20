@@ -9,6 +9,20 @@ static struct snapshot frame(struct chat *c) {
   /* This regression observes physical rows through the hardware cursor. */
   return snapshot(&c->screen, 0);
 }
+static struct snapshot visible_frame(struct chat *c) {
+  struct snapshot result;
+  long first = (long)v.adjustment_value(v.adjustment(c->screen.terminal));
+  char *text = v.text(c->screen.terminal, first, 0,
+                      first + v.rows(c->screen.terminal) - 1,
+                      v.columns(c->screen.terminal), NULL, NULL, NULL);
+  memset(&result, 0, sizeof(result));
+  v.cursor(c->screen.terminal, &result.column, &result.row);
+  if (text) {
+    snprintf(result.text, sizeof(result.text), "%s", text);
+    v.free(text);
+  }
+  return result;
+}
 static const char *last_row(const char *text) {
   const char *line = text, *at;
   for (at = text; *at; ++at)
@@ -29,7 +43,7 @@ static int wait_frame(struct chat *c, const char *marker, const char *prompt,
         (!prompt || !strcmp(tail, prompt)) &&
         (complete == 0 || (complete > 0 ? idle(&s) : !idle(&s))))
       return 0;
-    pump();
+    pump_once();
   } while (now() < deadline);
   fprintf(stderr, "Chat frame did not settle: %s\n",
           marker   ? marker
@@ -37,11 +51,21 @@ static int wait_frame(struct chat *c, const char *marker, const char *prompt,
                    : "requested busy/idle state");
   return 1;
 }
+static int wait_visible(struct chat *c, const char *marker) {
+  double deadline = now() + 2;
+  do {
+    struct snapshot s = visible_frame(c);
+    if (strstr(s.text, marker))
+      return 0;
+    pump_once();
+  } while (now() < deadline);
+  return 1;
+}
 static int drain(void *context) {
   struct chat *c = (struct chat *)context;
   int status;
   pid_t event;
-  pump();
+  pump_once();
   event = waitpid(c->child, &status, WNOHANG);
   if (event == c->child) {
     c->child = -1;
@@ -115,7 +139,7 @@ static void send_input(struct chat *c, const char *bytes) {
 static void settle(double seconds) {
   double deadline = now() + seconds;
   do {
-    pump();
+    pump_once();
   } while (now() < deadline);
 }
 static int window_resize(struct chat *c, int columns, int rows) {
@@ -128,7 +152,7 @@ static int window_resize(struct chat *c, int columns, int rows) {
                                          (int)v.char_height(c->screen.terminal);
   v.resize(c->screen.window, x, y);
   do {
-    pump();
+    pump_once();
   } while ((v.columns(c->screen.terminal) != columns ||
             v.rows(c->screen.terminal) != rows) &&
            now() < deadline);
@@ -205,6 +229,290 @@ static int submit(struct chat *c, const char *message, const char *ending) {
   send_input(c, message);
   send_input(c, "\r");
   return wait_frame(c, ending, "> \n", 1, 8);
+}
+/* Observe the actual terminal cells: earlier redraws in the byte transcript
+ * must not make a vanished approval or a discarded edit look present. */
+static int approval_case(const char *example, const char *kind) {
+  struct chat c;
+  struct snapshot s;
+  const char *panel;
+  int failed = 0;
+  setenv("SOFTLINE_CHAT_APPROVAL_DEMO", "1", 1);
+  setenv("SOFTLINE_CHAT_APPROVAL_MS", "100", 1);
+  REQUIRE(start_chat(&c, example, "plain", 24, 10) == 0);
+  if (!strcmp(kind, "empty")) {
+    send_input(&c, "start-response\r");
+    REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", -1, 2) == 0);
+    send_input(&c, "\033a");
+    REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
+    send_input(&c, "\033e");
+    REQUIRE(wait_frame(&c, "H editing: approval required", NULL, -1, 2) == 0);
+    send_input(&c, "\025\r");
+    REQUIRE(wait_frame(&c, "A 4 awaiting approval / Alt-A focus", "> \n", -1,
+                       2) == 0);
+    s = frame(&c);
+    REQUIRE(strstr(s.text, "  Demo queued request #1:"));
+    REQUIRE(!strstr(s.text, "> Demo queued request #1:") &&
+            !strstr(s.text, "Demo steering request #2:"));
+    REQUIRE(wait_frame(&c, "Try another prompt.", "> \n", 1, 3) == 0);
+    send_input(&c, "\033a");
+    REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
+    send_input(&c, "\033n");
+    REQUIRE(wait_frame(&c, "A 3 awaiting approval", "> \n", 1, 2) == 0);
+    s = frame(&c);
+    REQUIRE(strstr(s.text, "Alt-E edit / Steering:"));
+    REQUIRE(strstr(s.text, "  Demo steering request #2:"));
+  } else if (!strcmp(kind, "queue")) {
+    send_input(&c, "start-response\r");
+    REQUIRE(wait_frame(&c, "> start-response", "> \n", -1, 2) == 0);
+    REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", -1, 2) == 0);
+    send_input(&c, "ordinary-queued\r");
+    REQUIRE(wait_frame(&c, "ordinary-queued", "> \n", -1, 2) == 0);
+    send_input(&c, "second-queued\r");
+    REQUIRE(wait_frame(&c, "Q 6. second-queued", "> \n", -1, 2) == 0);
+    s = frame(&c);
+    REQUIRE(strstr(s.text, "Q 5. ordinary-queued\n"));
+    REQUIRE(strstr(s.text, "Q 6. second-queued\n"));
+    REQUIRE(strstr(s.text, "  Demo queued request #1:"));
+    REQUIRE(strstr(s.text, "A 4 awaiting approval / Alt-A focus"));
+    REQUIRE(row_distance(s.text, "Q 5. ordinary-queued",
+                         "Q 6. second-queued") == 1);
+    REQUIRE(row_distance(s.text, "Q 6. second-queued",
+                         "A 4 awaiting approval") == 1);
+    REQUIRE(row_distance(s.text, "  Demo queued request #1:", "Reasoning...") ==
+            1);
+    REQUIRE(row_distance(s.text, "Reasoning...", "streaming demo") == 1);
+    send_input(&c, "\033a");
+    REQUIRE(wait_frame(&c, "Alt-Y approve", NULL, 0, 2) == 0);
+    s = visible_frame(&c);
+    REQUIRE(strstr(s.text, "Q 5. ordinary-queued\n"));
+    REQUIRE(strstr(s.text, "Q 6. second-queued\n"));
+    REQUIRE(row_distance(s.text, "  Demo queued request #1:", "Reasoning...") ==
+            1);
+    REQUIRE(row_distance(s.text, "Reasoning...", "streaming demo") == 1);
+    REQUIRE(strstr(strstr(s.text, "streaming demo"), "\n>"));
+  } else {
+    REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", 0, 2) == 0);
+    if (!strcmp(kind, "idle")) {
+      const char *blank;
+      s = frame(&c);
+      REQUIRE(row_distance(s.text, "  Demo queued request #1:",
+                           "+ streaming demo") == 2);
+      blank = strchr(strstr(s.text, "  Demo queued request #1:"), '\n') + 1;
+      while (*blank == ' ')
+        ++blank;
+      REQUIRE(*blank == '\n');
+    } else if (!strcmp(kind, "typing")) {
+      send_input(&c, "draft");
+      REQUIRE(wait_frame(&c, NULL, "> draft\n", 0, 2) == 0);
+      s = frame(&c);
+      REQUIRE(strstr(s.text, "A 4 awaiting approval / Alt-A focus"));
+      REQUIRE(strstr(s.text, "  Demo queued request #1:"));
+      REQUIRE(s.column == 7);
+      send_input(&c, "\033a\033y\033n!");
+      REQUIRE(wait_frame(&c, NULL, "> draft!\n", 0, 2) == 0);
+      s = frame(&c);
+      REQUIRE(strstr(s.text, "A 4 awaiting approval / Alt-A focus"));
+      REQUIRE(strstr(s.text, "  Demo queued request #1:"));
+      REQUIRE(!strstr(s.text, "> Demo queued request #1:"));
+      send_input(&c, "\025");
+      REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", 0, 2) == 0);
+    } else {
+      int edit;
+      for (edit = 0; edit < 2; ++edit) {
+        send_input(&c, "\033e");
+        REQUIRE(wait_frame(&c, "H editing: approval required",
+                           edit ? "> edited-again\n" : NULL, 0, 2) == 0);
+        send_input(&c, "\025edited-again\r");
+        REQUIRE(wait_frame(&c, "  edited-again\n", "> \n", 0, 2) == 0);
+        s = frame(&c);
+        panel = strstr(s.text, "A 4 awaiting approval");
+        REQUIRE(panel &&
+                strstr(panel, "Alt-E edit / Queued:\n  edited-again\n"));
+        REQUIRE(!strstr(s.text, "> edited-again\n"));
+      }
+      /* An empty submitted edit returns to review without approving it. */
+      send_input(&c, "\033a");
+      REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
+      send_input(&c, "\033e");
+      REQUIRE(wait_frame(&c, "H editing: approval required", "> edited-again\n",
+                         0, 2) == 0);
+      send_input(&c, "\025\r");
+      REQUIRE(wait_frame(&c, "  edited-again\n", "> \n", 0, 2) == 0);
+      s = frame(&c);
+      REQUIRE(strstr(s.text, "A 4 awaiting approval / Alt-A focus"));
+      REQUIRE(!strstr(s.text, "> edited-again\n") &&
+              !strstr(s.text, "Demo steering request #2:"));
+      send_input(&c, "\033a");
+      REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
+      /* Cancellation and the next readline still offer the first ID. */
+      send_input(&c, "\033e");
+      REQUIRE(wait_frame(&c, "H editing: approval required", "> edited-again\n",
+                         0, 2) == 0);
+      send_input(&c, "\025discarded-edit\003");
+      REQUIRE(wait_frame(&c, "  edited-again\n", "> \n", 0, 2) == 0);
+      s = frame(&c);
+      REQUIRE(strstr(s.text, "Alt-E edit / Queued:\n  edited-again\n"));
+      REQUIRE(!strstr(s.text, "Demo steering request #2:"));
+      send_input(&c, "\033a\033y");
+      REQUIRE(wait_frame(&c, "Q 1. edited-again", "> \n", 0, 2) == 0);
+      REQUIRE(wait_frame(&c, "Alt-E edit / Steering:", "> \n", 0, 2) == 0);
+      /* Cancellation still keeps delivery manual until a user turn. */
+      s = frame(&c);
+      REQUIRE(!strstr(s.text, "> edited-again\n"));
+    }
+  }
+cleanup:
+  close_chat(&c);
+  unsetenv("SOFTLINE_CHAT_APPROVAL_DEMO");
+  unsetenv("SOFTLINE_CHAT_APPROVAL_MS");
+  return failed || errors;
+}
+static int approval_resize_case(const char *example) {
+  struct chat c;
+  struct snapshot s;
+  char before[32768], after[32768];
+  char *panel;
+  long input_row;
+  int height, failed = 0;
+  setenv("SOFTLINE_CHAT_APPROVAL_DEMO", "1", 1);
+  setenv("SOFTLINE_CHAT_APPROVAL_MS", "100", 1);
+  setenv("SOFTLINE_CHAT_APPROVAL_SEED", "1", 1);
+  REQUIRE(start_chat(&c, example, "plain", 24, 10) == 0);
+  send_input(&c, "start-response\r");
+  REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", -1, 2) == 0);
+  REQUIRE(pause_worker(c.child, drain, &c, &c.worker) == 0 && c.worker > 0);
+  send_input(&c, "ordinary-first\rordinary-second\r\033a\033n\033a\033n");
+  REQUIRE(wait_frame(&c, "Demo queued request #3:", "> \n", -1, 2) == 0);
+  s = transcript(&c.screen);
+  input_row = s.row;
+  panel = strstr(s.text, "\nQ ");
+  REQUIRE(panel);
+  *panel = 0;
+  compact(s.text, before);
+  REQUIRE(strstr(before, "start-response"));
+  send_input(&c, "\033a");
+  REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
+  s = frame(&c);
+  REQUIRE(s.row == input_row && s.column == 2 &&
+          !strcmp(last_row(s.text), "> \n"));
+  /* Shrink only the bottom edge, with no concurrent producer bytes. Every
+   * preceding transcript character must survive the focused panel repaint. */
+  for (height = 23; height >= 12; --height) {
+    REQUIRE(coordinated_resize(&c, 97, height, 1) == 0);
+    settle(.12);
+    s = transcript(&c.screen);
+    panel = strstr(s.text, "\nQ ");
+    REQUIRE(panel);
+    REQUIRE(strstr(panel, "ordinary-first") &&
+            strstr(panel, "ordinary-second") &&
+            strstr(panel, "Demo queued request #3:") &&
+            strstr(panel, "Alt-Y approve / Alt-N reject"));
+    *panel = 0;
+    compact(s.text, after);
+    if (strcmp(before, after))
+      fprintf(stderr, "Focused approval overwrote transcript at height %d\n",
+              height);
+    REQUIRE(!strcmp(before, after));
+    s = frame(&c);
+    REQUIRE(!strcmp(last_row(s.text), "> \n") && s.column == 2);
+  }
+  REQUIRE(coordinated_resize(&c, 97, 24, 1) == 0);
+  REQUIRE(wait_frame(&c, "Alt-Y approve / Alt-N reject", "> \n", -1, 2) == 0);
+  s = transcript(&c.screen);
+  panel = strstr(s.text, "\nQ ");
+  REQUIRE(panel);
+  *panel = 0;
+  compact(s.text, after);
+  REQUIRE(!strcmp(before, after));
+  send_input(&c, "\033a");
+  REQUIRE(wait_frame(&c, "Alt-A focus", "> \n", -1, 2) == 0);
+  send_input(&c, "\033a");
+  REQUIRE(wait_frame(&c, "Alt-Y approve / Alt-N reject", "> \n", -1, 2) == 0);
+  send_input(&c, "\033n");
+  REQUIRE(wait_frame(&c, "Demo steering request #4:", "> \n", -1, 2) == 0);
+cleanup:
+  close_chat(&c);
+  unsetenv("SOFTLINE_CHAT_APPROVAL_DEMO");
+  unsetenv("SOFTLINE_CHAT_APPROVAL_MS");
+  unsetenv("SOFTLINE_CHAT_APPROVAL_SEED");
+  return failed || errors;
+}
+static int multiline_approval_case(const char *example) {
+  struct chat c;
+  struct snapshot s;
+  int failed = 0;
+  setenv("SOFTLINE_CHAT_APPROVAL_DEMO", "1", 1);
+  setenv("SOFTLINE_CHAT_APPROVAL_MS", "100", 1);
+  setenv("SOFTLINE_CHAT_APPROVAL_SEED", "1", 1);
+  REQUIRE(start_chat(&c, example, "plain", 24, 10) == 0);
+  send_input(&c, "start-response\r");
+  REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", -1, 2) == 0);
+  REQUIRE(pause_worker(c.child, drain, &c, &c.worker) == 0 && c.worker > 0);
+  send_input(&c, "ordinary-first\rordinary-second\r");
+  REQUIRE(wait_frame(&c, "Q 6. ordinary-second", "> \n", -1, 2) == 0);
+  send_input(&c, "\033a\033n");
+  REQUIRE(wait_frame(&c, "Verification plan:", "> \n", -1, 2) == 0);
+  s = frame(&c);
+  REQUIRE(row_distance(s.text, "  Demo steering request #2:", "Reasoning...") ==
+          3);
+  REQUIRE(strstr(s.text, "  02. Keep ordinary input responsive....\n"));
+  REQUIRE(strstr(s.text, "ordinary-first") &&
+          strstr(s.text, "ordinary-second"));
+  REQUIRE(!strstr(s.text, "03. Preserve FIFO") &&
+          !strstr(s.text, "End of verification plan.") &&
+          !strstr(s.text, "Demo queued request #3:"));
+  send_input(&c, "\033e");
+  REQUIRE(wait_visible(&c, "H editing: approval required") == 0);
+  REQUIRE(wait_visible(&c, "End of verification plan.") == 0);
+  send_input(&c, "\r");
+  REQUIRE(wait_frame(&c, "Verification plan:", "> \n", -1, 2) == 0);
+  s = frame(&c);
+  REQUIRE(!strstr(s.text, "End of verification plan.") &&
+          !strstr(s.text, "Demo queued request #3:"));
+  send_input(&c, "\033a\033n");
+  REQUIRE(wait_frame(&c, "Demo queued request #3:", "> \n", -1, 2) == 0);
+  s = frame(&c);
+  REQUIRE(row_distance(s.text, "  Demo queued request #3:", "Reasoning...") ==
+          3);
+  REQUIRE(!strstr(s.text, "Paragraph complete."));
+  REQUIRE(strstr(s.text,
+                 "  Demo queued request #3: Check the complete behavior before "
+                 "proceeding: confirm that ordinary\n"
+                 "  user input stays responsive while output is streaming, "
+                 "that queued and steering messages keep\n"
+                 "  their original destination, and that approval decisions "
+                 "remain in arrival order through...\n"));
+  REQUIRE(coordinated_resize(&c, 130, 24, 1) == 0);
+  REQUIRE(wait_visible(&c, "uncertainty,...\n") == 0);
+  s = frame(&c);
+  REQUIRE(strstr(s.text,
+                 "  Demo queued request #3: Check the complete behavior before "
+                 "proceeding: confirm that ordinary user input stays "
+                 "responsive while\n"
+                 "  output is streaming, that queued and steering messages "
+                 "keep their original destination, and that approval decisions "
+                 "remain in\n"
+                 "  arrival order through editing and requeueing. Include the "
+                 "evidence from focused tests, describe any remaining "
+                 "uncertainty,...\n"));
+  REQUIRE(row_distance(s.text, "  Demo queued request #3:", "Reasoning...") ==
+          3);
+  REQUIRE(strstr(s.text, "ordinary-first") &&
+          strstr(s.text, "ordinary-second"));
+  send_input(&c, "\033a\033n");
+  REQUIRE(wait_frame(&c, "Demo steering request #4:", "> \n", -1, 2) == 0);
+  s = frame(&c);
+  REQUIRE(strstr(s.text, "  Check the public API and the tests.\n"));
+  REQUIRE(strstr(s.text, "  Report any remaining risks.\n"));
+  REQUIRE(row_distance(s.text, "  Demo steering request #4:", "Reasoning...") ==
+          3);
+cleanup:
+  close_chat(&c);
+  unsetenv("SOFTLINE_CHAT_APPROVAL_DEMO");
+  unsetenv("SOFTLINE_CHAT_APPROVAL_MS");
+  unsetenv("SOFTLINE_CHAT_APPROVAL_SEED");
+  return failed || errors;
 }
 static int blank_case(const char *example, const char *theme, int height) {
   struct chat c;
@@ -319,7 +627,7 @@ static int width_case(const char *example, const char *theme) {
   const char *position;
   int failed = 0, turn, length, stage, width, count, prior, row;
   double started;
-  REQUIRE(start_chat(&c, example, theme, 24, 20) == 0);
+  REQUIRE(start_chat(&c, example, theme, 24, 2) == 0);
   for (turn = 0; turn < 4; ++turn) {
     snprintf(message, sizeof(message), "hello%d\r", turn);
     send_input(&c, message);
@@ -425,7 +733,11 @@ int main(int argc, char **argv) {
     for (theme = 0; theme < 3; theme += 2)
       if (streaming_case(argv[2], themes[theme]))
         return 1;
-  } else if (!strcmp(argv[1], "width") && argc == 4)
+  } else if (!strcmp(argv[1], "approval") && argc == 4)
+    return !strcmp(argv[3], "multiline") ? multiline_approval_case(argv[2])
+           : !strcmp(argv[3], "resize")  ? approval_resize_case(argv[2])
+                                         : approval_case(argv[2], argv[3]);
+  else if (!strcmp(argv[1], "width") && argc == 4)
     return width_case(argv[2], argv[3]);
   else
     return 2;

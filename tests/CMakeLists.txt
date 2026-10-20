@@ -22,6 +22,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   softline_local_runtime(test_reconcile)
   add_test(NAME softline_reconcile COMMAND test_reconcile)
   set_tests_properties(softline_reconcile PROPERTIES LABELS "unit;streaming" TIMEOUT 10)
+  add_executable(test_queue_approval test_queue_approval.c)
+  target_link_libraries(test_queue_approval PRIVATE softline util)
+  softline_apply_warnings(test_queue_approval)
+  softline_local_runtime(test_queue_approval)
+  add_test(NAME softline_queue_approval COMMAND test_queue_approval)
+  set_tests_properties(softline_queue_approval PROPERTIES
+    LABELS "unit;queue" TIMEOUT 10)
+  add_executable(test_approval_ui test_approval_ui.c)
+  target_link_libraries(test_approval_ui PRIVATE softline util)
+  softline_apply_warnings(test_approval_ui)
+  softline_local_runtime(test_approval_ui)
+  add_test(NAME softline_approval_ui COMMAND test_approval_ui)
+  set_tests_properties(softline_approval_ui PROPERTIES LABELS "unit;queue" TIMEOUT 15)
   add_executable(retained_resize_fixture retained_resize_fixture.c)
   target_link_libraries(retained_resize_fixture PRIVATE softline)
   softline_apply_warnings(retained_resize_fixture)
@@ -151,9 +164,9 @@ if(TARGET softline_shared AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/export-reconfigure.sh"
     "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${CMAKE_NM}"
     "${SL_TARGET_ID}" "${CMAKE_TOOLCHAIN_FILE}" "${CMAKE_C_COMPILER}"
-    "${CMAKE_LINKER}")
+    "${CMAKE_LINKER}" "${CMAKE_READELF}" "${SOFTLINE_ABI_VERSION}")
   set_tests_properties(softline_export_reconfigure PROPERTIES
-    LABELS "unit;abi" TIMEOUT 90)
+    LABELS "integration;abi" TIMEOUT 90)
 endif()
 
 softline_test_libmdf_supported(_softline_test_libmdf_supported)
@@ -249,6 +262,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     "$<TARGET_FILE:example_chat>" "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}"
     "${chat_history_key}.history" "$<TARGET_FILE:test_chat_shell>")
   set_tests_properties(softline_chat_shell PROPERTIES LABELS "integration" TIMEOUT 60)
+  add_executable(test_chat_approval test_chat_approval.c)
+  target_link_libraries(test_chat_approval PRIVATE util)
+  softline_apply_warnings(test_chat_approval)
+  softline_local_runtime(test_chat_approval)
+  add_test(NAME softline_chat_approval COMMAND test_chat_approval
+    "$<TARGET_FILE:example_chat>" "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}"
+    "${chat_history_key}.history")
+  set_tests_properties(softline_chat_approval PROPERTIES
+    LABELS "integration;queue;example-smoke" TIMEOUT 20)
   # A second real terminal engine catches erased blank-cell extent that tmux's
   # grid drops. Keep these host-only test dependencies out of the library.
   find_program(SOFTLINE_TEST_XVFB_RUN xvfb-run)
@@ -345,11 +367,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     set_tests_properties(softline_terminal_opaque_feed PROPERTIES
       LABELS "integration;streaming" TIMEOUT 30)
     if(TARGET example_simple)
+      add_executable(editor_resize_fixture editor_resize_fixture.c)
+      target_link_libraries(editor_resize_fixture PRIVATE softline)
+      softline_apply_warnings(editor_resize_fixture)
+      softline_local_runtime(editor_resize_fixture)
       add_test(NAME softline_terminal_readline_resize COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
-        "$<TARGET_FILE:test_vte_editor>" "$<TARGET_FILE:example_simple>")
+        "$<TARGET_FILE:test_vte_editor>" "$<TARGET_FILE:editor_resize_fixture>")
       set_tests_properties(softline_terminal_readline_resize PROPERTIES ENVIRONMENT "${terminal_test_environment}")
       set_tests_properties(softline_terminal_readline_resize PROPERTIES
-        LABELS "integration" TIMEOUT 120)
+        LABELS "integration" TIMEOUT 40)
     endif()
     if(_softline_test_libmdf_supported)
       add_executable(unicode_output_fixture unicode_output_fixture.c)
@@ -369,6 +395,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     set_tests_properties(softline_terminal_blank_reflow PROPERTIES ENVIRONMENT "${terminal_test_environment}")
     set_tests_properties(softline_terminal_blank_reflow PROPERTIES
       LABELS "integration;streaming" TIMEOUT 60)
+    foreach(approval_case typing queue edit empty idle multiline resize)
+      add_test(NAME softline_chat_approval_${approval_case} COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+        "$<TARGET_FILE:test_vte_chat>" approval "$<TARGET_FILE:example_chat>" "${approval_case}")
+      set_tests_properties(softline_chat_approval_${approval_case} PROPERTIES
+        ENVIRONMENT "${terminal_test_environment}"
+        LABELS "integration;queue;example-smoke" TIMEOUT 15)
+    endforeach()
     foreach(_softline_chat_theme plain riced)
       add_test(NAME softline_chat_width_${_softline_chat_theme} COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
         "$<TARGET_FILE:test_vte_chat>" width "$<TARGET_FILE:example_chat>" "${_softline_chat_theme}")
@@ -458,7 +491,7 @@ endif()
 # These C executable cases own native Memcheck coverage. Terminal engine
 # adapters keep their ordinary scope rather than instrumenting host tools.
 # The RLIMIT_AS budget check measures native memory use, without analysis overhead.
-set(_softline_memcheck_tests softline_history softline_unit
+set(_softline_memcheck_tests softline_history softline_unit softline_queue_approval softline_approval_ui
   softline_libmdf_stream softline_examples softline_prompt_frames softline_native_resize)
 get_property(_softline_tests DIRECTORY PROPERTY TESTS)
 foreach(_softline_test IN LISTS _softline_tests)

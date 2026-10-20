@@ -13,6 +13,10 @@ typedef struct sl sl_t;
 /** Opaque per-handle identifier for an external event watch. */
 typedef unsigned long sl_watch_id_t;
 
+/** Opaque nonzero queue identity, unique for the lifetime of one handle.
+ * Zero denotes a direct draft without a queued origin. IDs are never reused. */
+typedef unsigned long sl_prompt_id_t;
+
 /** Readiness conditions reported for an application-owned watch descriptor. */
 typedef enum sl_watch_events {
   /** The descriptor can be read without blocking. */
@@ -162,8 +166,14 @@ typedef enum sl_key {
   SL_KEY_CTRL_ENTER = 1022,
   /** Alt-Enter, normally emitted as Escape followed by carriage return. */
   SL_KEY_ALT_ENTER = 1023,
+  /** Page Up key. */
+  SL_KEY_PAGE_UP = 1024,
+  /** Page Down key. */
+  SL_KEY_PAGE_DOWN = 1025,
   /** Base value for Alt-letter bindings not listed as dedicated constants. */
   SL_KEY_ALT_BASE = 4096,
+  /** Alt-A, focus the oldest pending approval when the draft is empty. */
+  SL_KEY_ALT_A = SL_KEY_ALT_BASE + 'a',
   /** Alt-E, edit the newest queued draft by default. */
   SL_KEY_ALT_E = SL_KEY_ALT_BASE + 'e',
   /** Alt-M key. */
@@ -268,6 +278,16 @@ typedef enum sl_prompt_queue_mode {
   SL_PROMPT_QUEUE_MODE_STEER = 1
 } sl_prompt_queue_mode_t;
 
+/** Identity and independent delivery controls for one queued prompt. */
+typedef struct sl_prompt_queue_entry_info {
+  /** Stable handle-local identity, preserved by replacement and editing. */
+  sl_prompt_id_t id;
+  /** Ordinary queued delivery or host-selected steering intent. */
+  sl_prompt_queue_mode_t mode;
+  /** Nonzero until UI/API approval or conversation-wide auto-approval. */
+  int held;
+} sl_prompt_queue_entry_info_t;
+
 /** Built-in prompt queue interaction mappings. */
 typedef enum sl_prompt_queue_profile {
   /** Tab enqueues and Alt-E edits the newest queued entry. */
@@ -333,7 +353,7 @@ typedef enum sl_theme_color {
   SL_THEME_COLOR_SECONDARY = 1,
   /** Prompt marker colour. */
   SL_THEME_COLOR_PROMPT = 2,
-  /** Queue marker colour. */
+  /** Queue and approval colour: the fourth status element colour. */
   SL_THEME_COLOR_QUEUE = 3,
   /** Editor input colour. */
   SL_THEME_COLOR_INPUT = 4,
@@ -593,16 +613,22 @@ struct sl {
   int (*set_status_spinner)(sl_t *self, int enabled);
   /** Set the printable ASCII idle marker, or '\0' for a blank reserved slot. */
   int (*set_status_idle_marker)(sl_t *self, char marker);
-  /** Return the number of entries in this handle's prompt queue. */
+  /** Return queued entries, excluding an active edit's reserved slot. */
   size_t (*prompt_queue_count)(const sl_t *self);
   /** Return this handle's configured prompt queue capacity. */
   size_t (*prompt_queue_capacity)(const sl_t *self);
   /** Copy one oldest-first queue entry into a softline-allocated string. */
   int (*prompt_queue_peek)(const sl_t *self, size_t index, char **out);
-  /** Insert nonempty text at an oldest-first queue index. */
-  int (*prompt_queue_insert)(sl_t *self, size_t index, const char *text);
-  /** Append nonempty text to the newest end of the queue. */
-  int (*prompt_queue_append)(sl_t *self, const char *text);
+  /** Insert text with an explicit approval hold (0 or 1). Return its stable
+   * identity through optional out_id, which is zeroed on failure. Automatic
+   * approval overrides a requested hold. */
+  int (*prompt_queue_insert)(sl_t *self, size_t index, const char *text,
+                             int held, sl_prompt_id_t *out_id);
+  /** Append nonempty text and optionally return its identity. held is 0 or 1;
+   * held entries cannot be delivered or promoted until approved. Automatic
+   * approval overrides a requested hold. */
+  int (*prompt_queue_append)(sl_t *self, const char *text, int held,
+                             sl_prompt_id_t *out_id);
   /** Replace one oldest-first queue entry with nonempty text. */
   int (*prompt_queue_replace)(sl_t *self, size_t index, const char *text);
   /** Remove one oldest-first queue entry and transfer it to the caller. */
@@ -611,6 +637,42 @@ struct sl {
   int (*prompt_queue_clear)(sl_t *self);
   /** Atomically queue the active nonempty draft and clear the editor. */
   int (*prompt_queue_enqueue_draft)(sl_t *self);
+  /** Inspect one oldest-first entry's identity, mode and approval hold. */
+  int (*prompt_queue_info)(const sl_t *self, size_t index,
+                           sl_prompt_queue_entry_info_t *out);
+  /** Inspect the active draft's queued origin; id is zero for an ordinary
+   * draft. Alt-E reserves its queue position and capacity until requeue,
+   * delivery or rejection.
+   * Cancelling or submitting an empty edit restores the original entry with
+   * its identity/hold. */
+  int (*prompt_queue_draft_info)(const sl_t *self,
+                                 sl_prompt_queue_entry_info_t *out);
+  /** Release one queued or actively edited entry's hold by stable identity.
+   * Only the oldest pending approval may be decided; out-of-order requests
+   * fail with SL_ERROR_INVALID. Approving does not change QUEUED/STEER intent
+   * or queue-wide delivery. */
+  int (*prompt_queue_approve)(sl_t *self, sl_prompt_id_t id);
+  /** Discard a queued or actively edited entry by stable identity. Rejecting
+   * a held entry follows the same FIFO approval order. Rejecting an active
+   * edit clears that draft; other entries/drafts are untouched. */
+  int (*prompt_queue_reject)(sl_t *self, sl_prompt_id_t id);
+  /** Identity returned by the last successful readline(), next_prompt() or
+   * queue take; zero for a direct draft or an unsuccessful read/take. */
+  sl_prompt_id_t (*last_prompt_id)(const sl_t *self);
+  /** Inject a queued prompt with approval governed by auto_approval. Returns
+   * its stable ID through optional out_id, zeroed on failure. */
+  int (*inject_queued_prompt)(sl_t *self, const char *text,
+                              sl_prompt_id_t *out_id);
+  /** Inject a steering prompt under the same approval policy. Approved
+   * steering entries remain host-delivered at a safe steering seam. */
+  int (*inject_steer_prompt)(sl_t *self, const char *text,
+                             sl_prompt_id_t *out_id);
+  /** Set conversation-wide automatic approval (0 or 1), initially off.
+   * Enabling approves every waiting entry, including an active edit, and
+   * future injections. Disabling does not revoke existing approvals. */
+  int (*set_auto_approval)(sl_t *self, int enabled);
+  /** Return this conversation instance's automatic approval setting. */
+  int (*get_auto_approval)(const sl_t *self, int *out);
   /** Set automatic or host-controlled queued delivery for next_prompt(). This
    * also controls whether queued-turns releases ordinary entries on idle.
    * Busy queued-turns always retains entries. */
@@ -952,11 +1014,34 @@ size_t sl_prompt_queue_capacity(const sl_t *self);
 /** Copy queue index into a softline-allocated string returned through out. */
 int sl_prompt_queue_peek(const sl_t *self, size_t index, char **out);
 
-/** Insert nonempty text at queue index. Index zero is the oldest entry. */
-int sl_prompt_queue_insert(sl_t *self, size_t index, const char *text);
+/** Insert text with held 0 or 1 and optionally return its new identity.
+ * Index zero is oldest. out_id is zeroed on failure. Auto-approval overrides
+ * a requested hold. */
+int sl_prompt_queue_insert(sl_t *self, size_t index, const char *text, int held,
+                           sl_prompt_id_t *out_id);
 
-/** Append nonempty text to the newest end of the queue. */
-int sl_prompt_queue_append(sl_t *self, const char *text);
+/** Append text with held 0 or 1 and optionally return its new identity.
+ * out_id is zeroed on failure; held entries require approval. Auto-approval
+ * overrides a requested hold. */
+int sl_prompt_queue_append(sl_t *self, const char *text, int held,
+                           sl_prompt_id_t *out_id);
+
+/** Inject an ordinary queued message, held unless auto_approval is enabled.
+ * Queueing must be enabled. Call on the editor owner thread, including from
+ * a watch callback. out_id is optional and zeroed on failure. */
+int sl_inject_queued_prompt(sl_t *self, const char *text,
+                            sl_prompt_id_t *out_id);
+/** Inject a steering message with the same approval policy and stable ID.
+ * Approval preserves steering intent; the host takes it at a safe seam. */
+int sl_inject_steer_prompt(sl_t *self, const char *text,
+                           sl_prompt_id_t *out_id);
+/** Set auto_approval for this conversation's entire instance (strict 0 or 1).
+ * Initially off. Enabling approves all waiting and edited entries as well as
+ * future injections, without changing delivery intent or submitting a draft.
+ * Turning it off affects subsequent approval requests only. */
+int sl_set_auto_approval(sl_t *self, int enabled);
+/** Read auto_approval into out; invalid arguments return SL_ERROR_INVALID. */
+int sl_get_auto_approval(const sl_t *self, int *out);
 
 /** Replace queue index with nonempty text. Index zero is the oldest entry. */
 int sl_prompt_queue_replace(sl_t *self, size_t index, const char *text);
@@ -976,6 +1061,27 @@ int sl_prompt_queue_clear(sl_t *self);
 
 /** Queue the active nonempty draft and clear it atomically while editing. */
 int sl_prompt_queue_enqueue_draft(sl_t *self);
+
+/** Inspect an entry's stable identity, delivery intent and approval hold. */
+int sl_prompt_queue_info(const sl_t *self, size_t index,
+                         sl_prompt_queue_entry_info_t *out);
+/** Inspect a queued edit; id is zero for a draft without a queued origin.
+ * Alt-E retains identity, mode and hold, reserving its queue position and
+ * capacity. Enter or a submit callback requeues nonempty held edits there
+ * without delivering them.
+ * Submitting an empty edit, cancellation, EOF or read failure restores the
+ * original entry, discarding its edits. */
+int sl_prompt_queue_draft_info(const sl_t *self,
+                               sl_prompt_queue_entry_info_t *out);
+/** Approve the oldest pending identity; does not force delivery. Later held
+ * identities fail with SL_ERROR_INVALID, preserving FIFO approval order. */
+int sl_prompt_queue_approve(sl_t *self, sl_prompt_id_t id);
+/** Remove an identity or clear its active edit. A held identity must be the
+ * oldest pending approval; later held identities fail with SL_ERROR_INVALID. */
+int sl_prompt_queue_reject(sl_t *self, sl_prompt_id_t id);
+/** Last read/take identity, or zero for direct input, failure or cancellation.
+ * IDs are handle-local, monotonic, never reused, and bounded by LONG_MAX. */
+sl_prompt_id_t sl_last_prompt_id(const sl_t *self);
 
 /** Set automatic or manual queued delivery. Busy queued-turns retains entries
  * regardless of this setting; manual lets the host take entries at chosen

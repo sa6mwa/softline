@@ -47,8 +47,7 @@ typedef struct sl_theme_palette {
   sl_rgb_t elements[8];
   sl_rgb_t separator;
   sl_rgb_t prompt;
-  sl_rgb_t queue;
-  sl_rgb_t queue_text;
+  sl_rgb_t secondary;
   int prompt_bold;
   sl_rgb_t input;
   int input_bold;
@@ -65,7 +64,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                         {0, 0, 0},
                                                         {0, 0, 0},
                                                         {0, 0, 0},
-                                                        {0, 0, 0},
                                                         0,
                                                         {0, 0, 0},
                                                         0},
@@ -79,7 +77,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {248, 113, 113}},
                                                         {100, 116, 139},
                                                         {6, 182, 212},
-                                                        {6, 182, 212},
                                                         {148, 163, 184},
                                                         1,
                                                         {0, 0, 0},
@@ -92,7 +89,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {255, 85, 85},
                                                          {255, 121, 198},
                                                          {195, 183, 201}},
-                                                        {98, 114, 164},
                                                         {98, 114, 164},
                                                         {98, 114, 164},
                                                         {195, 183, 201},
@@ -109,7 +105,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {213, 196, 161}},
                                                         {102, 92, 84},
                                                         {184, 187, 38},
-                                                        {131, 165, 152},
                                                         {213, 196, 161},
                                                         1,
                                                         {0, 0, 0},
@@ -124,7 +119,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {224, 184, 90}},
                                                         {88, 83, 74},
                                                         {168, 118, 40},
-                                                        {125, 110, 72},
                                                         {169, 152, 101},
                                                         1,
                                                         {255, 224, 138},
@@ -139,7 +133,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {51, 255, 51}},
                                                         {79, 91, 79},
                                                         {22, 122, 31},
-                                                        {42, 107, 58},
                                                         {95, 158, 111},
                                                         1,
                                                         {51, 255, 51},
@@ -154,7 +147,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {122, 107, 143}},
                                                         {78, 69, 99},
                                                         {78, 69, 99},
-                                                        {122, 107, 143},
                                                         {184, 169, 201},
                                                         0,
                                                         {0, 0, 0},
@@ -169,7 +161,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {172, 164, 184}},
                                                         {72, 76, 105},
                                                         {255, 255, 255},
-                                                        {255, 126, 219},
                                                         {172, 164, 184},
                                                         1,
                                                         {0, 0, 0},
@@ -184,7 +175,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {130, 120, 156}},
                                                         {95, 89, 117},
                                                         {255, 126, 219},
-                                                        {130, 120, 156},
                                                         {179, 169, 192},
                                                         1,
                                                         {0, 0, 0},
@@ -197,7 +187,6 @@ static const sl_theme_palette_t sl_theme_palettes[] = {{{{0, 0, 0},
                                                          {0, 0, 0},
                                                          {0, 0, 0},
                                                          {0, 0, 0}},
-                                                        {0, 0, 0},
                                                         {0, 0, 0},
                                                         {0, 0, 0},
                                                         {0, 0, 0},
@@ -215,6 +204,8 @@ static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
                                  size_t length);
 static int sl_write_cursor_pos(int fd, int row, int col);
 static int sl_wstr(int fd, const char *s);
+static int sl_theme_color_style(sl_prompt_theme_t theme, sl_theme_color_t color,
+                                int italic, char *style, size_t size);
 static int sl_try_pin_scroll_region(sl_t *self);
 static void sl_refresh_scroll_region(sl_t *self);
 static int sl_query_cursor_row(sl_t *self);
@@ -269,16 +260,17 @@ static char *sl_strdup(const char *s) {
   return copy;
 }
 
+static int sl_buf_set(sl_t *self, const char *s);
+
 static void sl_prompt_queue_clear_raw(sl_prompt_queue_t *queue) {
   int i;
   if (!queue)
     return;
   for (i = 0; i < queue->len; i++)
     free(queue->items[i].text);
-  free(queue->items);
-  queue->items = NULL;
   queue->len = 0;
-  queue->cap = 0;
+  queue->editing_index = 0;
+  queue->approval_id = 0;
 }
 
 static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
@@ -305,51 +297,93 @@ static int sl_prompt_queue_reserve(sl_prompt_queue_t *queue, int entries) {
   return 0;
 }
 
-static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text,
-                                      sl_prompt_queue_mode_t mode) {
-  char *copy;
-  if (!impl || !text)
-    return -1;
-  if (impl->prompt_queue.len >= impl->prompt_queue.max_entries)
-    return 1;
-  copy = sl_strdup(text);
-  if (!copy)
-    return -1;
-  if (sl_prompt_queue_reserve(&impl->prompt_queue,
-                              impl->prompt_queue.len + 1) != 0) {
-    free(copy);
-    return -1;
-  }
-  impl->prompt_queue.items[impl->prompt_queue.len].text = copy;
-  impl->prompt_queue.items[impl->prompt_queue.len++].mode = mode;
-  return 0;
-}
-
 static int sl_prompt_queue_insert_raw(sl_impl_t *impl, int index,
-                                      const char *text) {
+                                      const char *text,
+                                      sl_prompt_queue_mode_t mode, int held,
+                                      sl_prompt_id_t id) {
   sl_prompt_queue_t *queue;
   char *copy;
-  int i;
+  int i, entries;
   if (!impl || !text)
     return -1;
   queue = &impl->prompt_queue;
   if (index < 0 || index > queue->len)
     return -2;
-  if (queue->len >= queue->max_entries)
+  /* New entries must leave backing storage for allocation-free edit restore.
+   * Requeueing the edit itself consumes that reserved slot instead. */
+  entries = queue->len + (queue->editing.info.id && !id ? 1 : 0);
+  if (entries >= queue->max_entries ||
+      (!id && queue->serial == (sl_prompt_id_t)LONG_MAX))
     return 1;
   copy = sl_strdup(text);
   if (!copy)
     return -1;
-  if (sl_prompt_queue_reserve(queue, queue->len + 1) != 0) {
+  if (sl_prompt_queue_reserve(queue, entries + 1) != 0) {
     free(copy);
     return -1;
   }
   for (i = queue->len; i > index; i--)
     queue->items[i] = queue->items[i - 1];
   queue->items[index].text = copy;
-  queue->items[index].mode = SL_PROMPT_QUEUE_MODE_QUEUED;
+  queue->items[index].info.id = id ? id : ++queue->serial;
+  queue->items[index].info.mode = mode;
+  queue->items[index].info.held = held && !queue->auto_approval;
+  if (queue->editing.info.id && index < queue->editing_index)
+    queue->editing_index++;
   queue->len++;
   return 0;
+}
+
+static int sl_prompt_queue_append_raw(sl_impl_t *impl, const char *text,
+                                      sl_prompt_queue_mode_t mode) {
+  sl_prompt_queue_t *queue = &impl->prompt_queue;
+  if (queue->editing.info.id && mode == SL_PROMPT_QUEUE_MODE_QUEUED)
+    mode = queue->editing.info.mode;
+  return sl_prompt_queue_insert_raw(impl, queue->len, text, mode,
+                                    queue->editing.info.held,
+                                    queue->editing.info.id);
+}
+
+static void sl_prompt_queue_finish_edit(sl_prompt_queue_t *queue) {
+  free(queue->editing.text);
+  memset(&queue->editing, 0, sizeof(queue->editing));
+  queue->editing_index = 0;
+}
+
+/* The edited entry was appended only after its replacement was committed.
+ * Restore its reserved position without allocation, keeping failure rollback
+ * at the append slot. Queue positions are independent of arrival identities. */
+static void sl_prompt_queue_restore_edit_order(sl_prompt_queue_t *queue) {
+  sl_prompt_queue_entry_t entry = queue->items[queue->len - 1];
+  int index = queue->editing_index;
+  memmove(queue->items + index + 1, queue->items + index,
+          (size_t)(queue->len - index - 1) * sizeof(*queue->items));
+  queue->items[index] = entry;
+}
+
+static void sl_prompt_queue_finish_requeue(sl_prompt_queue_t *queue) {
+  if (queue->editing.info.id)
+    sl_prompt_queue_restore_edit_order(queue);
+  if (queue->editing.info.held) {
+    queue->approval_id = queue->editing.info.id;
+    queue->approval_focused = 0;
+  }
+  sl_prompt_queue_finish_edit(queue);
+}
+
+/* Alt-E reserves its removed slot, so restoring the original cannot allocate.
+ * In-progress edits are discarded on cancellation, EOF or read failure. */
+static void sl_prompt_queue_restore_edit(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  sl_prompt_queue_t *queue = &impl->prompt_queue;
+  queue->last_id = 0;
+  if (!queue->editing.info.id)
+    return;
+  queue->items[queue->len++] = queue->editing;
+  sl_prompt_queue_restore_edit_order(queue);
+  memset(&queue->editing, 0, sizeof(queue->editing));
+  queue->editing_index = 0;
+  (void)sl_buf_set(self, "");
 }
 
 static int sl_prompt_queue_replace_raw(sl_impl_t *impl, int index,
@@ -377,6 +411,8 @@ static char *sl_prompt_queue_take_raw(sl_prompt_queue_t *queue, int index) {
   item = queue->items[index].text;
   for (i = index; i + 1 < queue->len; i++)
     queue->items[i] = queue->items[i + 1];
+  if (queue->editing.info.id && index < queue->editing_index)
+    queue->editing_index--;
   queue->len--;
   return item;
 }
@@ -384,9 +420,66 @@ static char *sl_prompt_queue_take_raw(sl_prompt_queue_t *queue, int index) {
 static int sl_prompt_queue_first_queued(const sl_prompt_queue_t *queue) {
   int i;
   for (i = 0; queue && i < queue->len; i++)
-    if (queue->items[i].mode == SL_PROMPT_QUEUE_MODE_QUEUED)
+    if (queue->items[i].info.mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
+        !queue->items[i].info.held)
       return i;
   return -1;
+}
+
+/* Approval order follows arrival identity, including an entry temporarily
+ * removed for editing. Requeueing or inserting cannot bypass that decision. */
+static sl_prompt_id_t
+sl_prompt_queue_approval_head(const sl_prompt_queue_t *queue) {
+  sl_prompt_id_t id = queue->editing.info.held ? queue->editing.info.id : 0;
+  int i;
+  for (i = 0; i < queue->len; ++i)
+    if (queue->items[i].info.held && (!id || queue->items[i].info.id < id))
+      id = queue->items[i].info.id;
+  return id;
+}
+
+static int
+sl_prompt_queue_require_fifo(sl_t *self, const sl_impl_t *impl,
+                             const sl_prompt_queue_entry_info_t *info) {
+  if (info->held &&
+      sl_prompt_queue_approval_head(&impl->prompt_queue) != info->id) {
+    sl_set_error(self, "approval decisions must follow FIFO order");
+    return SL_ERROR_INVALID;
+  }
+  return SL_OK;
+}
+
+/* An offered question stays visible when typing resumes. Eligibility to
+ * acquire input is separate from the lifetime of that displayed entry. */
+static int sl_prompt_held_index(const sl_impl_t *impl, sl_prompt_id_t id) {
+  sl_prompt_id_t head;
+  int i;
+  if (!impl || !impl->prompt_queue.enabled || impl->prompt_queue.auto_approval)
+    return -1;
+  head = sl_prompt_queue_approval_head(&impl->prompt_queue);
+  if (!head || (id && id != head))
+    return -1;
+  for (i = 0; i < impl->prompt_queue.len; i++)
+    if (impl->prompt_queue.items[i].info.id == head)
+      return i;
+  return -1;
+}
+
+/* A question may acquire input only at an empty, ordinary editing boundary.
+ * Selection happens in the input loop after checking terminal readiness. */
+static int sl_prompt_approval_index(const sl_impl_t *impl, sl_prompt_id_t id) {
+  if (!impl || !impl->active_readline || impl->len ||
+      impl->prompt_queue.editing.info.id || impl->history_search_active ||
+      impl->bracketed_paste)
+    return -1;
+  return sl_prompt_held_index(impl, id);
+}
+
+static char *sl_prompt_queue_deliver_raw(sl_prompt_queue_t *queue, int index) {
+  sl_prompt_id_t id = queue->items[index].info.id;
+  char *text = sl_prompt_queue_take_raw(queue, index);
+  queue->last_id = text ? id : 0;
+  return text;
 }
 
 static int sl_prompt_queue_enabled(const sl_impl_t *impl) {
@@ -407,7 +500,8 @@ static void sl_prompt_queue_sync_queued_turns_delivery(sl_impl_t *impl) {
           : SL_PROMPT_QUEUE_DELIVERY_AUTO;
   if (impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
       impl->active_readline &&
-      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0 && impl->len == 0)
+      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0 &&
+      impl->len == 0 && !impl->prompt_queue.editing.info.id)
     impl->request_queue_dispatch = 1;
 }
 
@@ -810,6 +904,11 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
       return -1;
     row = sl_query_cursor_row(self);
     col = row > 0 ? impl->probed_cursor_col : 0;
+    /* A confirmed line start supplies one boundary before the first quote.
+     * Reopened sessions retain their known spacing instead. */
+    if (row > 0 && col == 0 && !impl->native_cursor_valid &&
+        impl->output_trailing_newlines == 0)
+      impl->output_trailing_newlines = 1;
     row = row > 0 ? row - 1
           : impl->native_cursor_valid
               ? sl_terminal_rows(impl) - 1 - impl->native_cursor_below
@@ -2181,13 +2280,16 @@ static int sl_word_width(const char *buf, size_t len, size_t pos,
   return width;
 }
 
-static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
-                                       int available, const char *style) {
+static int sl_queue_row_append_span(sl_row_t *row, const char *text, size_t len,
+                                    int available, const char *style,
+                                    size_t *consumed) {
   size_t pos;
-  size_t len;
   int cols;
   int screen_cols;
   int clipped;
+  size_t break_pos = 0;
+  size_t break_len = 0;
+  int break_cols = 0;
   const char *reset;
   if (!row || !text || available < 1)
     return 0;
@@ -2195,7 +2297,6 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
   if (sl_row_append(row, style ? style : "", style ? strlen(style) : 0) != 0)
     return -1;
   pos = 0;
-  len = strlen(text);
   cols = 0;
   screen_cols = row->cols;
   clipped = 0;
@@ -2207,6 +2308,19 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
     size_t n;
     char visible[9];
     ch = (unsigned char)text[pos];
+    /* Wrapped rows drop the separating whitespace, never part of a word.
+     * Keep the rendered boundary too: tabs and escaped controls use cells
+     * differently from their source bytes. Single-line previews stay clipped.
+     */
+    if (consumed && cols > 0 && (ch == ' ' || ch == '\t') &&
+        (pos == 0 || (text[pos - 1] != ' ' && text[pos - 1] != '\t'))) {
+      break_pos = pos;
+      while (break_pos < len &&
+             (text[break_pos] == ' ' || text[break_pos] == '\t'))
+        break_pos++;
+      break_len = row->len;
+      break_cols = row->cols;
+    }
     n = 1;
     escaped_control = 0;
     if (ch == '\t') {
@@ -2240,6 +2354,16 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
       }
     }
     if (cells > 0 && cols + cells > available) {
+      if (break_pos > 0) {
+        row->len = break_len;
+        row->text[row->len] = '\0';
+        row->cols = break_cols;
+        pos = break_pos;
+      } else if (consumed && cols == 0) {
+        if (sl_row_append_cells(row, "?", 1, 1) != 0)
+          return -1;
+        pos += n;
+      }
       clipped = 1;
       break;
     }
@@ -2255,10 +2379,64 @@ static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
   }
   if (pos < len)
     clipped = 1;
-  if (clipped && available - cols >= 3 &&
+  if (consumed)
+    *consumed = pos;
+  if (!consumed && clipped && available - cols >= 3 &&
       sl_row_append_cells(row, "...", 3, 3) != 0)
     return -1;
   return sl_row_append(row, reset, strlen(reset));
+}
+
+static int sl_queue_row_append_preview(sl_row_t *row, const char *text,
+                                       int available, const char *style) {
+  return sl_queue_row_append_span(row, text, strlen(text), available, style,
+                                  NULL);
+}
+
+static int sl_render_queue_text(sl_render_t *render, const char *text,
+                                int width, const char *prefix,
+                                const char *style, int max_rows) {
+  size_t remaining = strlen(text);
+  int indent = width > 2 ? 2 : 0;
+  int rows = 0;
+  do {
+    size_t consumed = 0;
+    const char *next;
+    if (sl_render_new_row_at(render, 0, 0) != 0 ||
+        sl_row_append(&render->rows[render->count - 1], style, strlen(style)) !=
+            0 ||
+        sl_row_append_cells(&render->rows[render->count - 1], prefix,
+                            (size_t)indent, indent) != 0 ||
+        sl_queue_row_append_span(&render->rows[render->count - 1], text,
+                                 remaining, width - indent, style,
+                                 &consumed) != 0)
+      return -1;
+    next = text + consumed;
+    if (*next == '\n')
+      ++next;
+    if (++rows == max_rows && *next) {
+      sl_row_t *row = &render->rows[render->count - 1];
+      int dots = width - indent < 3 ? width - indent : 3;
+      free(row->text);
+      memset(row, 0, sizeof(*row));
+      if (sl_row_append(row, style, strlen(style)) != 0 ||
+          sl_row_append_cells(row, prefix, (size_t)indent, indent) != 0 ||
+          sl_queue_row_append_span(row, text, remaining, width - indent - dots,
+                                   style, &consumed) != 0 ||
+          sl_queue_row_append_span(row, "...", (size_t)dots, dots, style,
+                                   NULL) != 0)
+        return -1;
+      return 0;
+    }
+    prefix = "  ";
+    text += consumed;
+    remaining -= consumed;
+    if (*text == '\n') {
+      ++text;
+      --remaining;
+    }
+  } while (*text);
+  return 0;
 }
 
 static const char *sl_prompt_theme_style(sl_prompt_theme_t theme) {
@@ -2410,9 +2588,6 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   static const char spinner_frames[] = "/-\\|";
   static const sl_rgb_t busy_colour = {255, 51, 51};
   static const sl_rgb_t idle_colour = {57, 255, 20};
-  static const char *const default_element_styles[] = {
-      "\033[36m", "\033[33m", "\033[35m", "\033[34m",
-      "\033[32m", "\033[31m", "\033[37m", "\033[97m"};
   sl_impl_t *impl;
   sl_statusline_t *statusline;
   const sl_theme_palette_t *palette;
@@ -2509,16 +2684,12 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
       }
       col += 3;
     }
-    if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
-      if (sl_statusline_append_wrapped(
-              render, width, &col, element,
-              default_element_styles[(statusline->start_element + i) % 8],
-              indent) != 0)
-        return -1;
-    } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
-      if (sl_rgb_style(style, sizeof(style),
-                       palette->elements[(statusline->start_element + i) % 8],
-                       0) != 0 ||
+    if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+      sl_theme_color_t color =
+          (sl_theme_color_t)(SL_THEME_COLOR_ELEMENT_0 +
+                             (statusline->start_element + i) % 8);
+      if (sl_theme_color_style(impl->prompt_theme, color, 0, style,
+                               sizeof(style)) != 0 ||
           sl_statusline_append_wrapped(render, width, &col, element, style,
                                        indent) != 0)
         return -1;
@@ -2531,9 +2702,8 @@ static int sl_render_append_statusline(sl_t *self, sl_render_t *render,
   return 0;
 }
 
-static int sl_status_message_style(sl_prompt_theme_t theme,
-                                   sl_theme_color_t color, int italic,
-                                   char *style, size_t size) {
+static int sl_theme_color_style(sl_prompt_theme_t theme, sl_theme_color_t color,
+                                int italic, char *style, size_t size) {
   static const int ansi_elements[] = {36, 33, 35, 34, 32, 31, 37, 97};
   const sl_theme_palette_t *palette;
   const sl_rgb_t *rgb;
@@ -2541,14 +2711,14 @@ static int sl_status_message_style(sl_prompt_theme_t theme,
   int dim;
   int n;
   palette = sl_theme_palette(theme);
+  if (color == SL_THEME_COLOR_QUEUE)
+    color = SL_THEME_COLOR_ELEMENT_3;
   if (theme == SL_PROMPT_THEME_DEFAULT || theme == SL_PROMPT_THEME_PLAIN) {
     dim = color == SL_THEME_COLOR_MUTED;
     if (color == SL_THEME_COLOR_MUTED || color == SL_THEME_COLOR_SECONDARY)
       ansi = 90;
     else if (color == SL_THEME_COLOR_PROMPT || color == SL_THEME_COLOR_INPUT)
       ansi = 97;
-    else if (color == SL_THEME_COLOR_QUEUE)
-      ansi = 36;
     else
       ansi = ansi_elements[color - SL_THEME_COLOR_ELEMENT_0];
     n = snprintf(style, size, "\033[%s%s%dm", italic ? "3;" : "",
@@ -2557,11 +2727,9 @@ static int sl_status_message_style(sl_prompt_theme_t theme,
     if (color == SL_THEME_COLOR_MUTED)
       rgb = &palette->separator;
     else if (color == SL_THEME_COLOR_SECONDARY)
-      rgb = &palette->queue_text;
+      rgb = &palette->secondary;
     else if (color == SL_THEME_COLOR_PROMPT)
       rgb = &palette->prompt;
-    else if (color == SL_THEME_COLOR_QUEUE)
-      rgb = &palette->queue;
     else if (color == SL_THEME_COLOR_INPUT)
       rgb = &palette->input;
     else
@@ -2700,12 +2868,11 @@ static int sl_render_append_status_message(sl_t *self, sl_render_t *render,
     return 0;
   if (sl_render_new_row_at(render, 0, 0) != 0)
     return -1;
-  if (sl_status_message_style(impl->prompt_theme,
-                              impl->status_message_prefix_color, 0,
-                              prefix_style, sizeof(prefix_style)) != 0 ||
-      sl_status_message_style(impl->prompt_theme,
-                              impl->status_message_text_color, 1, text_style,
-                              sizeof(text_style)) != 0)
+  if (sl_theme_color_style(impl->prompt_theme,
+                           impl->status_message_prefix_color, 0, prefix_style,
+                           sizeof(prefix_style)) != 0 ||
+      sl_theme_color_style(impl->prompt_theme, impl->status_message_text_color,
+                           1, text_style, sizeof(text_style)) != 0)
     return -1;
   row = &render->rows[render->count - 1];
   prefix = impl->status_message_prefix ? impl->status_message_prefix : "! ";
@@ -2722,63 +2889,98 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
                                         int width) {
   sl_impl_t *impl;
   sl_prompt_queue_t *queue;
-  const char *control_style;
-  const char *text_style;
-  const sl_theme_palette_t *palette;
+  const char *style;
   char queue_style[32];
-  char queue_text_style[32];
   int i;
   int shown;
+  int remaining;
+  int held;
+  int approval;
+  int focused;
+  char summary[64];
   impl = sl_impl(self);
   if (!sl_prompt_queue_enabled(impl) || !render)
     return 0;
   queue = &impl->prompt_queue;
-  if (queue->len == 0)
+  if (queue->len == 0 && !queue->editing.info.held)
     return 0;
-  control_style = "";
-  text_style = "";
-  palette = sl_theme_palette(impl->prompt_theme);
-  if (impl->prompt_theme == SL_PROMPT_THEME_DEFAULT) {
-    control_style = "\033[90m";
-    text_style = "\033[90m";
-  } else if (palette && impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
-    if (sl_rgb_style(queue_style, sizeof(queue_style), palette->queue, 0) !=
-            0 ||
-        sl_rgb_style(queue_text_style, sizeof(queue_text_style),
-                     palette->queue_text, 0) != 0)
+  held = 0;
+  for (i = 0; i < queue->len; i++)
+    held += queue->items[i].info.held != 0;
+  (void)snprintf(summary, sizeof(summary), "%d %s", held,
+                 held == 1 ? "approval" : "awaiting approval");
+  approval =
+      queue->approval_id ? sl_prompt_held_index(impl, queue->approval_id) : -1;
+  focused = queue->approval_focused &&
+            sl_prompt_approval_index(impl, queue->approval_id) >= 0;
+  style = "";
+  if (impl->prompt_theme != SL_PROMPT_THEME_PLAIN) {
+    if (sl_theme_color_style(impl->prompt_theme, SL_THEME_COLOR_QUEUE, 0,
+                             queue_style, sizeof(queue_style)) != 0)
       return -1;
-    control_style = queue_style;
-    text_style = queue_text_style;
+    style = queue_style;
   }
-  shown = queue->preview_entries;
-  if (shown > queue->len)
-    shown = queue->len;
-  for (i = 0; i < shown; i++) {
+  if (queue->editing.info.held) {
+    if (sl_render_new_row_at(render, 0, 0) != 0 ||
+        sl_queue_row_append_preview(&render->rows[render->count - 1],
+                                    "H editing: approval required", width,
+                                    style) != 0)
+      return -1;
+  }
+  if (held && approval < 0) {
+    if (sl_render_queue_text(render, summary, width, "  ", style, 0) != 0)
+      return -1;
+  }
+  shown = 0;
+  remaining = 0;
+  for (i = 0; i < queue->len; i++) {
     char prefix[32];
     char number[24];
     const char *entry_prefix;
     int prefix_width;
     sl_row_t *row;
+    if (queue->items[i].info.held)
+      continue;
+    if (shown >= queue->preview_entries) {
+      remaining++;
+      continue;
+    }
+    shown++;
     if (sl_render_new_row_at(render, 0, 0) != 0)
       return -1;
     row = &render->rows[render->count - 1];
     (void)snprintf(number, sizeof(number), "%d. ", i + 1);
     entry_prefix =
-        queue->items[i].mode == SL_PROMPT_QUEUE_MODE_STEER ? "S " : "Q ";
+        queue->items[i].info.mode == SL_PROMPT_QUEUE_MODE_STEER ? "S " : "Q ";
     (void)snprintf(prefix, sizeof(prefix), "%s%s", entry_prefix, number);
-    if (sl_queue_row_append_preview(row, prefix, width, control_style) != 0)
+    if (sl_queue_row_append_preview(row, prefix, width, style) != 0)
       return -1;
     prefix_width = row->cols;
     if (sl_queue_row_append_preview(row, queue->items[i].text,
-                                    width - prefix_width, text_style) != 0)
+                                    width - prefix_width, style) != 0)
       return -1;
   }
-  if (shown < queue->len) {
+  if (remaining) {
     char more[64];
-    (void)snprintf(more, sizeof(more), "  ... %d more", queue->len - shown);
+    (void)snprintf(more, sizeof(more), "  ... %d more", remaining);
     if (sl_render_new_row_at(render, 0, 0) != 0 ||
         sl_queue_row_append_preview(&render->rows[render->count - 1], more,
-                                    width, control_style) != 0)
+                                    width, style) != 0)
+      return -1;
+  }
+  if (approval >= 0) {
+    char heading[192];
+    (void)snprintf(
+        heading, sizeof(heading), "%s / %s / Alt-E edit / %s:", summary,
+        focused ? "Alt-Y approve / Alt-N reject" : "Alt-A focus",
+        queue->items[approval].info.mode == SL_PROMPT_QUEUE_MODE_STEER
+            ? "Steering"
+            : "Queued");
+    if (sl_render_queue_text(render, heading, width, "A ",
+                             focused ? "\033[1;7m" : style, 0) != 0)
+      return -1;
+    if (sl_render_queue_text(render, queue->items[approval].text, width, "  ",
+                             style, 3) != 0)
       return -1;
   }
   return 0;
@@ -4768,6 +4970,15 @@ static ssize_t sl_read_input_byte(sl_t *self, char *ch, int timeout_ms) {
   }
   poll_timeout_ms = timeout_ms;
   if (poll_timeout_ms < 0 &&
+      ((impl->request_queue_dispatch &&
+        impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+        !impl->len && !impl->prompt_queue.editing.info.id &&
+        !impl->history_search_active && !impl->bracketed_paste &&
+        sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) ||
+       (!impl->prompt_queue.approval_id &&
+        sl_prompt_approval_index(impl, 0) >= 0)))
+    poll_timeout_ms = 0;
+  if (poll_timeout_ms < 0 &&
       (impl->idle_callback || sl_surface_is_native(impl->output_surface) ||
        (impl->statusline.enabled && impl->statusline.spinner &&
         impl->statusline.busy)))
@@ -5260,6 +5471,10 @@ static int sl_read_key(sl_t *self) {
     if (ch == '~') {
       if (code == 3)
         return SL_KEY_DELETE;
+      if (code == 5)
+        return SL_KEY_PAGE_UP;
+      if (code == 6)
+        return SL_KEY_PAGE_DOWN;
       if (code == 11)
         return SL_KEY_F1;
       if (code == 12)
@@ -5654,12 +5869,29 @@ static void sl_prompt_queue_bell(sl_impl_t *impl) {
     (void)write(impl->output_fd, "\a", 1);
 }
 
+static int sl_prompt_queue_edit_at(sl_t *self, int index) {
+  sl_impl_t *impl = sl_impl(self);
+  if (sl_prompt_queue_require_fifo(
+          self, impl, &impl->prompt_queue.items[index].info) != SL_OK) {
+    sl_prompt_queue_bell(impl);
+    return SL_OK;
+  }
+  if (sl_buf_set(self, impl->prompt_queue.items[index].text) != 0) {
+    sl_set_error(self, "failed to restore queued draft into editor");
+    return SL_ERROR_NOMEM;
+  }
+  impl->prompt_queue.editing = impl->prompt_queue.items[index];
+  impl->prompt_queue.editing_index = index;
+  (void)sl_prompt_queue_take_raw(&impl->prompt_queue, index);
+  impl->prompt_queue.approval_id = 0;
+  sl_history_nav_reset(impl);
+  return SL_OK;
+}
+
 static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
                                       int *submit, char **promoted) {
   sl_impl_t *impl;
   sl_prompt_queue_keys_t *keys;
-  char *queued;
-  sl_prompt_queue_mode_t queued_mode;
   int rc;
   if (handled)
     *handled = 0;
@@ -5671,6 +5903,16 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   if (!sl_prompt_queue_enabled(impl))
     return SL_OK;
   keys = &impl->prompt_queue.keys;
+  /* Empty edits still own a queue entry. Route every keyboard submission
+   * through the same restoration gate as sl_submit(), including busy Enter.
+   */
+  if (impl->len == 0 && impl->prompt_queue.editing.info.id &&
+      (key == SL_KEY_ENTER ||
+       (sl_key_t)key == keys->submit_or_promote_newest)) {
+    *handled = 1;
+    *submit = 1;
+    return SL_OK;
+  }
   if (keys->enqueue_draft != SL_KEY_NONE &&
       (sl_key_t)key == keys->enqueue_draft) {
     if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS &&
@@ -5695,7 +5937,7 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   }
   if (keys->edit_newest != SL_KEY_NONE && (sl_key_t)key == keys->edit_newest) {
     *handled = 1;
-    if (impl->len != 0) {
+    if (impl->len != 0 || impl->prompt_queue.editing.info.id) {
       sl_set_error(self,
                    "active draft is not empty; queued draft was not replaced");
       sl_prompt_queue_bell(impl);
@@ -5705,21 +5947,7 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
       sl_prompt_queue_bell(impl);
       return SL_OK;
     }
-    queued = NULL;
-    queued_mode = impl->prompt_queue.items[impl->prompt_queue.len - 1].mode;
-    rc = sl_prompt_queue_take_method(self, (size_t)(impl->prompt_queue.len - 1),
-                                     &queued);
-    if (rc != SL_OK)
-      return rc;
-    if (sl_buf_set(self, queued) != 0) {
-      (void)sl_prompt_queue_append_raw(impl, queued, queued_mode);
-      free(queued);
-      sl_set_error(self, "failed to restore queued draft into editor");
-      return SL_ERROR_NOMEM;
-    }
-    free(queued);
-    sl_history_nav_reset(impl);
-    return SL_OK;
+    return sl_prompt_queue_edit_at(self, impl->prompt_queue.len - 1);
   }
   if (keys->submit_or_promote_newest != SL_KEY_NONE &&
       (sl_key_t)key == keys->submit_or_promote_newest) {
@@ -5753,6 +5981,7 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
           sl_set_error(self, "failed to clear steered draft");
           return SL_ERROR_NOMEM;
         }
+        sl_prompt_queue_finish_requeue(&impl->prompt_queue);
         sl_history_nav_reset(impl);
         return SL_OK;
       }
@@ -5760,7 +5989,7 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
         sl_prompt_queue_bell(impl);
         return SL_OK;
       }
-      impl->prompt_queue.items[impl->prompt_queue.len - 1].mode =
+      impl->prompt_queue.items[impl->prompt_queue.len - 1].info.mode =
           SL_PROMPT_QUEUE_MODE_STEER;
       return SL_OK;
     }
@@ -5769,6 +5998,11 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
       return SL_OK;
     }
     if (impl->prompt_queue.len == 0) {
+      sl_prompt_queue_bell(impl);
+      return SL_OK;
+    }
+    if (impl->prompt_queue.items[impl->prompt_queue.len - 1].info.held) {
+      sl_set_error(self, "queued prompt requires explicit approval");
       sl_prompt_queue_bell(impl);
       return SL_OK;
     }
@@ -5793,6 +6027,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   impl = sl_impl(self);
   if (!impl)
     return NULL;
+  impl->prompt_queue.last_id = 0;
+  impl->prompt_queue.approval_id = 0;
   if (source)
     *source = SL_PROMPT_SOURCE_NONE;
   sl_set_readline_status(self, SL_READLINE_NONE);
@@ -5859,6 +6095,14 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     size_t paste_len;
     int key;
     sl_key_action_t action;
+    if (!queue_dispatch)
+      impl->request_queue_dispatch = 0;
+    if (impl->prompt_queue.approval_id &&
+        sl_prompt_held_index(impl, impl->prompt_queue.approval_id) < 0)
+      impl->prompt_queue.approval_id = 0;
+    if (!impl->prompt_queue.approval_id ||
+        sl_prompt_approval_index(impl, impl->prompt_queue.approval_id) < 0)
+      impl->prompt_queue.approval_focused = 0;
     render_prompt =
         impl->history_search_active && search.prompt ? search.prompt : prompt;
     impl->active_prompt = render_prompt;
@@ -5872,10 +6116,11 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
      * decoded. Preserve a real key; release FIFO work only on an otherwise
      * idle iteration. */
     if (key == SL_KEY_NONE && queue_dispatch && impl->request_queue_dispatch &&
-        impl->len == 0 &&
+        impl->len == 0 && !impl->prompt_queue.editing.info.id &&
+        !impl->history_search_active && !impl->bracketed_paste &&
         impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
         sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
-      queued = sl_prompt_queue_take_raw(
+      queued = sl_prompt_queue_deliver_raw(
           &impl->prompt_queue,
           sl_prompt_queue_first_queued(&impl->prompt_queue));
       if (!queued) {
@@ -5930,6 +6175,14 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
           done = 1;
           break;
         }
+        if (!impl->prompt_queue.approval_id) {
+          int index = sl_prompt_approval_index(impl, 0);
+          if (index >= 0) {
+            impl->prompt_queue.approval_id =
+                impl->prompt_queue.items[index].info.id;
+            impl->prompt_queue.approval_focused = 0;
+          }
+        }
         render_prompt = impl->history_search_active && search.prompt
                             ? search.prompt
                             : prompt;
@@ -5941,6 +6194,36 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       }
       break;
     default:
+      /* Alt-Y/N answers require explicit focus. Alt-E edits an offered approval
+       * in either focus state; all other keys retain ordinary editing. */
+      if ((impl->prompt_queue.approval_id || key == SL_KEY_ALT_E) &&
+          sl_prompt_approval_index(impl, impl->prompt_queue.approval_id) >= 0) {
+        sl_prompt_queue_t *queue = &impl->prompt_queue;
+        if (queue->approval_focused &&
+            (key == SL_KEY_ESCAPE || key == SL_KEY_ALT_A)) {
+          queue->approval_focused = 0;
+          break;
+        }
+        if (key == SL_KEY_ALT_E ||
+            (queue->approval_focused &&
+             (key == SL_KEY_ALT_BASE + 'y' || key == SL_KEY_ALT_BASE + 'Y' ||
+              key == SL_KEY_ALT_BASE + 'n' || key == SL_KEY_ALT_BASE + 'N'))) {
+          int index = sl_prompt_approval_index(impl, queue->approval_id);
+          sl_prompt_id_t id = queue->items[index].info.id;
+          int rc;
+          queue->approval_id = 0;
+          queue->approval_focused = 0;
+          rc = key == SL_KEY_ALT_E ? sl_prompt_queue_edit_at(self, index)
+               : key == SL_KEY_ALT_BASE + 'y' || key == SL_KEY_ALT_BASE + 'Y'
+                   ? sl_prompt_queue_approve(self, id)
+                   : sl_prompt_queue_reject(self, id);
+          if (rc != SL_OK) {
+            failed = 1;
+            done = 1;
+          }
+          break;
+        }
+      }
       if (sl_dispatch_key_binding(self, key, &action) != SL_OK) {
         sl_set_error(self, "key callback failed");
         failed = 1;
@@ -5969,6 +6252,16 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         done = 1;
         break;
       }
+      if (key == SL_KEY_ALT_A &&
+          sl_prompt_approval_index(impl, impl->prompt_queue.approval_id) >= 0) {
+        int index =
+            sl_prompt_approval_index(impl, impl->prompt_queue.approval_id);
+        impl->prompt_queue.approval_id =
+            impl->prompt_queue.items[index].info.id;
+        impl->prompt_queue.approval_focused = 1;
+        break;
+      }
+      impl->prompt_queue.approval_focused = 0;
       if (impl->history_search_active) {
         switch (key) {
         case SL_KEY_CTRL_C:
@@ -6186,6 +6479,23 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       }
       break;
     }
+    /* Every submit route (Enter, key binding, idle/watch callback) shares the
+     * hold gate. Editing never becomes implicit approval. */
+    if (done && !failed && !cancelled && !interrupted && !eof && !promoted &&
+        !queued && impl->prompt_queue.editing.info.id &&
+        (impl->prompt_queue.editing.info.held || impl->len == 0)) {
+      int status = SL_OK;
+      impl->request_submit = 0;
+      done = 0;
+      if (impl->len)
+        status = sl_prompt_queue_enqueue_draft_method(self);
+      else
+        sl_prompt_queue_restore_edit(self);
+      if (status != SL_OK) {
+        failed = 1;
+        done = 1;
+      }
+    }
     render_prompt =
         impl->history_search_active && search.prompt ? search.prompt : prompt;
     impl->active_prompt = render_prompt;
@@ -6197,6 +6507,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   impl->active_readline = 0;
   impl->active_prompt = prompt;
   if (interrupted) {
+    sl_prompt_queue_restore_edit(self);
     sl_prompt_queue_stop_queued_turns(impl);
     free(promoted);
     free(queued);
@@ -6226,6 +6537,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     return NULL;
   }
   if (failed) {
+    sl_prompt_queue_restore_edit(self);
     free(promoted);
     free(queued);
     sl_history_search_cleanup(self, &search);
@@ -6265,6 +6577,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   (void)sl_show_cursor(impl);
   impl->active_prompt = NULL;
   if (failed) {
+    sl_prompt_queue_restore_edit(self);
     free(promoted);
     free(queued);
     sl_history_search_cleanup(self, &search);
@@ -6276,6 +6589,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     return NULL;
   }
   if (eof || cancelled) {
+    sl_prompt_queue_restore_edit(self);
     free(promoted);
     free(queued);
     sl_history_search_cleanup(self, &search);
@@ -6289,6 +6603,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   }
   result = promoted ? promoted : queued ? queued : sl_strdup(impl->buf);
   if (!result) {
+    sl_prompt_queue_restore_edit(self);
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_ERROR);
     sl_history_search_cleanup(self, &search);
@@ -6311,6 +6626,10 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
                     : queued ? SL_PROMPT_SOURCE_QUEUED
                              : SL_PROMPT_SOURCE_DIRECT;
     if (result) {
+      if (!promoted && !queued) {
+        impl->prompt_queue.last_id = impl->prompt_queue.editing.info.id;
+        sl_prompt_queue_finish_edit(&impl->prompt_queue);
+      }
       sl_set_readline_status(self, SL_READLINE_SUBMITTED);
       if (source)
         *source = result_source;
@@ -6318,6 +6637,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     }
   }
   sl_history_search_cleanup(self, &search);
+  if (!result)
+    sl_prompt_queue_restore_edit(self);
   free(impl->history_edit);
   impl->history_edit = NULL;
   impl->history_index = -1;
@@ -6338,10 +6659,12 @@ static char *sl_next_prompt_method(sl_t *self, const char *prompt,
   impl = sl_impl(self);
   if (!impl)
     return NULL;
+  impl->prompt_queue.last_id = 0;
   if (sl_prompt_queue_enabled(impl) &&
       impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+      !impl->prompt_queue.editing.info.id &&
       sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
-    result = sl_prompt_queue_take_raw(
+    result = sl_prompt_queue_deliver_raw(
         &impl->prompt_queue, sl_prompt_queue_first_queued(&impl->prompt_queue));
     if (!result) {
       sl_set_error(self, "failed to dequeue prompt");
@@ -6378,6 +6701,8 @@ static void sl_destroy_method(sl_t *self) {
     (void)sl_history_close_impl(self);
     sl_history_clear(&impl->history);
     sl_prompt_queue_clear_raw(&impl->prompt_queue);
+    sl_prompt_queue_finish_edit(&impl->prompt_queue);
+    free(impl->prompt_queue.items);
     sl_statusline_clear(&impl->statusline);
     free(impl->quoted_prompt_prefix);
     free(impl->status_message);
@@ -6486,7 +6811,14 @@ static int sl_set_prompt_queue_method(sl_t *self, int enabled, int max_entries,
     sl_set_error(self, "invalid prompt queue configuration");
     return SL_ERROR_INVALID;
   }
-  if (enabled && impl->prompt_queue.len > max_entries) {
+  if (!enabled && impl->prompt_queue.editing.info.id) {
+    sl_set_error(self,
+                 "finish or reject the queued edit before disabling queueing");
+    return SL_ERROR_INVALID;
+  }
+  if (enabled &&
+      impl->prompt_queue.len + (impl->prompt_queue.editing.info.id ? 1 : 0) >
+          max_entries) {
     sl_set_error(self, "prompt queue exceeds requested capacity");
     return SL_ERROR_INVALID;
   }
@@ -6550,21 +6882,25 @@ static int sl_prompt_queue_peek_method(const sl_t *self, size_t index,
   return SL_OK;
 }
 
-static int sl_prompt_queue_insert_method(sl_t *self, size_t index,
-                                         const char *text) {
+static int sl_prompt_queue_insert_mode(sl_t *self, size_t index,
+                                       const char *text, int held,
+                                       sl_prompt_queue_mode_t mode,
+                                       sl_prompt_id_t *out_id) {
   sl_impl_t *impl;
   int rc;
+  if (out_id)
+    *out_id = 0;
   impl = sl_impl(self);
   if (sl_prompt_queue_require_enabled(self, impl) != SL_OK)
     return SL_ERROR_INVALID;
-  if (!text || text[0] == '\0' ||
+  if (!text || text[0] == '\0' || (held != 0 && held != 1) ||
       !sl_prompt_queue_index_valid(index, impl->prompt_queue.len, 1)) {
     sl_set_error(
         self,
         "prompt queue insertion requires nonempty text and a valid index");
     return SL_ERROR_INVALID;
   }
-  rc = sl_prompt_queue_insert_raw(impl, (int)index, text);
+  rc = sl_prompt_queue_insert_raw(impl, (int)index, text, mode, held, 0);
   if (rc == 1) {
     sl_set_error(self, "prompt queue is full");
     return SL_ERROR_FULL;
@@ -6573,29 +6909,73 @@ static int sl_prompt_queue_insert_method(sl_t *self, size_t index,
     sl_set_error(self, "failed to insert prompt queue entry");
     return SL_ERROR_NOMEM;
   }
+  if (out_id)
+    *out_id = impl->prompt_queue.items[index].info.id;
+  if (!impl->prompt_queue.items[index].info.held &&
+      mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
+      impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+      impl->active_readline)
+    impl->request_queue_dispatch = 1;
   return SL_OK;
 }
 
-static int sl_prompt_queue_append_method(sl_t *self, const char *text) {
-  sl_impl_t *impl;
-  int rc;
-  impl = sl_impl(self);
-  if (sl_prompt_queue_require_enabled(self, impl) != SL_OK)
-    return SL_ERROR_INVALID;
-  if (!text || text[0] == '\0') {
-    sl_set_error(self, "prompt queue append requires nonempty text");
+static int sl_prompt_queue_insert_method(sl_t *self, size_t index,
+                                         const char *text, int held,
+                                         sl_prompt_id_t *out_id) {
+  return sl_prompt_queue_insert_mode(self, index, text, held,
+                                     SL_PROMPT_QUEUE_MODE_QUEUED, out_id);
+}
+
+static int sl_inject_queued_prompt_method(sl_t *self, const char *text,
+                                          sl_prompt_id_t *out_id) {
+  const sl_impl_t *impl = sl_impl(self);
+  return sl_prompt_queue_insert_mode(
+      self, impl ? (size_t)impl->prompt_queue.len : 0, text, 1,
+      SL_PROMPT_QUEUE_MODE_QUEUED, out_id);
+}
+
+static int sl_inject_steer_prompt_method(sl_t *self, const char *text,
+                                         sl_prompt_id_t *out_id) {
+  const sl_impl_t *impl = sl_impl(self);
+  return sl_prompt_queue_insert_mode(
+      self, impl ? (size_t)impl->prompt_queue.len : 0, text, 1,
+      SL_PROMPT_QUEUE_MODE_STEER, out_id);
+}
+
+static int sl_set_auto_approval_method(sl_t *self, int enabled) {
+  sl_impl_t *impl = sl_impl(self);
+  int i;
+  if (!impl || (enabled != 0 && enabled != 1)) {
+    sl_set_error(self, "auto_approval must be 0 or 1");
     return SL_ERROR_INVALID;
   }
-  rc = sl_prompt_queue_append_raw(impl, text, SL_PROMPT_QUEUE_MODE_QUEUED);
-  if (rc == 1) {
-    sl_set_error(self, "prompt queue is full");
-    return SL_ERROR_FULL;
-  }
-  if (rc != 0) {
-    sl_set_error(self, "failed to append prompt queue entry");
-    return SL_ERROR_NOMEM;
+  impl->prompt_queue.auto_approval = enabled;
+  if (enabled) {
+    for (i = 0; i < impl->prompt_queue.len; i++)
+      impl->prompt_queue.items[i].info.held = 0;
+    impl->prompt_queue.editing.info.held = 0;
+    impl->prompt_queue.approval_id = 0;
+    if (impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+        impl->active_readline &&
+        sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0)
+      impl->request_queue_dispatch = 1;
   }
   return SL_OK;
+}
+
+static int sl_get_auto_approval_method(const sl_t *self, int *out) {
+  const sl_impl_t *impl = sl_impl_const(self);
+  if (!impl || !out)
+    return SL_ERROR_INVALID;
+  *out = impl->prompt_queue.auto_approval;
+  return SL_OK;
+}
+
+static int sl_prompt_queue_append_method(sl_t *self, const char *text, int held,
+                                         sl_prompt_id_t *out_id) {
+  const sl_impl_t *impl = sl_impl(self);
+  return sl_prompt_queue_insert_method(
+      self, impl ? (size_t)impl->prompt_queue.len : 0, text, held, out_id);
 }
 
 static int sl_prompt_queue_replace_method(sl_t *self, size_t index,
@@ -6625,6 +7005,8 @@ static int sl_prompt_queue_take_method(sl_t *self, size_t index, char **out) {
   if (out)
     *out = NULL;
   impl = sl_impl(self);
+  if (impl)
+    impl->prompt_queue.last_id = 0;
   if (sl_prompt_queue_require_enabled(self, impl) != SL_OK)
     return SL_ERROR_INVALID;
   if (!out || !sl_prompt_queue_index_valid(index, impl->prompt_queue.len, 0)) {
@@ -6632,7 +7014,11 @@ static int sl_prompt_queue_take_method(sl_t *self, size_t index, char **out) {
                  "prompt queue take requires an output and a valid index");
     return SL_ERROR_INVALID;
   }
-  *out = sl_prompt_queue_take_raw(&impl->prompt_queue, (int)index);
+  if (impl->prompt_queue.items[index].info.held) {
+    sl_set_error(self, "queued prompt requires explicit approval");
+    return SL_ERROR_INVALID;
+  }
+  *out = sl_prompt_queue_deliver_raw(&impl->prompt_queue, (int)index);
   if (!*out) {
     sl_set_error(self, "failed to take prompt queue entry");
     return SL_ERROR;
@@ -6648,7 +7034,7 @@ static int sl_prompt_queue_get_mode_method(const sl_t *self, size_t index,
     sl_set_error((sl_t *)self, "invalid prompt queue mode query");
     return SL_ERROR_INVALID;
   }
-  *out = impl->prompt_queue.items[index].mode;
+  *out = impl->prompt_queue.items[index].info.mode;
   return SL_OK;
 }
 
@@ -6662,12 +7048,114 @@ static int sl_prompt_queue_set_mode_method(sl_t *self, size_t index,
     sl_set_error(self, "invalid prompt queue mode update");
     return SL_ERROR_INVALID;
   }
-  impl->prompt_queue.items[index].mode = mode;
+  impl->prompt_queue.items[index].info.mode = mode;
   if (mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
+      !impl->prompt_queue.items[index].info.held &&
       impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->active_readline && impl->len == 0)
+      impl->active_readline && impl->len == 0 &&
+      !impl->prompt_queue.editing.info.id)
     impl->request_queue_dispatch = 1;
   return SL_OK;
+}
+
+static int sl_prompt_queue_info_method(const sl_t *self, size_t index,
+                                       sl_prompt_queue_entry_info_t *out) {
+  const sl_impl_t *impl = sl_impl_const(self);
+  if (out)
+    memset(out, 0, sizeof(*out));
+  if (!impl || !out ||
+      !sl_prompt_queue_index_valid(index, impl->prompt_queue.len, 0)) {
+    sl_set_error((sl_t *)self, "invalid prompt queue info query");
+    return SL_ERROR_INVALID;
+  }
+  *out = impl->prompt_queue.items[index].info;
+  return SL_OK;
+}
+
+static int
+sl_prompt_queue_draft_info_method(const sl_t *self,
+                                  sl_prompt_queue_entry_info_t *out) {
+  const sl_impl_t *impl = sl_impl_const(self);
+  if (out)
+    memset(out, 0, sizeof(*out));
+  if (!impl || !out)
+    return SL_ERROR_INVALID;
+  *out = impl->prompt_queue.editing.info;
+  return SL_OK;
+}
+
+static int sl_prompt_queue_approve_method(sl_t *self, sl_prompt_id_t id) {
+  sl_impl_t *impl = sl_impl(self);
+  int i;
+  if (sl_prompt_queue_require_enabled(self, impl) != SL_OK || !id)
+    return SL_ERROR_INVALID;
+  if (impl->prompt_queue.editing.info.id == id) {
+    if (sl_prompt_queue_require_fifo(self, impl,
+                                     &impl->prompt_queue.editing.info) != SL_OK)
+      return SL_ERROR_INVALID;
+    if (impl->prompt_queue.approval_id == id)
+      impl->prompt_queue.approval_id = 0;
+    impl->prompt_queue.editing.info.held = 0;
+    return SL_OK;
+  }
+  for (i = 0; i < impl->prompt_queue.len; i++) {
+    sl_prompt_queue_entry_info_t *info = &impl->prompt_queue.items[i].info;
+    if (info->id != id)
+      continue;
+    if (sl_prompt_queue_require_fifo(self, impl, info) != SL_OK)
+      return SL_ERROR_INVALID;
+    if (impl->prompt_queue.approval_id == id)
+      impl->prompt_queue.approval_id = 0;
+    info->held = 0;
+    if (info->mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
+        impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+        impl->active_readline)
+      impl->request_queue_dispatch = 1;
+    return SL_OK;
+  }
+  sl_set_error(self, "prompt queue identity does not exist");
+  return SL_ERROR_INVALID;
+}
+
+static int sl_prompt_queue_reject_method(sl_t *self, sl_prompt_id_t id) {
+  sl_impl_t *impl = sl_impl(self);
+  int i;
+  if (sl_prompt_queue_require_enabled(self, impl) != SL_OK || !id)
+    return SL_ERROR_INVALID;
+  if (impl->prompt_queue.editing.info.id == id) {
+    if (sl_prompt_queue_require_fifo(self, impl,
+                                     &impl->prompt_queue.editing.info) != SL_OK)
+      return SL_ERROR_INVALID;
+    if (sl_buf_set(self, "") != 0)
+      return SL_ERROR_NOMEM;
+    if (impl->prompt_queue.approval_id == id)
+      impl->prompt_queue.approval_id = 0;
+    sl_prompt_queue_finish_edit(&impl->prompt_queue);
+    impl->request_submit = 0;
+    /* The read loop owns the search allocation and frees it on exit/restart.
+     * Retire its saved draft now so Ctrl-G cannot restore rejected content. */
+    impl->history_search_active = 0;
+    sl_history_nav_reset(impl);
+    return SL_OK;
+  }
+  for (i = 0; i < impl->prompt_queue.len; i++) {
+    if (impl->prompt_queue.items[i].info.id == id) {
+      if (sl_prompt_queue_require_fifo(
+              self, impl, &impl->prompt_queue.items[i].info) != SL_OK)
+        return SL_ERROR_INVALID;
+      if (impl->prompt_queue.approval_id == id)
+        impl->prompt_queue.approval_id = 0;
+      free(sl_prompt_queue_take_raw(&impl->prompt_queue, i));
+      return SL_OK;
+    }
+  }
+  sl_set_error(self, "prompt queue identity does not exist");
+  return SL_ERROR_INVALID;
+}
+
+static sl_prompt_id_t sl_last_prompt_id_method(const sl_t *self) {
+  const sl_impl_t *impl = sl_impl_const(self);
+  return impl ? impl->prompt_queue.last_id : 0;
 }
 
 static int sl_prompt_queue_clear_method(sl_t *self) {
@@ -6714,6 +7202,8 @@ static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
     sl_set_error(self, "failed to clear queued draft");
     return SL_ERROR;
   }
+  sl_prompt_queue_finish_requeue(&impl->prompt_queue);
+  impl->request_submit = 0;
   sl_history_nav_reset(impl);
   return SL_OK;
 }
@@ -7292,10 +7782,19 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->prompt_queue_peek = sl_prompt_queue_peek_method;
   self->prompt_queue_insert = sl_prompt_queue_insert_method;
   self->prompt_queue_append = sl_prompt_queue_append_method;
+  self->inject_queued_prompt = sl_inject_queued_prompt_method;
+  self->inject_steer_prompt = sl_inject_steer_prompt_method;
+  self->set_auto_approval = sl_set_auto_approval_method;
+  self->get_auto_approval = sl_get_auto_approval_method;
   self->prompt_queue_replace = sl_prompt_queue_replace_method;
   self->prompt_queue_take = sl_prompt_queue_take_method;
   self->prompt_queue_clear = sl_prompt_queue_clear_method;
   self->prompt_queue_enqueue_draft = sl_prompt_queue_enqueue_draft_method;
+  self->prompt_queue_info = sl_prompt_queue_info_method;
+  self->prompt_queue_draft_info = sl_prompt_queue_draft_info_method;
+  self->prompt_queue_approve = sl_prompt_queue_approve_method;
+  self->prompt_queue_reject = sl_prompt_queue_reject_method;
+  self->last_prompt_id = sl_last_prompt_id_method;
   self->set_prompt_queue_delivery = sl_set_prompt_queue_delivery_method;
   self->get_prompt_queue_delivery = sl_get_prompt_queue_delivery_method;
   self->set_prompt_queue_profile = sl_set_prompt_queue_profile_method;
@@ -7478,16 +7977,88 @@ int sl_prompt_queue_peek(const sl_t *self, size_t index, char **out) {
   return self->prompt_queue_peek(self, index, out);
 }
 
-int sl_prompt_queue_insert(sl_t *self, size_t index, const char *text) {
+int sl_prompt_queue_insert(sl_t *self, size_t index, const char *text, int held,
+                           sl_prompt_id_t *out_id) {
+  if (out_id)
+    *out_id = 0;
   if (!self || !self->prompt_queue_insert)
     return SL_ERROR_INVALID;
-  return self->prompt_queue_insert(self, index, text);
+  return self->prompt_queue_insert(self, index, text, held, out_id);
 }
 
-int sl_prompt_queue_append(sl_t *self, const char *text) {
+int sl_prompt_queue_append(sl_t *self, const char *text, int held,
+                           sl_prompt_id_t *out_id) {
+  if (out_id)
+    *out_id = 0;
   if (!self || !self->prompt_queue_append)
     return SL_ERROR_INVALID;
-  return self->prompt_queue_append(self, text);
+  return self->prompt_queue_append(self, text, held, out_id);
+}
+
+int sl_inject_queued_prompt(sl_t *self, const char *text,
+                            sl_prompt_id_t *out_id) {
+  if (out_id)
+    *out_id = 0;
+  if (!self || !self->inject_queued_prompt)
+    return SL_ERROR_INVALID;
+  return self->inject_queued_prompt(self, text, out_id);
+}
+
+int sl_inject_steer_prompt(sl_t *self, const char *text,
+                           sl_prompt_id_t *out_id) {
+  if (out_id)
+    *out_id = 0;
+  if (!self || !self->inject_steer_prompt)
+    return SL_ERROR_INVALID;
+  return self->inject_steer_prompt(self, text, out_id);
+}
+
+int sl_set_auto_approval(sl_t *self, int enabled) {
+  if (!self || !self->set_auto_approval)
+    return SL_ERROR_INVALID;
+  return self->set_auto_approval(self, enabled);
+}
+
+int sl_get_auto_approval(const sl_t *self, int *out) {
+  if (!self || !self->get_auto_approval)
+    return SL_ERROR_INVALID;
+  return self->get_auto_approval(self, out);
+}
+
+int sl_prompt_queue_info(const sl_t *self, size_t index,
+                         sl_prompt_queue_entry_info_t *out) {
+  if (out)
+    memset(out, 0, sizeof(*out));
+  if (!self || !self->prompt_queue_info)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_info(self, index, out);
+}
+
+int sl_prompt_queue_draft_info(const sl_t *self,
+                               sl_prompt_queue_entry_info_t *out) {
+  if (out)
+    memset(out, 0, sizeof(*out));
+  if (!self || !self->prompt_queue_draft_info)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_draft_info(self, out);
+}
+
+int sl_prompt_queue_approve(sl_t *self, sl_prompt_id_t id) {
+  if (!self || !self->prompt_queue_approve)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_approve(self, id);
+}
+
+int sl_prompt_queue_reject(sl_t *self, sl_prompt_id_t id) {
+  if (!self || !self->prompt_queue_reject)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_reject(self, id);
+}
+
+sl_prompt_id_t sl_last_prompt_id(const sl_t *self) {
+  if (!self || !self->last_prompt_id)
+    return 0;
+  return self->last_prompt_id(self);
 }
 
 int sl_prompt_queue_replace(sl_t *self, size_t index, const char *text) {

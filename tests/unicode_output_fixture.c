@@ -61,13 +61,14 @@ static void produce(struct producer *producer) {
     producer->result = producer->renderer->finish_document(producer->renderer);
 }
 
-static void idle(sl_t *sl, void *userdata) {
+static int ready(sl_t *sl, const sl_watch_event_t *event, void *userdata) {
   struct producer *producer = (struct producer *)userdata;
+  (void)event;
   if (producer->started)
-    return;
+    return SL_OK;
   producer->started = 1;
   produce(producer);
-  (void)sl_cancel(sl);
+  return sl_cancel(sl);
 }
 
 static int same_mode(const struct termios *before,
@@ -85,6 +86,7 @@ int main(int argc, char **argv) {
   mdf_options options;
   mdf_sink output;
   sl_config_t config;
+  sl_watch_id_t watch;
   int interrupted;
   char *line;
   if (argc != 6 || tcgetattr(STDIN_FILENO, &before) != 0)
@@ -121,7 +123,8 @@ int main(int argc, char **argv) {
     producer.sl = sl_create_with_config(&config);
     if (!producer.sl || sl_output_stream_begin(producer.sl) != SL_OK ||
         (!interrupted &&
-         sl_set_idle_callback(producer.sl, idle, &producer) != SL_OK))
+         sl_watch_add(producer.sl, producer.trace, SL_WATCH_WRITE, ready,
+                      &producer, &watch) != SL_OK))
       return 2;
     line = sl_readline(producer.sl, "> ");
     if (line ||

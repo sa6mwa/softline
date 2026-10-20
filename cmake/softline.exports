@@ -26,6 +26,11 @@ sl_output_stream_write
 sl_output_stream_write_quoted_prompt
 sl_print_above
 sl_prompt_queue_append
+sl_prompt_queue_info
+sl_prompt_queue_draft_info
+sl_prompt_queue_approve
+sl_prompt_queue_reject
+sl_last_prompt_id
 sl_prompt_queue_capacity
 sl_prompt_queue_clear
 sl_prompt_queue_count
@@ -70,3 +75,7 @@ sl_history_close
 sl_history_compact
 sl_history_set_auto_add
 sl_history_search_active
+sl_inject_queued_prompt
+sl_inject_steer_prompt
+sl_set_auto_approval
+sl_get_auto_approval

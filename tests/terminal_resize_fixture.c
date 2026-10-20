@@ -154,7 +154,8 @@ static int ready(sl_t *sl, const sl_watch_event_t *event, void *userdata) {
   } else if (command == 'v') {
     result = sl_set_status_elements(sl, elements, 1);
   } else if (command == 'q') {
-    result = sl_prompt_queue_append(sl, "queued message wraps across columns");
+    result = sl_prompt_queue_append(sl, "queued message wraps across columns",
+                                    0, NULL);
   } else if (command == 'g') {
     result = sl_set_status_message(sl, "Goodbye.");
   } else {

@@ -13,6 +13,8 @@ DIST_DIR  := $(ROOT_DIR)/dist
 CACHE_DIR := $(ROOT_DIR)/.cache
 
 PRESET ?= debug
+CHAT_APPROVAL_DEMO ?= 1
+CHAT_DEMO_ENV = SOFTLINE_CHAT_APPROVAL_DEMO="$(CHAT_APPROVAL_DEMO)"
 
 ifneq ($(strip $(THEME)),)
 EXAMPLE_THEME_ENV := SOFTLINE_PROMPT_THEME="$(THEME)"
@@ -62,39 +64,39 @@ run-simple: build-debug ## Run C simple example (THEME=default|plain|...)
 
 .PHONY: run-chat
 run-chat: build-debug ## Run C chat example (Gruvbox by default; THEME=... overrides)
-	@SOFTLINE_PROMPT_THEME="$(if $(strip $(THEME)),$(THEME),gruvbox)" ./build/debug/examples/example_chat
+	@SOFTLINE_PROMPT_THEME="$(if $(strip $(THEME)),$(THEME),gruvbox)" $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-default
 run-chat-default: build-debug ## Run C chat example with the default ANSI theme
-	@SOFTLINE_PROMPT_THEME="default" ./build/debug/examples/example_chat
+	@SOFTLINE_PROMPT_THEME="default" $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-riced
 run-chat-riced: build-debug ## Run C chat example with the riced theme
-	@SOFTLINE_PROMPT_THEME="riced" ./build/debug/examples/example_chat
+	@SOFTLINE_PROMPT_THEME="riced" $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-without-delay
 run-chat-without-delay: build-debug ## Run default chat with no simulated producer delay
-	@SOFTLINE_CHAT_CHAR_MS=0 SOFTLINE_PROMPT_THEME=default ./build/debug/examples/example_chat
+	@SOFTLINE_CHAT_CHAR_MS=0 SOFTLINE_PROMPT_THEME=default $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-without-delay-riced
 run-chat-without-delay-riced: build-debug ## Run riced chat with no simulated producer delay
-	@SOFTLINE_CHAT_CHAR_MS=0 SOFTLINE_PROMPT_THEME=riced ./build/debug/examples/example_chat
+	@SOFTLINE_CHAT_CHAR_MS=0 SOFTLINE_PROMPT_THEME=riced $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-plain
 run-chat-plain: build-debug ## Run C chat example with the uncoloured plain theme
-	@SOFTLINE_PROMPT_THEME="plain" ./build/debug/examples/example_chat
+	@SOFTLINE_PROMPT_THEME="plain" $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-monogreen
 run-chat-monogreen: build-debug ## Run C chat example with the monogreen theme
-	@SOFTLINE_PROMPT_THEME="monogreen" ./build/debug/examples/example_chat
+	@SOFTLINE_PROMPT_THEME="monogreen" $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-monochrome
 run-chat-monochrome: build-debug ## Run C chat example with the monochrome theme
-	@SOFTLINE_PROMPT_THEME="monochrome" ./build/debug/examples/example_chat
+	@SOFTLINE_PROMPT_THEME="monochrome" $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: run-chat-synthwave
 run-chat-synthwave: build-debug ## Run C chat example with the synthwave theme
-	@SOFTLINE_PROMPT_THEME="synthwave" ./build/debug/examples/example_chat
+	@SOFTLINE_PROMPT_THEME="synthwave" $(CHAT_DEMO_ENV) ./build/debug/examples/example_chat
 
 .PHONY: build-release
 build-release: ## Build release target

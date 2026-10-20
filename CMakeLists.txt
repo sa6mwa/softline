@@ -27,11 +27,10 @@ endif()
 
 set(SL_DIST_DIR "${CMAKE_SOURCE_DIR}/dist" CACHE PATH "Release artifact output directory")
 set(SL_TARGET_ID "" CACHE STRING "Release target identifier")
-set(SOFTLINE_ABI_VERSION "1" CACHE STRING "softline shared library ABI version")
-
-if(NOT SOFTLINE_ABI_VERSION MATCHES "^[0-9]+$")
-  message(FATAL_ERROR "SOFTLINE_ABI_VERSION must be a non-negative integer")
-endif()
+# The shared-library ABI belongs to the source, not to build configuration.
+# Discard cache entries left by older configurations before selecting it.
+unset(SOFTLINE_ABI_VERSION CACHE)
+set(SOFTLINE_ABI_VERSION "2")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

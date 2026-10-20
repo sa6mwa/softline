@@ -39,7 +39,7 @@ typedef struct sl_history {
 
 typedef struct sl_prompt_queue_entry {
   char *text;
-  sl_prompt_queue_mode_t mode;
+  sl_prompt_queue_entry_info_t info;
 } sl_prompt_queue_entry_t;
 
 typedef struct sl_prompt_queue {
@@ -49,6 +49,17 @@ typedef struct sl_prompt_queue {
   int max_entries;
   int preview_entries;
   int enabled;
+  sl_prompt_id_t serial;
+  sl_prompt_id_t last_id;
+  int auto_approval;
+  sl_prompt_id_t approval_id;
+  int approval_focused;
+  /* Own the original while its text is edited; its queue slot stays reserved.
+   */
+  sl_prompt_queue_entry_t editing;
+  /* Reserved position among visible entries, adjusted by queue mutations.
+   * An insertion at this position follows the reserved entry. */
+  int editing_index;
   /* A queued-turns cancellation retains drafts but stops automatic FIFO
    * release until the user intentionally submits or promotes a turn. */
   int stopped;

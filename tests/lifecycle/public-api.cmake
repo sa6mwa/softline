@@ -77,6 +77,8 @@ set(aliases destroy close prompt_queue_count queue_count prompt_queue_capacity q
   prompt_queue_peek queue_peek prompt_queue_insert queue_insert prompt_queue_append queue_append
   prompt_queue_replace queue_replace prompt_queue_take queue_take prompt_queue_get_mode queue_mode
   prompt_queue_set_mode queue_set_mode prompt_queue_clear queue_clear prompt_queue_enqueue_draft queue_draft
+  prompt_queue_info queue_info prompt_queue_draft_info queue_draft_info
+  prompt_queue_approve queue_approve prompt_queue_reject queue_reject
   set_prompt_queue_delivery set_queue_delivery get_prompt_queue_delivery queue_delivery
   set_prompt_queue_profile set_queue_profile get_prompt_queue_profile queue_profile
   set_prompt_queue_keys set_queue_keys get_prompt_queue_keys queue_keys)

@@ -86,7 +86,7 @@ static int run_case(int ansi, int timeout) {
   CHECK(sl_set_idle_callback(sl, NULL, NULL) == SL_OK);
   CHECK(sl_set_buffer(sl, "preserved draft") == SL_OK &&
         sl_set_cursor(sl, 4) == SL_OK);
-  CHECK(sl_prompt_queue_append(sl, "queued turn") == SL_OK);
+  CHECK(sl_prompt_queue_append(sl, "queued turn", 0, NULL) == SL_OK);
   CHECK(sl_set_prompt_queue_delivery(sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) ==
         SL_OK);
   CHECK(sl_history_add(sl, "history sentinel") == SL_OK);

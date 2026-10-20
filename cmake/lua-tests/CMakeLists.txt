@@ -37,6 +37,7 @@ if(NOT SOFTLINE_LUA_DEBUG)
   add_test(NAME lua_chat_ctrl_c COMMAND "${pty_test}" cancel "${SOFTLINE_LUA_EXECUTABLE}" "${root}")
   add_test(NAME lua_live_output COMMAND "${pty_test}" live "${SOFTLINE_LUA_EXECUTABLE}" "${root}")
   add_test(NAME lua_idle_callback COMMAND "${pty_test}" idle "${SOFTLINE_LUA_EXECUTABLE}" "${root}")
+  add_test(NAME lua_queue_approval COMMAND "${pty_test}" approval "${SOFTLINE_LUA_EXECUTABLE}" "${root}")
   add_test(NAME lua_watch_file_gc COMMAND "${pty_test}" watch_gc "${SOFTLINE_LUA_EXECUTABLE}" "${root}")
   add_test(NAME lua_chat_shell COMMAND "${lua_build}/test_chat_shell" lua
     "${SOFTLINE_LUA_EXECUTABLE}" "${root}" "${root}/build"

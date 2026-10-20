@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,33 @@ static const char *const response_templates[] = {
     "for the operation; **bold** marks the result and *italic* marks a "
     "caveat.\n\n# Summary\n\nThe stream is still live.\n",
     "# Notes\n\nA single line can be *italic*, **bold**, or `code`.\n"};
+
+static const char *const approval_details[] = {
+    NULL,
+    "Review the proposed changes before continuing.\n"
+    "Check the public API and the tests.\n"
+    "Report any remaining risks.",
+    "Check the complete behavior before proceeding: confirm that ordinary "
+    "user input stays responsive while output is streaming, that queued and "
+    "steering messages keep their original destination, and that approval "
+    "decisions remain in arrival order through editing and requeueing. "
+    "Include the evidence from focused tests, describe any remaining "
+    "uncertainty, and keep the explanation clear enough to review without "
+    "opening the implementation. Paragraph complete.",
+    "Verification plan:\n"
+    "01. Check intent and constraints.\n"
+    "02. Keep ordinary input responsive.\n"
+    "03. Preserve FIFO approval order.\n"
+    "04. Retain steering intent.\n"
+    "05. Keep normal queue previews visible.\n"
+    "06. Preserve the reasoning row.\n"
+    "07. Wrap text to the terminal width.\n"
+    "08. Limit previews to three lines.\n"
+    "09. Mark omitted text with an ellipsis.\n"
+    "10. Keep full messages editable.\n"
+    "11. Retain holds after editing.\n"
+    "12. Report verification evidence.\n"
+    "End of verification plan."};
 
 struct chat_state {
   sl_t *sl;
@@ -39,11 +67,23 @@ struct chat_state {
   unsigned int turn_index;
   size_t response_bytes;
   char previous_response_char;
+  int approval_demo;
+  unsigned int approval_interval_ms;
+  unsigned int injected;
+  double next_injection;
+  int demo_failed;
 };
 
 static int start_operation(struct chat_state *state);
 static int dispatch_next_turn(struct chat_state *state);
 static int sync_geometry(struct chat_state *state);
+
+/* Keep the reasoning row separate from queue/approval rows while idle.
+ * Actual messages retain the normal status prefix. */
+static int set_chat_message(sl_t *sl, const char *message) {
+  int rc = sl_set_status_message_prefix(sl, message ? NULL : "");
+  return rc == SL_OK ? sl_set_status_message(sl, message ? message : " ") : rc;
+}
 
 static int is_shell_command(const char *line) {
   return strcmp(line, "!sh") == 0 || strcmp(line, "/shell") == 0;
@@ -71,7 +111,7 @@ static int run_shell(struct chat_state *state) {
             WTERMSIG(status));
   return sync_geometry(state) == 0 &&
                  sl_output_stream_begin(state->sl) == SL_OK &&
-                 sl_set_status_message(state->sl, NULL) == SL_OK
+                 set_chat_message(state->sl, NULL) == SL_OK
              ? 0
              : -1;
 }
@@ -159,7 +199,7 @@ static int render_user_prompt(struct chat_state *state, const char *line) {
 static int set_busy(struct chat_state *state, int busy) {
   if (sl_set_status_spinner(state->sl, busy) != SL_OK ||
       sl_set_status_busy(state->sl, busy) != SL_OK ||
-      sl_set_status_message(state->sl, busy ? "Thinking..." : NULL) != SL_OK)
+      set_chat_message(state->sl, busy ? "Thinking..." : NULL) != SL_OK)
     return -1;
   state->busy = busy;
   return 0;
@@ -170,7 +210,7 @@ static int show_goodbye(struct chat_state *state) {
     return 0;
   if (sl_set_status_spinner(state->sl, 0) != SL_OK ||
       sl_set_status_busy(state->sl, 0) != SL_OK ||
-      sl_set_status_message(state->sl, "Goodbye.") != SL_OK)
+      set_chat_message(state->sl, "Goodbye.") != SL_OK)
     return -1;
   return 0;
 }
@@ -188,12 +228,12 @@ static int finish_response_document(struct chat_state *state) {
 
 static int deliver_steers(struct chat_state *state, int at_seam) {
   size_t index;
-  sl_prompt_queue_mode_t mode;
+  sl_prompt_queue_entry_info_t info;
   char *line;
   for (index = 0; index < sl_prompt_queue_count(state->sl);) {
-    if (sl_prompt_queue_get_mode(state->sl, index, &mode) != SL_OK)
+    if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
       return -1;
-    if (mode != SL_PROMPT_QUEUE_MODE_STEER) {
+    if (info.mode != SL_PROMPT_QUEUE_MODE_STEER || info.held) {
       index++;
       continue;
     }
@@ -327,7 +367,7 @@ static int operation_watch(sl_t *sl, const sl_watch_event_t *event,
       state->previous_response_char = bytes[i];
       state->response_bytes++;
       if (state->response_bytes == 15 &&
-          sl_set_status_message(state->sl, "Reasoning...") != SL_OK)
+          set_chat_message(state->sl, "Reasoning...") != SL_OK)
         return SL_ERROR_IO;
     }
     return SL_OK;
@@ -400,9 +440,17 @@ static int start_operation(struct chat_state *state) {
 
 static int dispatch_next_turn(struct chat_state *state) {
   char *line;
-  while (sl_prompt_queue_count(state->sl) > 0) {
+  size_t index;
+  sl_prompt_queue_entry_info_t info;
+  for (index = 0; index < sl_prompt_queue_count(state->sl);) {
+    if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
+      return -1;
+    if (info.held) {
+      index++;
+      continue;
+    }
     line = NULL;
-    if (sl_prompt_queue_take(state->sl, 0, &line) != SL_OK)
+    if (sl_prompt_queue_take(state->sl, index, &line) != SL_OK)
       return -1;
     if (strcmp(line, "/quit") == 0) {
       sl_free_string(state->sl, line);
@@ -424,6 +472,113 @@ static int dispatch_next_turn(struct chat_state *state) {
     break;
   }
   return 0;
+}
+
+static double monotonic_seconds(void) {
+  struct timespec value;
+  if (clock_gettime(CLOCK_MONOTONIC, &value) != 0)
+    return -1;
+  return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
+}
+
+static void schedule_injection(struct chat_state *state, double now) {
+  unsigned int interval = state->approval_interval_ms;
+  if (!interval)
+    interval = 10000u + (unsigned int)rand() % 10001u;
+  state->next_injection = now + (double)interval / 1000.0;
+}
+
+/* The demo uses the editor's owner-thread idle hook. No timer worker or
+ * competing input loop is needed; typing and stream watches keep priority. */
+static void approval_demo_idle(sl_t *sl, void *userdata) {
+  struct chat_state *state = userdata;
+  sl_prompt_queue_delivery_t delivery;
+  sl_prompt_queue_entry_info_t draft;
+  double now = monotonic_seconds();
+  int result = SL_OK;
+  if (now < 0)
+    result = SL_ERROR_IO;
+  else if (now >= state->next_injection) {
+    schedule_injection(state, now);
+    if (sl_prompt_queue_count(sl) < 4) {
+      char message[2048];
+      sl_prompt_id_t id;
+      int steering = (state->injected % 2u) != 0;
+      unsigned int shape = state->injected ? (unsigned int)rand() % 4u : 0u;
+      const char *details = shape ? approval_details[shape]
+                            : steering
+                                ? "Focus the next answer on verification."
+                                : "Summarize the next steps before continuing.";
+      (void)snprintf(message, sizeof(message), "Demo %s request #%u: %s",
+                     steering ? "steering" : "queued", state->injected + 1u,
+                     details);
+      result = steering ? sl_inject_steer_prompt(sl, message, &id)
+                        : sl_inject_queued_prompt(sl, message, &id);
+      if (result == SL_OK)
+        state->injected++;
+    }
+  }
+  /* An approved steer arriving between turns gets its own response. Respect
+   * the queue's stopped state after cancellation and an unfinished draft. */
+  if (result == SL_OK && !state->busy && !sl_buffer(sl)[0] &&
+      !sl->history_search_active(sl)) {
+    result = sl_prompt_queue_draft_info(sl, &draft);
+    if (result == SL_OK && !draft.id) {
+      result = sl_get_prompt_queue_delivery(sl, &delivery);
+      if (result == SL_OK && delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+          dispatch_next_turn(state) != 0)
+        result = SL_ERROR_IO;
+    }
+  }
+  if (result != SL_OK) {
+    state->demo_failed = 1;
+    (void)sl_cancel(sl);
+  }
+}
+
+static int setup_approval_demo(struct chat_state *state) {
+  const char *enabled = getenv("SOFTLINE_CHAT_APPROVAL_DEMO");
+  const char *interval = getenv("SOFTLINE_CHAT_APPROVAL_MS");
+  const char *seed_text = getenv("SOFTLINE_CHAT_APPROVAL_SEED");
+  unsigned int seed = (unsigned int)time(NULL) ^ (unsigned int)getpid();
+  double now;
+  if (!state->interactive || !enabled || strcmp(enabled, "1"))
+    return 0;
+  state->approval_demo = 1;
+  if (interval && interval[0]) {
+    char *end;
+    long value;
+    errno = 0;
+    value = strtol(interval, &end, 10);
+    if (errno || *end || value < 1 || value > 60000) {
+      fprintf(stderr, "SOFTLINE_CHAT_APPROVAL_MS must be 1..60000\n");
+      return -1;
+    }
+    state->approval_interval_ms = (unsigned int)value;
+  }
+  now = monotonic_seconds();
+  if (now < 0)
+    return -1;
+  if (seed_text && seed_text[0]) {
+    char *end;
+    unsigned long value;
+    errno = 0;
+    value = strtoul(seed_text, &end, 10);
+    if (seed_text[0] < '0' || seed_text[0] > '9' || errno || *end ||
+        value > UINT_MAX) {
+      fprintf(stderr, "SOFTLINE_CHAT_APPROVAL_SEED must be 0..%u\n", UINT_MAX);
+      return -1;
+    }
+    seed = (unsigned int)value;
+  }
+  srand(seed);
+  schedule_injection(state, now);
+  return sl_set_prompt_queue_delivery(state->sl,
+                                      SL_PROMPT_QUEUE_DELIVERY_AUTO) == SL_OK &&
+                 sl_set_idle_callback(state->sl, approval_demo_idle, state) ==
+                     SL_OK
+             ? 0
+             : -1;
 }
 
 static void keep_chat_on_interrupt(int signo) { (void)signo; }
@@ -451,9 +606,36 @@ static int exit_editor_key(sl_t *sl, sl_key_t key, void *userdata,
   if (sl->history_search_active(sl))
     return SL_OK;
   if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER || key == SL_KEY_TAB) &&
+      strncmp(text, "/approve", 8) == 0 &&
+      (text[8] == '\0' || text[8] == ' ')) {
+    int enabled;
+    sl_prompt_queue_entry_info_t draft;
+    *action = SL_KEY_ACTION_HANDLED;
+    if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
+      return SL_ERROR;
+    if (draft.id)
+      return set_chat_message(sl, "Finish editing the queued message first.");
+    if (!strcmp(text, "/approve")) {
+      if (sl_get_auto_approval(sl, &enabled) != SL_OK)
+        return SL_ERROR;
+      enabled = !enabled;
+    } else if (!strcmp(text, "/approve on"))
+      enabled = 1;
+    else if (!strcmp(text, "/approve off"))
+      enabled = 0;
+    else
+      return set_chat_message(sl, "Usage: /approve [on|off]");
+    if (sl_set_auto_approval(sl, enabled) != SL_OK ||
+        sl_set_buffer(sl, "") != SL_OK)
+      return SL_ERROR;
+    return set_chat_message(
+        sl, enabled ? "Auto-approval ON (all waiting requests approved)."
+                    : "Auto-approval OFF (new requests need approval).");
+  }
+  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER || key == SL_KEY_TAB) &&
       is_shell_command(text) && (state->busy || key == SL_KEY_TAB)) {
     *action = SL_KEY_ACTION_HANDLED;
-    return sl_set_status_message(
+    return set_chat_message(
         sl, state->busy ? "Shell is available only between turns."
                         : "Use Enter to open the shell; it cannot be queued.");
   }
@@ -574,7 +756,7 @@ int main(void) {
   }
   if (interactive) {
     (void)signal(SIGINT, keep_chat_on_interrupt);
-    if (set_busy(&state, 0) != 0 ||
+    if (set_busy(&state, 0) != 0 || setup_approval_demo(&state) != 0 ||
         render_note(&state,
                     "Enter sends or queues; Alt-Enter steers or promotes; "
                     "Alt-E edits queue. Esc/Ctrl-C cancels; `/quit` leaves. "
@@ -583,10 +765,27 @@ int main(void) {
       exit_code = 1;
       goto cleanup;
     }
+    if (state.approval_demo &&
+        render_note(
+            &state,
+            "Approval demo: queued and steering requests arrive "
+            "every 10-20 seconds. Alt-A focuses approvals; Alt-Y approves, "
+            "Alt-N rejects while focused, Alt-E edits, Esc returns. "
+            "`/approve` toggles auto-approval; `/approve on|off` sets it.") !=
+            0) {
+      exit_code = 1;
+      goto cleanup;
+    }
   }
   for (;;) {
     source = SL_PROMPT_SOURCE_NONE;
     line = sl_next_prompt(state.sl, NULL, &source);
+    if (state.demo_failed) {
+      sl_free_string(state.sl, line);
+      report_failure(&state, "approval demo");
+      exit_code = 1;
+      break;
+    }
     if (state.exit_requested) {
       if (line)
         sl_free_string(state.sl, line);

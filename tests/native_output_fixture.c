@@ -125,6 +125,44 @@ static int quoted_after(const char *first) {
   return result == SL_OK ? 0 : 1;
 }
 
+static int quote_spacing(const char *initial, const char *between,
+                         const char *outside) {
+  sl_t *sl;
+  int result;
+  struct termios before, after;
+  if (tcgetattr(STDIN_FILENO, &before) != 0 ||
+      write(STDOUT_FILENO, initial, strlen(initial)) !=
+          (ssize_t)strlen(initial))
+    return 2;
+  sl = sl_create();
+  if (!sl)
+    return 2;
+  result = sl_output_stream_begin(sl);
+  if (result == SL_OK)
+    result = sl_output_stream_write_quoted_prompt(sl, "FIRST");
+  if (result == SL_OK)
+    result = sl_output_stream_write(sl, between, strlen(between));
+  if (result == SL_OK)
+    result = sl_output_stream_write_quoted_prompt(sl, "SECOND");
+  if (result == SL_OK)
+    result = sl_output_stream_end(sl);
+  if (result == SL_OK && (tcgetattr(STDIN_FILENO, &after) != 0 ||
+                          !same_input_mode(&before, &after) ||
+                          write(STDOUT_FILENO, outside, strlen(outside)) !=
+                              (ssize_t)strlen(outside)))
+    result = SL_ERROR;
+  if (result == SL_OK)
+    result = sl_output_stream_begin(sl);
+  if (result == SL_OK)
+    result = sl_output_stream_write_quoted_prompt(sl, "THIRD");
+  if (result == SL_OK)
+    result = sl_output_stream_end(sl);
+  sl_destroy(sl);
+  if (tcgetattr(STDIN_FILENO, &after) != 0 || !same_input_mode(&before, &after))
+    return 2;
+  return result == SL_OK ? 0 : 1;
+}
+
 struct finite_source {
   const char *prefix;
   const char *source;
@@ -364,6 +402,8 @@ static int gated(const char *command_path, const char *ack_path,
 }
 
 int main(int argc, char **argv) {
+  if (argc == 5 && strcmp(argv[1], "--quote-spacing") == 0)
+    return quote_spacing(argv[2], argv[3], argv[4]);
   if (argc == 2 && strcmp(argv[1], "--consecutive-streams") == 0)
     return consecutive_streams();
   if (argc == 3 && strcmp(argv[1], "--quoted-after") == 0)

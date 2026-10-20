@@ -1,4 +1,5 @@
 #include "softline/softline.h"
+#include <limits.h>
 
 #include <lauxlib.h>
 #include <lua.h>
@@ -534,8 +535,9 @@ static int softline_lua_next_prompt(lua_State *L) {
   }
   lua_pushstring(L, line);
   lua_pushinteger(L, source);
+  lua_pushinteger(L, (lua_Integer)sl_last_prompt_id(handle->sl));
   sl_free_string(handle->sl, line);
-  return 2;
+  return 3;
 }
 
 static const char *softline_lua_history_string(lua_State *L, int index) {
@@ -874,18 +876,144 @@ static int softline_lua_queue_peek(lua_State *L) {
 static int softline_lua_queue_insert(lua_State *L) {
   softline_lua_handle_t *handle;
   size_t index;
+  sl_prompt_id_t id;
+  int status, held = 0;
   handle = softline_lua_check(L, 1);
   if (!softline_lua_queue_index(L, 2, &index))
     return softline_lua_status(L, SL_ERROR_INVALID);
-  return softline_lua_status(
-      L, sl_prompt_queue_insert(handle->sl, index, luaL_checkstring(L, 3)));
+  if (!lua_isnoneornil(L, 4)) {
+    luaL_checktype(L, 4, LUA_TBOOLEAN);
+    held = lua_toboolean(L, 4);
+  }
+  status = sl_prompt_queue_insert(handle->sl, index, luaL_checkstring(L, 3),
+                                  held, &id);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  lua_pushinteger(L, (lua_Integer)id);
+  return 1;
 }
 
 static int softline_lua_queue_append(lua_State *L) {
   softline_lua_handle_t *handle;
+  sl_prompt_id_t id;
+  int status, held = 0;
   handle = softline_lua_check(L, 1);
+  if (!lua_isnoneornil(L, 3)) {
+    luaL_checktype(L, 3, LUA_TBOOLEAN);
+    held = lua_toboolean(L, 3);
+  }
+  status =
+      sl_prompt_queue_append(handle->sl, luaL_checkstring(L, 2), held, &id);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  lua_pushinteger(L, (lua_Integer)id);
+  return 1;
+}
+
+static int softline_lua_inject(lua_State *L, int steer) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_prompt_id_t id;
+  int status =
+      steer ? sl_inject_steer_prompt(handle->sl, luaL_checkstring(L, 2), &id)
+            : sl_inject_queued_prompt(handle->sl, luaL_checkstring(L, 2), &id);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  lua_pushinteger(L, (lua_Integer)id);
+  return 1;
+}
+
+static int softline_lua_inject_queued_prompt(lua_State *L) {
+  return softline_lua_inject(L, 0);
+}
+
+static int softline_lua_inject_steer_prompt(lua_State *L) {
+  return softline_lua_inject(L, 1);
+}
+
+static int softline_lua_set_auto_approval(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  luaL_checktype(L, 2, LUA_TBOOLEAN);
   return softline_lua_status(
-      L, sl_prompt_queue_append(handle->sl, luaL_checkstring(L, 2)));
+      L, sl_set_auto_approval(handle->sl, lua_toboolean(L, 2)));
+}
+
+static int softline_lua_get_auto_approval(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  int enabled;
+  int status = sl_get_auto_approval(handle->sl, &enabled);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  lua_pushboolean(L, enabled);
+  return 1;
+}
+
+static void
+softline_lua_queue_push_info(lua_State *L,
+                             const sl_prompt_queue_entry_info_t *info) {
+  lua_createtable(L, 0, 3);
+  lua_pushinteger(L, (lua_Integer)info->id);
+  lua_setfield(L, -2, "id");
+  lua_pushinteger(L, info->mode);
+  lua_setfield(L, -2, "mode");
+  lua_pushboolean(L, info->held);
+  lua_setfield(L, -2, "held");
+}
+
+static int softline_lua_queue_info(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_prompt_queue_entry_info_t info;
+  size_t index;
+  int status;
+  if (!softline_lua_queue_index(L, 2, &index))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  status = sl_prompt_queue_info(handle->sl, index, &info);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  softline_lua_queue_push_info(L, &info);
+  return 1;
+}
+
+static int softline_lua_queue_draft_info(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_prompt_queue_entry_info_t info;
+  int status = sl_prompt_queue_draft_info(handle->sl, &info);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  if (!info.id)
+    lua_pushnil(L);
+  else
+    softline_lua_queue_push_info(L, &info);
+  return 1;
+}
+
+static int softline_lua_queue_identity(lua_State *L, sl_prompt_id_t *id) {
+  lua_Integer value = luaL_checkinteger(L, 2);
+  if (value <= 0 || (lua_Unsigned)value > (lua_Unsigned)LONG_MAX)
+    return 0;
+  *id = (sl_prompt_id_t)value;
+  return 1;
+}
+
+static int softline_lua_queue_approve(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_prompt_id_t id;
+  if (!softline_lua_queue_identity(L, &id))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  return softline_lua_status(L, sl_prompt_queue_approve(handle->sl, id));
+}
+
+static int softline_lua_queue_reject(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_prompt_id_t id;
+  if (!softline_lua_queue_identity(L, &id))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  return softline_lua_status(L, sl_prompt_queue_reject(handle->sl, id));
+}
+
+static int softline_lua_last_prompt_id(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  lua_pushinteger(L, (lua_Integer)sl_last_prompt_id(handle->sl));
+  return 1;
 }
 
 static int softline_lua_queue_replace(lua_State *L) {
@@ -911,8 +1039,9 @@ static int softline_lua_queue_take(lua_State *L) {
   if (status != SL_OK)
     return softline_lua_status(L, status);
   lua_pushstring(L, text);
+  lua_pushinteger(L, (lua_Integer)sl_last_prompt_id(handle->sl));
   sl_free_string(handle->sl, text);
-  return 1;
+  return 2;
 }
 
 static int softline_lua_queue_mode(lua_State *L) {
@@ -1640,6 +1769,15 @@ static const luaL_Reg softline_lua_methods[] = {
     {"queue_peek", softline_lua_queue_peek},
     {"queue_insert", softline_lua_queue_insert},
     {"queue_append", softline_lua_queue_append},
+    {"inject_queued_prompt", softline_lua_inject_queued_prompt},
+    {"inject_steer_prompt", softline_lua_inject_steer_prompt},
+    {"set_auto_approval", softline_lua_set_auto_approval},
+    {"get_auto_approval", softline_lua_get_auto_approval},
+    {"queue_info", softline_lua_queue_info},
+    {"queue_draft_info", softline_lua_queue_draft_info},
+    {"queue_approve", softline_lua_queue_approve},
+    {"queue_reject", softline_lua_queue_reject},
+    {"last_prompt_id", softline_lua_last_prompt_id},
     {"queue_replace", softline_lua_queue_replace},
     {"queue_take", softline_lua_queue_take},
     {"queue_mode", softline_lua_queue_mode},
@@ -1884,6 +2022,12 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "KEY_ALT_ENTER");
   lua_pushinteger(L, SL_KEY_ALT_E);
   lua_setfield(L, -2, "KEY_ALT_E");
+  lua_pushinteger(L, SL_KEY_ALT_A);
+  lua_setfield(L, -2, "KEY_ALT_A");
+  lua_pushinteger(L, SL_KEY_PAGE_UP);
+  lua_setfield(L, -2, "KEY_PAGE_UP");
+  lua_pushinteger(L, SL_KEY_PAGE_DOWN);
+  lua_setfield(L, -2, "KEY_PAGE_DOWN");
   lua_pushinteger(L, SL_KEY_ALT_BASE);
   lua_setfield(L, -2, "KEY_ALT_BASE");
   lua_pushinteger(L, SL_KEY_ALT_M);

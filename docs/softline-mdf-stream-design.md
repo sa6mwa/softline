@@ -10,7 +10,7 @@ Only the chat examples and integration tests depend on libmdf. A released
 libsoftline, its Lua facade, headers, CMake exports, and package metadata have
 no libmdf dependency.
 
-libmdf 0.14.0 has incremental feed, a bound sink, and in-document width and
+libmdf 0.15.0 has incremental feed, a bound sink, and in-document width and
 margin changes through `set_geometry()`. The chat composer updates both
 renderer geometries on the Softline owner thread before feeding later
 Markdown; Softline reads the terminal dimensions for its native prompt.
@@ -20,7 +20,7 @@ Softline nor the examples recreate or replay an unfinished Markdown document.
 Softline never infers libmdf margins. The example supplies its borrowed stdout
 fd to libmdf's destination-aware ANSI AUTO policy: terminal output is themed,
 and redirected output is escape-free. Renderer handles are rebuilt against
-libmdf 0.14.0's options layout; this private example dependency does not change
+libmdf 0.15.0's options layout; this private example dependency does not change
 Softline's ABI.
 
 ## Generic Softline output session
@@ -194,8 +194,9 @@ accepts one-byte fragments indefinitely.
 
 ## Compatibility and public surfaces
 
-The C and Lua surfaces expose a single native chat layout. ABI 1 includes the
-public `output_stream_reconcile` receiver method. Equivalent free functions validate NULL handles.
+The C and Lua surfaces expose a single native chat layout. ABI 1 introduced the
+public `output_stream_reconcile` receiver method. ABI 2 retains it and adds
+per-entry queue approval and stable identities. Equivalent free functions validate NULL handles.
 Public declarations document ownership, thread context, lifecycle, errors,
 and chunk semantics for clangd. Lua methods document the same contract in the
 Lua reference and adjacent public binding comments. Lua cannot invoke its VM
@@ -205,8 +206,9 @@ events. The core and Lua libraries do not import libmdf.
 ### Shared-library ABI
 
 The current ABI policy supersedes the earlier development ABI 0 exception.
-The added receiver method changes the exposed C layout. Released v0.10.0
-used ABI 0; the new layout therefore uses ABI 1. Both C and Lua consumers must
+The reconciliation method advanced released v0.10.0's ABI 0 to ABI 1 in v0.11.0.
+Queue approval extends that released receiver layout and changes insertion
+signatures, so the current layout uses ABI 2. Both C and Lua consumers must
 rebuild against the matching header and library. Local release rehearsal tags
 are not the released baseline for this decision.
 

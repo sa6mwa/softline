@@ -647,7 +647,7 @@ static void test_chat_long_unbroken_editor_word(const char *path) {
   ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "0", 1) == 0,
               "failed to set fast stream delay");
   pid = spawn(path, &fd, 20, 40);
-  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) == 0,
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "2", 1) == 0,
               "failed to restore stream delay");
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 20, 40);
@@ -820,7 +820,7 @@ static void test_chat_spacing_across_turns(const char *path) {
   ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "0", 1) == 0,
               "failed to set fast stream delay");
   pid = spawn(path, &fd, 120, 40);
-  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) == 0,
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "2", 1) == 0,
               "failed to restore stream delay");
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 120, 40);
@@ -1042,7 +1042,7 @@ static void test_chat_steer_after_last_seam_starts_turn(const char *path) {
   ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "30", 1) == 0,
               "failed to set stream delay");
   pid = spawn(path, &fd, 120, 30);
-  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) == 0,
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "2", 1) == 0,
               "failed to restore stream delay");
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 120, 30);
@@ -1086,7 +1086,7 @@ static void test_chat_native_lifecycle(const char *path, int initial_row) {
   ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "1", 1) == 0,
               "delay setup failed");
   pid = spawn(path, &fd, 40, 24);
-  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) == 0,
+  ASSERT_TRUE(setenv("SOFTLINE_CHAT_CHAR_MS", "2", 1) == 0,
               "delay restore failed");
   ASSERT_TRUE(pid > 0, "spawn failed");
   term_init(&t, fd, 40, 24);
@@ -1326,7 +1326,7 @@ static int frame_producer_ready(sl_t *sl, const sl_watch_event_t *event,
     return SL_ERROR_IO;
   if (byte >= 1 && byte <= 4) {
     static const char *const queued[] = {"first", "second", "third", "fourth"};
-    result = sl_prompt_queue_append(sl, queued[byte - 1]);
+    result = sl_prompt_queue_append(sl, queued[byte - 1], 0, NULL);
     if (result == SL_OK)
       result = sl_set_status_message(sl, "notice");
   } else if (byte == '-') {
@@ -1446,7 +1446,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
     producer.output = slave;
     if (!sl || sl_set_status_elements(sl, elements, 1) != SL_OK ||
         sl_set_status_message(sl, "notice") != SL_OK ||
-        sl_prompt_queue_append(sl, "queued") != SL_OK ||
+        sl_prompt_queue_append(sl, "queued", 0, NULL) != SL_OK ||
         sl_output_stream_begin(sl) != SL_OK ||
         sl_output_stream_write(sl, "header\n", 7) != SL_OK ||
         sl_watch_add(sl, commands[0], SL_WATCH_READ, frame_producer_ready,
@@ -1855,7 +1855,7 @@ int main(int argc, char **argv) {
     perror("could not isolate example history under the build directory");
     return 1;
   }
-  if (setenv("SOFTLINE_CHAT_CHAR_MS", "20", 1) != 0)
+  if (setenv("SOFTLINE_CHAT_CHAR_MS", "2", 1) != 0)
     return 1;
   printf("softline example integration tests\n");
   if (argc == 4) {

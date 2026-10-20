@@ -9,6 +9,20 @@ cleanup:
   close_editor(&e);
   return failed;
 }
+static int approval(void) {
+  struct editor e;
+  int failed = 0;
+  REQUIRE(start(&e, "tests/lua-fixtures/queue-approval.lua", NULL, NULL) == 0);
+  REQUIRE(wait_for(&e, "Alt-A focus", 0) == 0);
+  REQUIRE(send_bytes(&e, "\033e") == 0);
+  REQUIRE(wait_for(&e, "H editing: approval required", 0) == 0);
+  REQUIRE(send_bytes(&e, "-edited\t") == 0);
+  REQUIRE(wait_for(&e, "lua queue approval passed", 0) == 0);
+  REQUIRE(finish(&e) == 0);
+cleanup:
+  close_editor(&e);
+  return failed;
+}
 static int history(void) {
   struct editor e;
   const char *methods[] = {"readline", "next_prompt"};
@@ -295,6 +309,8 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "idle"))
     return simple("tests/lua-fixtures/idle.lua",
                   "lua idle callback smoke passed");
+  if (!strcmp(argv[1], "approval"))
+    return approval();
   if (!strcmp(argv[1], "watch_gc"))
     return simple("tests/lua_watch_file_gc.lua",
                   "lua watched file retention passed");
