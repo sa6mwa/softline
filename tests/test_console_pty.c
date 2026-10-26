@@ -32,7 +32,7 @@ static int history(void) {
   int failed = 0;
   REQUIRE(start(&e, "tests/lua-fixtures/history-editor.lua", NULL, NULL) == 0);
   REQUIRE(wait_for(&e, "\033[?2004h", 0) == 0);
-  REQUIRE(send_bytes(&e, "queued\t") == 0);
+  REQUIRE(send_bytes(&e, "queued\033r\014\t") == 0);
   REQUIRE(wait_for(&e, "QUEUE-ROLLBACK-PASS", 0) == 0);
   REQUIRE(send_bytes(&e, "\t") == 0);
   REQUIRE(wait_for(&e, "QUEUE-STATUS-PASS", 0) == 0);
@@ -293,6 +293,65 @@ cleanup:
   }
   return failed;
 }
+static int readline_edit(void) {
+  struct editor e;
+  int failed = 0;
+  size_t mark;
+  int index;
+  char marker[32];
+  REQUIRE(start(&e, "tests/lua-fixtures/readline-edit.lua", NULL, NULL) == 0);
+  REQUIRE(wait_for(&e, "word> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "one two\001\033f!\r") == 0);
+  REQUIRE(wait_for(&e, "kill> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "café—中文\001\033d\031\037\031\005\r") == 0);
+  REQUIRE(wait_for(&e, "again> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "\031\r") == 0);
+  REQUIRE(wait_for(&e, "undo> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "draft\030\025\r") == 0);
+  REQUIRE(wait_for(&e, "transpose> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "aé\002\024\r") == 0);
+  REQUIRE(wait_for(&e, "suspend> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "abcdef\002\002\002X\033s") == 0);
+  REQUIRE(wait_for(&e, "resume> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "\037\r") == 0);
+  for (index = 1; index <= 5; ++index) {
+    snprintf(marker, sizeof(marker), "m%d> ", index);
+    REQUIRE(wait_for(&e, marker, 0) == 0);
+    REQUIRE(send_bytes(&e, "abc\033s") == 0);
+    snprintf(marker, sizeof(marker), "u%d> ", index);
+    REQUIRE(wait_for(&e, marker, 0) == 0);
+    REQUIRE(send_bytes(&e, "\037\033s") == 0);
+    snprintf(marker, sizeof(marker), "f%d> ", index);
+    REQUIRE(wait_for(&e, marker, 0) == 0);
+    REQUIRE(send_bytes(&e, "\037\r") == 0);
+  }
+  REQUIRE(wait_for(&e, "host-cursor> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "abc") == 0);
+  REQUIRE(wait_for(&e, "CURSOR-MOVED", 0) == 0);
+  REQUIRE(send_bytes(&e, "X\037\r") == 0);
+  REQUIRE(wait_for(&e, "group> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "abc\033t") == 0);
+  REQUIRE(wait_for(&e, "group-resume> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "X\037\r") == 0);
+  REQUIRE(wait_for(&e, "prefix> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "\030éok\r") == 0);
+  REQUIRE(wait_for(&e, "search> ", 0) == 0);
+  mark = e.length;
+  REQUIRE(send_bytes(&e, "draft\022match\033s") == 0);
+  REQUIRE(wait_for(&e, "SEARCH-SUSPENDED", mark) == 0);
+  REQUIRE(wait_for(&e, "\033[?2004h", mark) == 0);
+  REQUIRE(send_bytes(&e, "\007!\r") == 0);
+  REQUIRE(wait_for(&e, "draft> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "\t\033[B\033[A!\r") == 0);
+  REQUIRE(wait_for(&e, "destroy> ", 0) == 0);
+  REQUIRE(send_bytes(&e, "draft\022match\033s") == 0);
+  REQUIRE(wait_for(&e, "READLINE-EDIT-PASS", 0) == 0);
+  REQUIRE(finish(&e) == 0);
+cleanup:
+  close_editor(&e);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   if (argc == 7 && !strcmp(argv[1], "store")) {
     if (strcmp(argv[2], "c") && strcmp(argv[2], "lua"))
@@ -306,6 +365,8 @@ int main(int argc, char **argv) {
     return 2;
   executable = argv[2];
   root = argv[3];
+  if (!strcmp(argv[1], "readline_edit"))
+    return readline_edit();
   if (!strcmp(argv[1], "idle"))
     return simple("tests/lua-fixtures/idle.lua",
                   "lua idle callback smoke passed");

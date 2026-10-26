@@ -24,8 +24,8 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
                             size_t length, int prompt_row, int prompt_col);
 int sl_surface_native_finish(sl_surface_t *surface, int prompt_row);
 void sl_surface_destroy(sl_surface_t *surface);
-/* Physical resize updates geometry without output. The next producer write
- * reinstates its margin; prompt layout growth still reserves needed rows. */
+/* Physical resize updates geometry and restores reserved margins. Prompt
+ * growth reserves needed rows; a full-height live producer keeps its cursor. */
 int sl_surface_resize(sl_surface_t *surface, int width, int height);
 void sl_surface_geometry(const sl_surface_t *surface, int *width, int *height,
                          int *terminal_rows);
@@ -46,4 +46,7 @@ void sl_surface_native_observe(sl_surface_t *surface, int width, int rows,
 /* Record the terminal endpoint; never attribute a report to Unicode glyphs. */
 void sl_surface_native_observe_write(sl_surface_t *surface, int row, int col);
 void sl_surface_native_release_cursor(sl_surface_t *surface);
+/* Reassert existing output margins without changing producer/parser state.
+ * Homes the hardware cursor; the input owner must restore its cursor. */
+int sl_surface_native_restore_region(sl_surface_t *surface);
 #endif

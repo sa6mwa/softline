@@ -37,7 +37,7 @@ end
 -- session to release input/scrolling, then begin a fresh frame at the shell's
 -- final cursor position (including after clear or resize). Keep the handle,
 -- history and queue. Quote SHELL as one executable, never as shell commands.
-local function run_shell()
+local function run_shell(preserve_draft)
   assert(sl:output_stream_end())
   stream_open = false
   local ok, reason, status = os.execute('exec "${SHELL:-/bin/sh}" -i')
@@ -46,7 +46,9 @@ local function run_shell()
   end
   assert(sl:output_stream_begin())
   stream_open = true
-  assert(sl:set_status_message(nil))
+  if not preserve_draft then
+    assert(sl:set_status_message(nil))
+  end
 end
 
 local function operation_step_seconds()
@@ -215,6 +217,13 @@ local function run()
     assert(sl:bind_key(softline.KEY_ESCAPE, function()
       return softline.KEY_ACTION_CANCEL
     end))
+    assert(sl:bind_key(softline.KEY_ALT_BASE + string.byte("s"), function()
+      if busy then
+        assert(sl:set_status_message("Shell is available only between turns."))
+        return softline.KEY_ACTION_HANDLED
+      end
+      return softline.KEY_ACTION_SUSPEND
+    end))
     for _, key in ipairs({ softline.KEY_ENTER, softline.KEY_ALT_ENTER, softline.KEY_TAB }) do
       assert(sl:bind_key(key, function(pressed)
         -- Search selection must return to editing before submission guards run.
@@ -232,7 +241,7 @@ local function run()
     set_chat_busy(false)
     assert(sl:output_stream_begin())
     stream_open = true
-    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation; /quit leaves. !sh or /shell opens your shell between turns.\n" })
+    print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation; /quit leaves. !sh or /shell opens your shell between turns; Alt-S opens it while preserving your draft.\n" })
   else
     assert(sl:output_stream_begin())
     stream_open = true
@@ -269,6 +278,8 @@ local function run()
           start_operation()
         end
       end
+    elseif source_or_status == softline.READLINE_SUSPENDED then
+      run_shell(true)
     elseif source_or_status == softline.READLINE_CANCELLED or source_or_status == softline.READLINE_INTERRUPTED then
       if interactive then
         if busy then

@@ -792,7 +792,7 @@ test_chat_preserves_transcript_and_prompt_spacing(const char *path) {
   ASSERT_TRUE(wait_screen(&t, "A short answer", 3000) == 0,
               "response heading missing");
   note_row = term_row_of(&t, "Enter sends or queues");
-  note_last_row = term_row_of(&t, "between turns.");
+  note_last_row = term_row_of(&t, "your draft.");
   quote_row = term_row_of(&t, "> hello");
   answer_row = term_row_of(&t, "A short answer");
   ASSERT_TRUE(strstr(t.raw + output_mark, "\033[1;1H") == NULL,
@@ -1504,12 +1504,14 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
                     strstr(t.raw + mark, "queued") == NULL &&
                     strstr(t.raw + mark, "more") == NULL,
                 "width resize erased or repainted a fitted prompt frame");
-    if (t.region_updates != regions ||
-        strstr(t.raw + mark, "\033[65535;") != NULL) {
+    if (t.region_updates != regions + 1 || t.scroll_top != 0 ||
+        t.scroll_bottom != t.rows - 6 ||
+        strstr(t.raw + mark, "\033[65535;7H") == NULL) {
       fprintf(stderr, "fitted resize step %d, theme %d, clear %d: |%s|\n", step,
               (int)theme, clear, t.raw + mark);
       term_dump(&t);
-      FAIL("fitted resize moved the cursor or changed output margins");
+      FAIL(
+          "fitted resize did not restore the reserved margin and input cursor");
     }
   }
   for (step = 0; step < 480; step++) {
@@ -1526,7 +1528,7 @@ static void test_prompt_frames(sl_prompt_theme_t theme, int clear,
       if (t.row >= ws.ws_row)
         transcript_rows -= t.row - ws.ws_row + 1;
       term_resize(&t, ws.ws_col, ws.ws_row);
-      expected_row = t.row;
+      expected_row = t.rows - 1;
       memcpy(transcript, t.cells, sizeof(transcript));
       scrolls = t.region_scrolls;
       /* Layout changes may reflow the prompt; feed guards start after that
@@ -1660,6 +1662,11 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
   unsigned int scrolls;
   size_t mark;
   char transcript[MAX_ROWS][MAX_COLS + 1];
+  /* Clear the eleven actual draft lines using line-local Ctrl-U and
+   * Backspace for each of the ten newline boundaries. */
+  const char replace_draft[] = "\025\177\025\177\025\177\025\177\025\177"
+                               "\025\177\025\177\025\177\025\177\025\177"
+                               "\025draft\nmore\nshortened";
   pid_t pid;
   TEST(
       theme == SL_PROMPT_THEME_PLAIN
@@ -1784,10 +1791,17 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
                   term_contains(&t, "fixture") && term_contains(&t, "notice"),
               "editor overflow hid queue or consumed required output rows");
   scrolls = t.region_scrolls;
-  ASSERT_TRUE(write(fd, "\025draft\nmore\nlast", 16) == 16 &&
-                  wait_screen(&t, "last", 3000) == 0 &&
-                  frame_exchange(&t, commands[1], ack[0], '#') == 0 &&
-                  t.scroll_bottom == 4 && t.region_scrolls == scrolls,
+  ASSERT_TRUE(write(fd, replace_draft, sizeof(replace_draft) - 1) ==
+                      (ssize_t)(sizeof(replace_draft) - 1) &&
+                  wait_screen(&t, "shortened", 3000) == 0 &&
+                  frame_exchange(&t, commands[1], ack[0], '#') == 0,
+              "multiline replacement input failed");
+  if (t.scroll_bottom != 4 || t.region_scrolls != scrolls) {
+    term_dump(&t);
+    fprintf(stderr, "replacement margin=%d scrolls=%u expected=%u\n",
+            t.scroll_bottom, t.region_scrolls, scrolls);
+  }
+  ASSERT_TRUE(t.scroll_bottom == 4 && t.region_scrolls == scrolls,
               "editor paging retained unused rows after shrink");
   transcript_rows = t.scroll_bottom + 1;
   memcpy(transcript, t.cells, sizeof(transcript));
@@ -1804,7 +1818,7 @@ test_queue_after_output_fills_prompt_region(sl_prompt_theme_t theme) {
   }
   ASSERT_TRUE(!term_contains(&t, "Q 1.") && !term_contains(&t, "... 1 more"),
               "empty queue left stale preview cells");
-  ASSERT_TRUE(write(fd, "\025done", 5) == 5 &&
+  ASSERT_TRUE(write(fd, "\025\177\025\177\025done", 9) == 9 &&
                   wait_screen(&t, "> done", 3000) == 0,
               "draft clear failed");
   ASSERT_TRUE(frame_exchange(&t, commands[1], ack[0], '#') == 0 &&

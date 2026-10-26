@@ -179,7 +179,7 @@ static int ready(sl_t *sl, const sl_watch_event_t *event, void *data) {
     REQUIRE(state->inverse > 0);
     REQUIRE(!strstr(state->text, "[FOCUSED]"));
     state->mark = state->used;
-    REQUIRE(send_keys(state, state->kind == VISIBLE_FOCUS ? "\033y"
+    REQUIRE(send_keys(state, state->kind == VISIBLE_FOCUS ? "\014\030\033y"
                              : state->kind == ALT_A_BACK  ? "\033a"
                                                           : "\033"));
     state->phase = state->kind == VISIBLE_FOCUS ? 3 : 2;
@@ -243,8 +243,12 @@ static int ready(sl_t *sl, const sl_watch_event_t *event, void *data) {
                              : state->kind == EDIT_EMPTY_REPEAT  ? "\025\033e\r"
                                                                  : "\025\r"));
     } else {
-      REQUIRE(sl_set_buffer(sl, "edited café\nsecond line") == SL_OK);
-      REQUIRE(send_keys(state, "\r"));
+      /* Exercise line navigation and deletion inside a held edit, preserving
+       * its first line, identity and hold while trimming the second line. */
+      REQUIRE(sl_set_buffer(sl, "edited café\nREMOVEsecond lineTRAIL") ==
+              SL_OK);
+      REQUIRE(send_keys(state, "\001\006\006\006\006\006\006\025\005"
+                               "\002\002\002\002\002\013\031\037\014\r"));
     }
     state->phase = 2;
     return SL_OK;

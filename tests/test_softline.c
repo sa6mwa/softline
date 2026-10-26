@@ -2648,6 +2648,15 @@ static int submit_action_key(sl_t *sl, sl_key_t key, void *userdata,
   return SL_OK;
 }
 
+static int reset_action_key(sl_t *sl, sl_key_t key, void *userdata,
+                            sl_key_action_t *action) {
+  (void)sl;
+  (void)key;
+  (void)userdata;
+  *action = SL_KEY_ACTION_RESET;
+  return SL_OK;
+}
+
 static int submit_method_key(sl_t *sl, sl_key_t key, void *userdata,
                              sl_key_action_t *action) {
   (void)key;
@@ -2673,6 +2682,22 @@ static int edit_buffer_key(sl_t *sl, sl_key_t key, void *userdata,
   if (sl->cursor(sl) != 4)
     return SL_ERROR;
   *action = SL_KEY_ACTION_SUBMIT;
+  return SL_OK;
+}
+
+static int compound_edit_key(sl_t *sl, sl_key_t key, void *userdata,
+                             sl_key_action_t *action) {
+  int status = edit_buffer_key(sl, key, userdata, action);
+  *action = SL_KEY_ACTION_HANDLED;
+  return status;
+}
+
+static int pass_action_key(sl_t *sl, sl_key_t key, void *userdata,
+                           sl_key_action_t *action) {
+  (void)sl;
+  (void)key;
+  (void)userdata;
+  *action = SL_KEY_ACTION_PASS;
   return SL_OK;
 }
 
@@ -4939,6 +4964,47 @@ static void test_key_binding_ctrl_r_overrides_history_search(void) {
   PASS();
 }
 
+static void test_prompt_reset_keys(void) {
+  char terminal[8192], result[256];
+  const char *history[] = {"first", "second"};
+  int status;
+  TEST("Ctrl-L resets layout while preserving text and cursor");
+  ASSERT_TRUE(run_pty_readline_case("abcd\033[D\033[D\014\014X\r", 24, 0, NULL,
+                                    terminal, sizeof(terminal), result,
+                                    sizeof(result), &status) == 0,
+              "reset case failed");
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "abXcd"),
+              "reset changed draft/cursor");
+  ASSERT_TRUE(!contains_bytes(terminal, "\033[2J") &&
+                  !contains_bytes(terminal, "\033[3J") &&
+                  !contains_bytes(terminal, "\033c") &&
+                  !contains_bytes(terminal, "\033[?1049h"),
+              "reset cleared or replaced the terminal");
+  ASSERT_TRUE(run_pty_key_binding_case("abcd\033[D\033[D\tX\r", SL_KEY_TAB,
+                                       reset_action_key, NULL, terminal,
+                                       sizeof(terminal), result, sizeof(result),
+                                       &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "abXcd"),
+              "reset action could not be rebound");
+  ASSERT_TRUE(contains_after_bytes(terminal, "abcd", "abcd"),
+              "remapped reset did not repaint unchanged text");
+  ASSERT_TRUE(run_pty_key_binding_case(
+                  "ab\014cd\r", SL_KEY_CTRL_L, insert_text_key, "*", terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "ab*cd"),
+              "Ctrl-L override was ignored");
+  ASSERT_TRUE(run_pty_history_case("\022sec\014\r!\r", history, 2, terminal,
+                                   sizeof(terminal), result, sizeof(result),
+                                   &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "second!"),
+              "reset cancelled history search");
+  PASS();
+}
+
 static void test_terminal_mode_is_restored(void) {
   int master_fd;
   int slave_fd;
@@ -5126,29 +5192,408 @@ static void test_pty_ctrl_d_exits(void) {
   PASS();
 }
 
-static void test_pty_multiline_deletes_are_buffer_wide(void) {
+struct line_key_case {
+  const char *name;
+  const char *draft;
+  size_t cursor;
+  const char *keys;
+  const char *expected;
+};
+
+static int prepare_line_key_case(sl_t *sl, sl_key_t key, void *userdata,
+                                 sl_key_action_t *action) {
+  struct line_key_case *state = userdata;
+  (void)key;
+  if (sl_set_buffer(sl, state->draft) != SL_OK ||
+      sl_set_cursor(sl, state->cursor) != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static void test_pty_logical_line_keys(void) {
   char terminal[4096];
   char result[256];
+  char input[64];
   int status;
+  size_t i;
+  struct line_key_case cases[] = {
+      {"Ctrl-A moves to the current line start", "ab\ncdef\ngh", 5, "\001",
+       "ab\n!cdef\ngh"},
+      {"Ctrl-E moves to the current line end", "ab\ncdef\ngh", 5, "\005",
+       "ab\ncdef!\ngh"},
+      {"Home moves to the current line start", "ab\ncdef\ngh", 5, "\033[H",
+       "ab\n!cdef\ngh"},
+      {"End moves to the current line end", "ab\ncdef\ngh", 5, "\033[F",
+       "ab\ncdef!\ngh"},
+      {"Tilde Home moves to the current line start", "ab\ncdef\ngh", 5,
+       "\033[1~", "ab\n!cdef\ngh"},
+      {"Tilde End moves to the current line end", "ab\ncdef\ngh", 5, "\033[4~",
+       "ab\ncdef!\ngh"},
+      {"Ctrl-A stays at the current line start", "ab\ncdef\ngh", 3, "\001\001",
+       "ab\n!cdef\ngh"},
+      {"Ctrl-E stays at the current line end", "ab\ncdef\ngh", 7, "\005\005",
+       "ab\ncdef!\ngh"},
+      {"Ctrl-A at a newline uses its preceding line", "ab\ncd", 2, "\001",
+       "!ab\ncd"},
+      {"Ctrl-E at a newline stays on its preceding line", "ab\ncd", 2, "\005",
+       "ab!\ncd"},
+      {"Empty line navigation stays on that line", "ab\n\ncd", 3, "\001\005",
+       "ab\n!\ncd"},
+      {"Trailing newline navigation stays on the empty line", "ab\n", 3,
+       "\001\005", "ab\n!"},
+      {"Empty buffer line keys preserve the cursor", "", 0, "\001\005\025\013",
+       "!"},
+      {"Ctrl-A ignores soft wraps", "abcdefghijklmnopqrstuvwxyZ\nnext", 23,
+       "\001", "!abcdefghijklmnopqrstuvwxyZ\nnext"},
+      {"Ctrl-E ignores soft wraps", "abcdefghijklmnopqrstuvwxyZ\nnext", 1,
+       "\005", "abcdefghijklmnopqrstuvwxyZ!\nnext"},
+      {"Ctrl-U deletes only the current line prefix", "ab\ncdef\ngh", 5, "\025",
+       "ab\n!ef\ngh"},
+      {"Ctrl-U at line start removes only the preceding newline",
+       "ab\ncdef\ngh", 3, "\025", "ab!cdef\ngh"},
+      {"Repeated Ctrl-U removes text then just its newline", "ab\ncdef\ngh", 5,
+       "\025\025", "ab!ef\ngh"},
+      {"Ctrl-U preserves the newline at line end", "ab\ncdef\ngh", 7, "\025",
+       "ab\n!\ngh"},
+      {"Ctrl-U removes an empty line", "ab\n\ncd", 3, "\025", "ab!\ncd"},
+      {"Ctrl-U removes a trailing empty line", "ab\n", 3, "\025", "ab!"},
+      {"Ctrl-U removes successive trailing empty lines", "ab\n\n\n", 5,
+       "\025\025\025", "ab!"},
+      {"Ctrl-U preserves an empty first line", "\ncd", 0, "\025", "!\ncd"},
+      {"Ctrl-U clears whitespace before removing its newline", "ab\n \t\ncd", 5,
+       "\025\025", "ab!\ncd"},
+      {"Ctrl-U removes a blank line reached with Up", "ab\n\ncd", 6,
+       "\033[A\025", "ab!\ncd"},
+      {"Ctrl-U joins Unicode lines without splitting clusters", "é\n中文", 3,
+       "\025", "é!中文"},
+      {"Ctrl-U ignores soft wraps", "abcdefghijklmnopqrstuvwxyZ\nnext", 23,
+       "\025", "!xyZ\nnext"},
+      {"Ctrl-K preserves subsequent lines", "ab\ncd", 0, "\013", "!\ncd"},
+      {"Ctrl-K preserves surrounding lines", "ab\ncdef\ngh", 5, "\013",
+       "ab\ncd!\ngh"},
+      {"Ctrl-K at line end joins only the following line", "ab\ncd", 2, "\013",
+       "ab!cd"},
+      {"Ctrl-K on an empty line removes only that newline", "ab\n\ncd", 3,
+       "\013", "ab\n!cd"},
+      {"Repeated Ctrl-K removes text then just its newline", "ab\ncd\nend", 0,
+       "\013\013", "!cd\nend"},
+      {"Ctrl-K at buffer end preserves the draft", "ab\ncd", 5, "\013",
+       "ab\ncd!"},
+      {"Ctrl-K ignores soft wraps", "abcdefghijklmnopqrstuvwxyZ\nnext", 1,
+       "\013", "a!\nnext"},
+      {"Ctrl-W removes a word within the current line", "ab\ncd ef\ngh", 8,
+       "\027", "ab\ncd !\ngh"},
+      {"Ctrl-W never deletes a word from the preceding line", "ab\ncd", 4,
+       "\027", "ab\n!d"},
+      {"Ctrl-W at line start removes only the preceding newline", "ab\ncd", 3,
+       "\027", "ab!cd"},
+      {"Ctrl-W on an empty line removes only one newline", "ab\n\ncd", 3,
+       "\027", "ab!\ncd"},
+      {"Ctrl-W clears indentation without crossing a newline", "ab\n \tcd", 5,
+       "\027", "ab\n!cd"},
+      {"Ctrl-W removes trailing spaces and the word on this line",
+       "ab\ncd ef \ngh", 9, "\027", "ab\ncd !\ngh"},
+      {"Ctrl-W preserves the start of the first line", "ab\ncd", 0, "\027",
+       "!ab\ncd"},
+      {"Ctrl-W removes a trailing blank line without its preceding word",
+       "ab\n", 3, "\027", "ab!"},
+      {"Ctrl-W clears only whitespace on a blank line", "ab\n \t\ncd", 5,
+       "\027", "ab\n!\ncd"},
+      {"Ctrl-W preserves Unicode on adjacent lines", "é\n中文", 9, "\027",
+       "é\n!"},
+      {"Ctrl-W joins Unicode lines without removing the previous word",
+       "é\n中文", 3, "\027", "é!中文"},
+      {"Ctrl-W removes blank lines reached with Up", "ab\n\ncd", 6,
+       "\033[A\027", "ab!\ncd"},
+      {"Ctrl-W removes a whole word across soft wraps",
+       "ab\nabcdefghijklmnopqrstuvwxyz next", 29, "\027", "ab\n! next"},
+      {"Repeated Ctrl-W removes a word then just its newline", "ab\ncd", 5,
+       "\027\027", "ab!"},
+      {"Ctrl-A preserves Unicode and other lines", "é中文\n世界", 6, "\001",
+       "!é中文\n世界"},
+      {"Ctrl-E preserves Unicode and other lines", "é中文\n世界", 6, "\005",
+       "é中文!\n世界"},
+      {"Ctrl-U preserves Unicode suffixes and other lines", "é中文\n世界", 6,
+       "\025", "!文\n世界"},
+      {"Ctrl-K preserves Unicode prefixes and other lines", "é中文\n世界", 3,
+       "\013", "é!\n世界"},
+      {"Single-line navigation retains its behavior", "abcd", 2, "\001\005",
+       "abcd!"},
+      {"Single-line Ctrl-U retains its behavior", "abcd", 2, "\025", "!cd"},
+      {"Single-line Ctrl-K retains its behavior", "abcd", 2, "\013", "ab!"}};
 
-  TEST("Ctrl-U deletes from buffer start across lines");
-  ASSERT_TRUE(run_pty_readline_case("ab\ncd\025X\r", 20, 0, NULL, terminal,
-                                    sizeof(terminal), result, sizeof(result),
-                                    &status) == 0,
-              "pty case failed");
-  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "child editor failed");
-  ASSERT_TRUE(strcmp(result, "X") == 0, "Ctrl-U result mismatch");
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    TEST(cases[i].name);
+    (void)snprintf(input, sizeof(input), "\t%s!\r", cases[i].keys);
+    ASSERT_TRUE(run_pty_key_binding_case(input, SL_KEY_TAB,
+                                         prepare_line_key_case, &cases[i],
+                                         terminal, sizeof(terminal), result,
+                                         sizeof(result), &status) == 0,
+                "pty case failed");
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "child editor failed");
+    ASSERT_TRUE(strcmp(result, cases[i].expected) == 0,
+                "line key changed text or cursor outside the current line");
+    PASS();
+  }
+
+  TEST("Line keys preserve multiline pasted content");
+  ASSERT_TRUE(
+      run_pty_readline_case("\033[200~ab\rcd\033[201~\002\002\002\001\013Y\r",
+                            20, 0, NULL, terminal, sizeof(terminal), result,
+                            sizeof(result), &status) == 0 &&
+          WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+          !strcmp(result, "Y\ncd"),
+      "line key changed pasted content outside the current line");
   PASS();
+}
 
-  TEST("Ctrl-K deletes to buffer end across lines");
-  ASSERT_TRUE(run_pty_readline_case("ab\ncd\001\013Y\r", 20, 0, NULL, terminal,
-                                    sizeof(terminal), result, sizeof(result),
-                                    &status) == 0,
-              "pty case failed");
-  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "child editor failed");
-  ASSERT_TRUE(strcmp(result, "Y") == 0, "Ctrl-K result mismatch");
+static void test_readline_edit_commands(void) {
+  char terminal[8192], result[512], input[512];
+  int status;
+  size_t i;
+  const char *history[] = {"matching history"};
+  struct line_key_case cases[] = {
+      {"Alt-F ends at a word end", "one two", 0, "\033f", "one! two"},
+      {"Alt-B recognizes punctuation", "foo.bar", 7, "\033b", "foo.!bar"},
+      {"Alt-F skips punctuation before a word", "..foo_bar", 0, "\033f",
+       "..foo!_bar"},
+      {"Alt-B treats underscore as a word separator", "foo_bar", 7, "\033b",
+       "foo_!bar"},
+      {"Alt-F recognizes Unicode punctuation", "café—中文 end", 0, "\033f",
+       "café!—中文 end"},
+      {"Alt-B recognizes Unicode words", "café—中文", 14, "\033b",
+       "café—!中文"},
+      {"Alt-F skips a complete emoji cluster", "👩‍💻 café", 0, "\033f",
+       "👩‍💻 café!"},
+      {"Alt-B preserves a combining cluster", "é.foo", 7, "\033b\033b",
+       "!é.foo"},
+      {"Down retains its column across a short line",
+       "abcdefghij\nx\nabcdefghij", 8, "\033[B\033[B",
+       "abcdefghij\nx\nabcdefgh!ij"},
+      {"Up retains its column across a short line", "abcdefghij\nx\nabcdefghij",
+       21, "\033[A\033[A", "abcdefgh!ij\nx\nabcdefghij"},
+      {"Down retains its column across an empty line", "abcdef\n\nabcdef", 5,
+       "\033[B\033[B", "abcdef\n\nabcde!f"},
+      {"Horizontal movement resets the preferred column",
+       "abcdefghij\nx\nabcdefghij", 8, "\033[B\002\033[B",
+       "abcdefghij\nx\n!abcdefghij"},
+      {"Typing resets the preferred column", "abcdefghij\nx\nabcdefghij", 8,
+       "\033[BZ\033[B", "abcdefghij\nxZ\nab!cdefghij"},
+      {"Ctrl-L preserves the preferred column", "abcdefghij\nx\nabcdefghij", 8,
+       "\033[B\014\033[B", "abcdefghij\nx\nabcdefgh!ij"},
+      {"A tab does not replace the preferred column",
+       "abcdefghij\n\t\nabcdefghij", 8, "\033[B\033[B",
+       "abcdefghij\n\t\nabcdefgh!ij"},
+      {"A wide cluster does not replace the preferred column",
+       "abcdefghij\n中\nabcdefghij", 8, "\033[B\033[B",
+       "abcdefghij\n中\nabcdefgh!ij"},
+      {"Ctrl-Y restores killed line text", "abc\ndef", 1, "\013\031",
+       "abc!\ndef"},
+      {"Undo restores a forward kill and its cursor", "abc\ndef", 1, "\013\037",
+       "a!bc\ndef"},
+      {"Undo restores a backward kill and its cursor", "abc\ndef", 6,
+       "\025\037", "abc\nde!f"},
+      {"Consecutive forward kills append in textual order", "abc\ndef", 0,
+       "\013\013\031", "abc\n!def"},
+      {"Consecutive backward kills prepend in textual order", "abc\ndef", 7,
+       "\025\025\031", "abc\ndef!"},
+      {"Mixed direction kills preserve textual order", "abc def", 3,
+       "\025\013\031", "abc def!"},
+      {"Alt-Y rotates a yank to an older kill", "one two", 7,
+       "\027\001\013\031\033y", "two!"},
+      {"Alt-Y wraps around the kill ring", "one two", 7,
+       "\027\001\013\031\033y\033y", "one !"},
+      {"Editing invalidates yank rotation", "one two", 7,
+       "\027\001\013\031X\033y", "one X!"},
+      {"Undo removes a yank as one command", "abc", 0, "\013\031\037", "!"},
+      {"Undo keeps consecutive kills individually reversible", "abc\ndef", 0,
+       "\013\013\037", "!\ndef"},
+      {"An empty kill ring leaves the draft intact", "abc", 1, "\031", "a!bc"},
+      {"Alt-Y requires a preceding yank", "abc", 0, "\013\033y", "!"},
+      {"Delete does not write to the kill ring", "abc", 1, "\004\031", "a!c"},
+      {"Alt-D kills an alphanumeric word", "one.two three", 0, "\033d",
+       "!.two three"},
+      {"Alt-Backspace kills an alphanumeric word", "one.two three", 7,
+       "\033\177", "one.! three"},
+      {"Alt-Backspace accepts the BS encoding", "one.two", 7, "\033\010",
+       "one.!"},
+      {"Alt-D supplies the kill ring", "one.two", 0, "\033d\031", "one!.two"},
+      {"Ctrl-T transposes adjacent characters", "abcd", 2, "\024", "acb!d"},
+      {"Ctrl-T transposes at buffer end", "abcd", 4, "\024", "abdc!"},
+      {"Ctrl-T preserves Unicode clusters", "aé中", 1, "\024", "éa!中"},
+      {"Ctrl-T preserves combining clusters", "aéZ", 1, "\024", "éa!Z"},
+      {"Ctrl-T preserves joined emoji clusters", "a👩‍💻Z", 1, "\024",
+       "👩‍💻a!Z"},
+      {"Ctrl-T at buffer start is harmless", "ab", 0, "\024", "!ab"},
+      {"Ctrl-T with one cluster is harmless", "é", 2, "\024", "é!"},
+      {"Undo restores transposition atomically", "abcd", 2, "\024\037",
+       "ab!cd"},
+      {"Undo removes a continuous typing run", "base", 4, "XYZ\037", "base!"},
+      {"Movement separates undo typing groups", "", 0, "ab\002X\037", "a!b"},
+      {"Repeated undo reaches the original empty draft", "", 0,
+       "ab\002X\037\037\037", "!"},
+      {"Undo restores forward deletion", "abc", 1, "\004\037", "a!bc"},
+      {"Undo restores backspace", "abc", 2, "\177\037", "ab!c"},
+      {"Undo treats bracketed paste as one edit", "ab", 1,
+       "\033[200~x\rYZ\033[201~\037", "a!b"},
+      {"Undo keeps Unicode typing whole", "", 0, "café中文\037", "!"},
+      {"Ctrl-X Ctrl-U requests undo", "base", 4, "XYZ\030\025", "base!"},
+      {"Unsupported Ctrl-X chord consumes a complete two-byte character",
+       "base", 4, "\030é", "base!"},
+      {"Unsupported Ctrl-X chord consumes a complete three-byte character",
+       "base", 4, "\030中", "base!"},
+      {"Unsupported Ctrl-X chord consumes a complete four-byte character",
+       "base", 4, "\030😀", "base!"},
+      {"Ctrl-X consumes only the rejected character", "base", 4, "\030é中文",
+       "base中文!"},
+      {"Rejected Unicode chord preserves subsequent undo", "base", 4,
+       "XYZ\030é\037", "base!"},
+      {"A paste cancels the Ctrl-X prefix and remains literal", "", 0,
+       "\030\033[200~a\rcd\025\033[201~", "a\ncd\025!"},
+      {"Ctrl-L preserves draft undo history", "base", 4, "XYZ\014\037",
+       "base!"}};
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    TEST(cases[i].name);
+    (void)snprintf(input, sizeof(input), "\t%s!\r", cases[i].keys);
+    ASSERT_TRUE(run_pty_key_binding_case(input, SL_KEY_TAB,
+                                         prepare_line_key_case, &cases[i],
+                                         terminal, sizeof(terminal), result,
+                                         sizeof(result), &status) == 0,
+                "PTY editing case failed");
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "editor child failed");
+    if (strcmp(result, cases[i].expected))
+      fprintf(stderr, "\nobserved [%s], expected [%s]\n", result,
+              cases[i].expected);
+    ASSERT_TRUE(!strcmp(result, cases[i].expected),
+                "editing result/cursor mismatch");
+    PASS();
+  }
+  TEST("A refused yank does not partially change a limited draft");
+  ASSERT_TRUE(run_pty_readline_case_with_limit(
+                  "abc\001\0131234\031!\r", 24, 0, 5, NULL, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "1234!"),
+              "limited yank changed the draft");
+  PASS();
+  TEST("A failed yank preserves the preceding undo command");
+  ASSERT_TRUE(
+      run_pty_readline_case_with_limit("abc\001\0131234\031\037!\r", 24, 0, 5,
+                                       NULL, terminal, sizeof(terminal), result,
+                                       sizeof(result), &status) == 0 &&
+          WIFEXITED(status) && WEXITSTATUS(status) == 0 && !strcmp(result, "!"),
+      "refused yank damaged undo history");
+  PASS();
+  TEST("Kill ring survives a readline boundary on the same handle");
+  ASSERT_TRUE(run_pty_prompt_queue_case("saved\001\013first\r\031\r",
+                                        SL_PROMPT_THEME_PLAIN, 0, 0, 2,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "1:first|1:saved"),
+              "kill ring lost across prompts");
+  PASS();
+  TEST("One key callback is one atomic undo group");
+  ASSERT_TRUE(run_pty_key_binding_case("orig\t\037!\r", SL_KEY_TAB,
+                                       compound_edit_key, NULL, terminal,
+                                       sizeof(terminal), result, sizeof(result),
+                                       &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "orig!"),
+              "callback undo was partial");
+  PASS();
+  TEST("A printable callback remains an independent undo group");
+  ASSERT_TRUE(run_pty_key_binding_case("origq\037!\r", (sl_key_t)'q',
+                                       compound_edit_key, NULL, terminal,
+                                       sizeof(terminal), result, sizeof(result),
+                                       &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "orig!"),
+              "callback undo erased prior typing");
+  PASS();
+  TEST("A Ctrl-L callback remains an independent undo group");
+  ASSERT_TRUE(run_pty_key_binding_case("orig\014\037!\r", SL_KEY_CTRL_L,
+                                       compound_edit_key, NULL, terminal,
+                                       sizeof(terminal), result, sizeof(result),
+                                       &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "orig!"),
+              "Ctrl-L callback undo was partial");
+  PASS();
+  TEST("PASS bindings preserve yank rotation");
+  ASSERT_TRUE(run_pty_key_binding_case("one two\027\001\013\031\033y\r",
+                                       SL_KEY_CTRL_Y, pass_action_key, NULL,
+                                       terminal, sizeof(terminal), result,
+                                       sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "two"),
+              "PASS binding broke yank rotation");
+  PASS();
+  TEST("PASS bindings preserve consecutive kill order");
+  ASSERT_TRUE(run_pty_key_binding_case(
+                  "abc\ndef\002\002\002\002\002\002\002\013\013\031\r",
+                  SL_KEY_CTRL_K, pass_action_key, NULL, terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "abc\ndef"),
+              "PASS binding broke kill coalescing");
+  PASS();
+  TEST("Cancelling reverse search preserves draft undo");
+  ASSERT_TRUE(run_pty_history_case("draft\022match\007\037!\r", history, 1,
+                                   terminal, sizeof(terminal), result,
+                                   sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "!"),
+              "search cancellation lost undo");
+  PASS();
+  TEST("Accepting a history match starts a new undo context");
+  ASSERT_TRUE(run_pty_history_case("draft\022match\r\037!\r", history, 1,
+                                   terminal, sizeof(terminal), result,
+                                   sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "matching history!"),
+              "undo crossed history context");
+  PASS();
+  for (i = 9; i <= 10; i++) {
+    size_t used = 0, j;
+    TEST(i == 9 ? "Kill ring retains the ten newest independent kills"
+                : "Kill ring rotation wraps after the tenth entry");
+    for (j = 0; j < 12; j++)
+      used += (size_t)snprintf(input + used, sizeof(input) - used,
+                               "v%02lu\001\013\005", (unsigned long)j);
+    input[used++] = '\031';
+    for (j = 0; j < i; j++) {
+      input[used++] = '\033';
+      input[used++] = 'y';
+    }
+    memcpy(input + used, "!\r", 3);
+    ASSERT_TRUE(run_pty_readline_case(input, 24, 0, NULL, terminal,
+                                      sizeof(terminal), result, sizeof(result),
+                                      &status) == 0 &&
+                    WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                    !strcmp(result, i == 9 ? "v02!" : "v11!"),
+                "kill ring eviction or rotation was wrong");
+    PASS();
+  }
+  TEST("Ctrl-X bindings override the undo prefix");
+  ASSERT_TRUE(run_pty_key_binding_case(
+                  "a\030b\r", SL_KEY_CTRL_X, insert_text_key, "*", terminal,
+                  sizeof(terminal), result, sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "a*b"),
+              "Ctrl-X binding was bypassed");
+  PASS();
+  TEST("Alt-E retains priority over an unfinished Ctrl-X prefix");
+  ASSERT_TRUE(run_pty_prompt_queue_case("first\tsecond\t\030\033e\r",
+                                        SL_PROMPT_THEME_PLAIN, 1, 0, 2,
+                                        terminal, sizeof(terminal), result,
+                                        sizeof(result), &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                  !strcmp(result, "1:second|2:first"),
+              "prefix swallowed the reserved queue edit shortcut");
   PASS();
 }
 
@@ -7020,7 +7465,8 @@ static void test_normal_prompt_pins_at_bottom_for_live_output(void) {
   resize_offset = terminal_len;
   ws.ws_row = 6;
   ASSERT_TRUE(ioctl(master_fd, TIOCSWINSZ, &ws) == 0, "terminal resize failed");
-  ASSERT_TRUE(write(master_fd, "x\177", 2) == 2, "resize reflow input failed");
+  ASSERT_TRUE(write(master_fd, "\014x\177", 3) == 3,
+              "pinned reset and resize input failed");
   n = read_some_with_timeout(master_fd, buf, sizeof(buf));
   ASSERT_TRUE(n > 0, "resize did not reflow pinned prompt");
   append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
@@ -9729,9 +10175,10 @@ static void test_live_output_native_scroll_resets_prompt_style(void) {
   ASSERT_TRUE(sync_start && reset && prompt && reset < prompt,
               "native stream was rewritten or leaked style into the prompt");
   resized = reset ? strstr(reset + 4, "\033[1;7r") : NULL;
-  ASSERT_TRUE(!resized && !strstr(reset + 4, "\033[41m") &&
-                  !strstr(output, "\0337") && !strstr(output, "\0338"),
-              "fitted resize changed margins or restored producer style");
+  ASSERT_TRUE(resized && strstr(resized, "\033[65535;3H") &&
+                  !strstr(reset + 4, "\033[41m") && !strstr(output, "\0337") &&
+                  !strstr(output, "\0338"),
+              "fitted resize lost margin/cursor restoration or leaked style");
   ASSERT_TRUE(sl_output_stream_end(sl) == SL_OK, "stream end failed");
   sl_destroy(sl);
   close(slave_fd);
@@ -10348,11 +10795,8 @@ static void test_non_ctrl_c_signal_does_not_interrupt_readline(void) {
   printf("SKIP\n");
   tests_passed++;
 }
-static void test_pty_multiline_deletes_are_buffer_wide(void) {
-  TEST("Ctrl-U deletes from buffer start across lines");
-  printf("SKIP\n");
-  tests_passed++;
-  TEST("Ctrl-K deletes to buffer end across lines");
+static void test_pty_logical_line_keys(void) {
+  TEST("Line navigation and deletion respect actual newlines");
   printf("SKIP\n");
   tests_passed++;
 }
@@ -10517,6 +10961,16 @@ static void test_live_output_error_resets_terminal_style(void) {
 int main(int argc, char **argv) {
   printf("softline unit tests\n");
   printf("===================\n\n");
+#if SL_TEST_PTY
+  if (argc == 2 && strcmp(argv[1], "readline-edit") == 0) {
+    test_readline_edit_commands();
+    return tests_passed == tests_run ? 0 : 1;
+  }
+#endif
+  if (argc == 2 && strcmp(argv[1], "line-keys") == 0) {
+    test_pty_logical_line_keys();
+    return tests_passed == tests_run ? 0 : 1;
+  }
   if (argc == 2 && strcmp(argv[1], "reverse-search") == 0) {
     test_ctrl_r_searches_memory_history();
     test_ctrl_r_repeats_and_wraps_matches();
@@ -10610,9 +11064,12 @@ int main(int argc, char **argv) {
   test_queued_turns_profile_promotes_manually();
   test_queued_turns_cancellation_pauses_auto_delivery();
   test_key_binding_ctrl_r_overrides_history_search();
+#if SL_TEST_PTY
+  test_prompt_reset_keys();
+#endif
   test_terminal_mode_is_restored();
   test_non_ctrl_c_signal_does_not_interrupt_readline();
-  test_pty_multiline_deletes_are_buffer_wide();
+  test_pty_logical_line_keys();
   test_readline_keeps_normal_completion_with_queueing();
   test_print_above_pulls_stream_chunks();
   test_word_wrap_keeps_words_intact();

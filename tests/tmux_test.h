@@ -267,7 +267,7 @@ static void cleanup(struct terminal *t) {
 }
 static int launch(struct terminal *t, const char *session, const char *fixture,
                   int document, int prefilled, int width, int height,
-                  int producer, int example) {
+                  int producer, int chat_delay_ms) {
   char script[4096], shell_command[8192], w[16], h[16], doc[16];
   FILE *file;
   int row;
@@ -281,10 +281,13 @@ static int launch(struct terminal *t, const char *session, const char *fixture,
     for (row = 0; row < 100; ++row)
       fprintf(file, "printf 'existing terminal row %03d\\n'\n", row);
   fputs("exec ", file);
-  if (example)
-    fputs("env SOFTLINE_CHAT_CHAR_MS=5 SOFTLINE_PROMPT_THEME=plain ", file);
+  if (chat_delay_ms)
+    fprintf(file,
+            "env SOFTLINE_CHAT_CHAR_MS=%d SOFTLINE_PROMPT_THEME=plain "
+            "SOFTLINE_CHAT_APPROVAL_DEMO=0 ",
+            chat_delay_ms);
   quoted(file, fixture);
-  if (!example) {
+  if (!chat_delay_ms) {
     fputc(' ', file);
     quoted(file, t->commands);
     fputc(' ', file);

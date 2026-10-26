@@ -16,6 +16,30 @@ target_link_libraries(test_softline PRIVATE softline)
 softline_apply_warnings(test_softline)
 softline_local_runtime(test_softline)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(test_edit test_edit.c "${PROJECT_SOURCE_DIR}/src/softline_edit.c")
+  softline_apply_warnings(test_edit)
+  softline_local_runtime(test_edit)
+  add_test(NAME softline_undo_bounds COMMAND test_edit)
+  set_tests_properties(softline_undo_bounds PROPERTIES LABELS "unit;editing;memcheck" TIMEOUT 5)
+  add_executable(test_suspend test_suspend.c)
+  target_link_libraries(test_suspend PRIVATE softline util)
+  softline_apply_warnings(test_suspend)
+  softline_local_runtime(test_suspend)
+  add_test(NAME softline_suspend COMMAND test_suspend)
+  add_test(NAME softline_visual_row_navigation COMMAND test_suspend visual-rows)
+  set_tests_properties(softline_visual_row_navigation PROPERTIES LABELS "unit;editing;memcheck" TIMEOUT 15)
+  add_test(NAME softline_suspend_mutations COMMAND test_suspend mutations)
+  add_test(NAME softline_suspend_transitions COMMAND test_suspend transitions)
+  add_test(NAME softline_cursor_undo_groups COMMAND test_suspend cursor-groups)
+  add_test(NAME softline_suspend_undo_groups COMMAND test_suspend suspend-groups)
+  set_tests_properties(softline_cursor_undo_groups softline_suspend_undo_groups PROPERTIES
+    LABELS "unit;editing;memcheck" TIMEOUT 15)
+  add_test(NAME softline_producer_columns COMMAND test_suspend columns)
+  set_tests_properties(softline_suspend_mutations softline_suspend_transitions softline_producer_columns PROPERTIES
+    LABELS "unit;editing;memcheck" TIMEOUT 30)
+  set_tests_properties(softline_suspend PROPERTIES LABELS "unit;editing;queue;memcheck" TIMEOUT 15)
+  add_test(NAME softline_readline_edit COMMAND test_softline readline-edit)
+  set_tests_properties(softline_readline_edit PROPERTIES LABELS "unit;editing" TIMEOUT 10)
   add_executable(test_reconcile test_reconcile.c)
   target_link_libraries(test_reconcile PRIVATE softline util)
   softline_apply_warnings(test_reconcile)
@@ -44,6 +68,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   softline_apply_warnings(test_stream_transport)
   softline_local_runtime(test_stream_transport)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  # Optional source-data regeneration; ordinary builds use the checked-in table.
+  add_custom_target(unicode-word-data
+    COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/generate-unicode-word-ranges.py"
+      "${PROJECT_BINARY_DIR}/softline_unicode_word.h"
+    VERBATIM)
   if(TARGET example_chat)
     add_executable(test_console_pty test_console_pty.c)
     target_link_libraries(test_console_pty PRIVATE util)
@@ -395,6 +425,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     set_tests_properties(softline_terminal_blank_reflow PROPERTIES ENVIRONMENT "${terminal_test_environment}")
     set_tests_properties(softline_terminal_blank_reflow PROPERTIES
       LABELS "integration;streaming" TIMEOUT 60)
+    add_test(NAME softline_chat_line_keys COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_vte_chat>" line-keys "$<TARGET_FILE:example_chat>")
+    set_tests_properties(softline_chat_line_keys PROPERTIES
+      ENVIRONMENT "${terminal_test_environment}"
+      LABELS "integration;example-smoke" TIMEOUT 15)
     foreach(approval_case typing queue edit empty idle multiline resize)
       add_test(NAME softline_chat_approval_${approval_case} COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
         "$<TARGET_FILE:test_vte_chat>" approval "$<TARGET_FILE:example_chat>" "${approval_case}")
@@ -409,6 +444,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       set_tests_properties(softline_chat_width_${_softline_chat_theme} PROPERTIES
         LABELS "integration;streaming;libmdf" TIMEOUT 40)
     endforeach()
+    add_test(NAME softline_terminal_vte_tiny COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+      "$<TARGET_FILE:test_vte_chat>" tiny "$<TARGET_FILE:example_chat>")
+    set_tests_properties(softline_terminal_vte_tiny PROPERTIES
+      ENVIRONMENT "${terminal_test_environment}" LABELS "integration;streaming;resize" TIMEOUT 20)
     add_test(NAME softline_terminal_streaming_resize COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
       "$<TARGET_FILE:test_vte_chat>" streaming "$<TARGET_FILE:example_chat>")
     set_tests_properties(softline_terminal_streaming_resize PROPERTIES ENVIRONMENT "${terminal_test_environment}")
@@ -420,6 +459,11 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
   find_program(SOFTLINE_TEST_TMUX tmux)
   if(SOFTLINE_TEST_TMUX)
+    add_test(NAME softline_terminal_retained_fragment_resize COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/retained-fragment-resize.sh"
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:native_output_fixture>" "${PROJECT_BINARY_DIR}")
+    set_tests_properties(softline_terminal_retained_fragment_resize PROPERTIES
+      LABELS "integration;streaming;resize" TIMEOUT 20)
     function(retained_resize_case name columns rows mode variant draft)
       add_test(NAME "softline_retained_${name}" COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle/retained-resize.sh"
@@ -455,6 +499,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     add_executable(test_tmux_resize test_tmux_resize.c)
     softline_apply_warnings(test_tmux_resize)
     softline_local_runtime(test_tmux_resize)
+    foreach(_softline_grow_state idle running)
+      add_test(NAME softline_terminal_single_grow_${_softline_grow_state}
+        COMMAND test_tmux_resize "${SOFTLINE_TEST_TMUX}"
+        "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+        "$<TARGET_FILE:terminal_resize_fixture>" --single-grow-${_softline_grow_state})
+      set_tests_properties(softline_terminal_single_grow_${_softline_grow_state}
+        PROPERTIES LABELS "integration;streaming;resize" TIMEOUT 12)
+    endforeach()
+    add_test(NAME softline_terminal_streaming_tiny COMMAND test_tmux_resize
+      "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
+      "$<TARGET_FILE:terminal_resize_fixture>" --streaming-tiny)
+    set_tests_properties(softline_terminal_streaming_tiny PROPERTIES
+      LABELS "integration;streaming;resize" TIMEOUT 12)
     add_test(NAME softline_terminal_producer_resize COMMAND test_tmux_resize
       "${SOFTLINE_TEST_TMUX}" "$<TARGET_FILE:example_chat>" "${PROJECT_BINARY_DIR}"
       "$<TARGET_FILE:terminal_resize_fixture>" --producer-only)
@@ -491,7 +548,7 @@ endif()
 # These C executable cases own native Memcheck coverage. Terminal engine
 # adapters keep their ordinary scope rather than instrumenting host tools.
 # The RLIMIT_AS budget check measures native memory use, without analysis overhead.
-set(_softline_memcheck_tests softline_history softline_unit softline_queue_approval softline_approval_ui
+set(_softline_memcheck_tests softline_history softline_unit softline_readline_edit softline_queue_approval softline_approval_ui
   softline_libmdf_stream softline_examples softline_prompt_frames softline_native_resize)
 get_property(_softline_tests DIRECTORY PROPERTY TESTS)
 foreach(_softline_test IN LISTS _softline_tests)

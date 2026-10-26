@@ -40,7 +40,7 @@ static int has_scroll(const char *bytes) {
 static int resize_case(int columns, int rows, int producer_row) {
   struct winsize size;
   sl_surface_t *surface;
-  int master, slave, row, col, failed;
+  int master, slave, row, col, failed, expected_col;
   char bytes[1024];
   memset(&size, 0, sizeof(size));
   size.ws_col = 40;
@@ -52,16 +52,26 @@ static int resize_case(int columns, int rows, int producer_row) {
       slave, 40, 10, producer_row < 10 ? producer_row : 9, 3, -1);
   if (!surface)
     return 1;
+  expected_col =
+      columns != 40 && (producer_row < 10 ? producer_row : 9) + rows - 12 < 0
+          ? 0
+          : 3;
   (void)drain(master, bytes, sizeof(bytes));
   size.ws_col = (unsigned short)columns;
   size.ws_row = (unsigned short)rows;
   if (ioctl(master, TIOCSWINSZ, &size) != 0)
     return 1;
   failed = sl_surface_resize(surface, columns, rows - 2) != 0;
-  failed |= drain(master, bytes, sizeof(bytes)) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  {
+    char margin[32];
+    (void)snprintf(margin, sizeof(margin), "\033[1;%dr", rows - 2);
+    failed |= strcmp(bytes, margin) != 0;
+  }
   sl_surface_native_position(surface, &row, &col);
   failed |= has_scroll(bytes) || strchr(bytes, '\n') != NULL ||
-            row >= rows - 2 || col != 3 || strstr(bytes, "\0337") != NULL ||
+            (columns != 40 && row < 0) || row >= rows - 2 ||
+            col != expected_col || strstr(bytes, "\0337") != NULL ||
             strstr(bytes, "\0338") != NULL;
   if (failed)
     fprintf(stderr, "%dx%d producer row %d: unexpected resize %s\n", columns,
@@ -147,7 +157,7 @@ static int exact_width_case(void) {
   return failed;
 }
 
-static int clipped_tail_case(int line_open) {
+static int clipped_tail_case(int line_open, int grow_before_feed) {
   struct winsize size;
   sl_surface_t *surface;
   int master, slave, row, col, failed;
@@ -169,18 +179,99 @@ static int clipped_tail_case(int line_open) {
   size.ws_row = 5;
   failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
             sl_surface_resize(surface, 16, 3) != 0;
-  sl_surface_native_position(surface, &row, NULL);
-  failed |= row >= 0;
+  sl_surface_native_position(surface, &row, &col);
+  failed |= row != (line_open ? 0 : 2) || col != 0;
   (void)drain(master, bytes, sizeof(bytes));
-  failed |= sl_surface_native_write(surface, tail, sizeof(tail) - 1, 4, 2) != 0;
+  if (grow_before_feed) {
+    size.ws_col = 80;
+    size.ws_row = 12;
+    failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+              sl_surface_resize(surface, 80, 10) != 0;
+    sl_surface_native_position(surface, &row, &col);
+    failed |= row != (line_open ? 7 : 9) || col != 0;
+    (void)drain(master, bytes, sizeof(bytes));
+    failed |= has_scroll(bytes) || strstr(bytes, "prefix") != NULL;
+  }
+  failed |= sl_surface_native_write(surface, tail, sizeof(tail) - 1,
+                                    grow_before_feed ? 11 : 4, 2) != 0;
   sl_surface_native_position(surface, &row, &col);
   (void)drain(master, bytes, sizeof(bytes));
-  failed |= row != (line_open ? 0 : 2) || col != 4 || has_scroll(bytes) ||
-            strstr(bytes, tail) == NULL || strchr(bytes, '\n') != NULL ||
-            strstr(bytes, "prefix") != NULL;
+  failed |= row != (line_open ? 0 : 2) + (grow_before_feed ? 7 : 0) ||
+            col != 4 || has_scroll(bytes) || strstr(bytes, tail) == NULL ||
+            strchr(bytes, '\n') != NULL || strstr(bytes, "prefix") != NULL;
   if (failed)
     fprintf(stderr, "clipped %s resumed at the wrong row\n",
             line_open ? "continuation" : "new line");
+  sl_surface_destroy(surface);
+  close(slave);
+  close(master);
+  return failed;
+}
+
+/* Geometry and SGR/CR do not consume the unfinished producer line. Only LF
+ * may change that state while successive resizes clip its physical endpoint. */
+static int repeated_clip_case(const char *source, int open, const char *control,
+                              int shrinks) {
+  struct winsize size;
+  sl_surface_t *surface;
+  int master, slave, row, col, failed, ended, expected;
+  char bytes[1024];
+  memset(&size, 0, sizeof(size));
+  size.ws_col = 40;
+  size.ws_row = 12;
+  if (openpty(&master, &slave, NULL, NULL, &size) != 0)
+    return 1;
+  (void)fcntl(master, F_SETFL, O_NONBLOCK);
+  surface = sl_surface_create_native(slave, 40, 11, 0, 0, -1);
+  if (!surface)
+    return 1;
+  failed = sl_surface_native_write(surface, source, strlen(source), 11, 2) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  size.ws_col = 16;
+  size.ws_row = 5;
+  failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+            sl_surface_resize(surface, 16, 4) != 0;
+  failed |= sl_surface_native_exit_advances(surface) != open;
+  (void)drain(master, bytes, sizeof(bytes));
+  if (*control) {
+    failed |=
+        sl_surface_native_write(surface, control, strlen(control), 4, 2) != 0;
+    (void)drain(master, bytes, sizeof(bytes));
+    failed |= strstr(bytes, source) != NULL || strstr(bytes, "\033[6n") != NULL;
+  }
+  ended = !open || !strcmp(control, "\n");
+  failed |= sl_surface_native_exit_advances(surface) != !ended;
+  size.ws_row = 4;
+  failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+            sl_surface_resize(surface, 16, 3) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= has_scroll(bytes) || strchr(bytes, '\n') != NULL;
+  if (shrinks == 3) {
+    size.ws_col = 8;
+    size.ws_row = 3;
+    failed |= ioctl(master, TIOCSWINSZ, &size) != 0 ||
+              sl_surface_resize(surface, 8, 2) != 0;
+    (void)drain(master, bytes, sizeof(bytes));
+    failed |= has_scroll(bytes) || strchr(bytes, '\n') != NULL;
+  }
+  failed |= sl_surface_native_exit_advances(surface) != !ended;
+  failed |= sl_surface_native_write(surface, "Y", 1, size.ws_row - 1, 2) != 0;
+  sl_surface_native_position(surface, &row, &col);
+  expected = !open ? size.ws_row - 2 : ended && shrinks == 3 ? 1 : 0;
+  failed |= row != expected || col != 1;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= strstr(bytes, source) != NULL || strstr(bytes, "\033[6n") != NULL ||
+            strchr(bytes, '\n') != NULL || strstr(bytes, "Y") == NULL;
+  failed |= sl_surface_native_finish(surface, size.ws_row - 1) != 0;
+  (void)drain(master, bytes, sizeof(bytes));
+  failed |= has_scroll(bytes) || strchr(bytes, '\n') != NULL;
+  if (failed)
+    fprintf(stderr,
+            "repeated clip: source_bytes=%lu open=%d control=%u shrinks=%d "
+            "row=%d expected=%d col=%d\n",
+            (unsigned long)strlen(source), open,
+            (unsigned int)(unsigned char)control[0], shrinks, row, expected,
+            col);
   sl_surface_destroy(surface);
   close(slave);
   close(master);
@@ -460,7 +551,17 @@ int main(void) {
   static const int dimensions[][2] = {{16, 5},  {40, 5},  {80, 5}, {16, 12},
                                       {80, 12}, {16, 18}, {80, 18}};
   size_t i;
-  int failed = 0;
+  size_t source, control;
+  int failed = 0, shrinks;
+  const struct {
+    const char *text;
+    int open;
+  } sources[] = {{"prefix", 1},
+                 {"prefix\r", 1},
+                 {"café", 1},
+                 {"0123456789012345678901234567890123456789", 1},
+                 {"prefix\n", 0}};
+  const char *controls[] = {"", "\033[31m", "\r", "\n"};
   for (i = 0; i < sizeof(dimensions) / sizeof(dimensions[0]); i++) {
     failed |= resize_case(dimensions[i][0], dimensions[i][1], 0);
     failed |= resize_case(dimensions[i][0], dimensions[i][1], 8);
@@ -469,8 +570,16 @@ int main(void) {
   }
   failed |= prompt_growth_case();
   failed |= exact_width_case();
-  failed |= clipped_tail_case(1);
-  failed |= clipped_tail_case(0);
+  failed |= clipped_tail_case(1, 0);
+  failed |= clipped_tail_case(0, 0);
+  failed |= clipped_tail_case(1, 1);
+  failed |= clipped_tail_case(0, 1);
+  for (source = 0; source < sizeof(sources) / sizeof(sources[0]); ++source)
+    for (control = 0; control < sizeof(controls) / sizeof(controls[0]);
+         ++control)
+      for (shrinks = 2; shrinks <= 3; ++shrinks)
+        failed |= repeated_clip_case(sources[source].text, sources[source].open,
+                                     controls[control], shrinks);
   for (i = 0; i < 3; i++)
     failed |= newline_case((int)i);
   failed |= clipped_tab_case(0);
@@ -485,7 +594,7 @@ int main(void) {
   failed |= observed_pending_wrap_case(0);
   failed |= observed_pending_wrap_case(1);
   if (!failed)
-    puts("22 physical resize cases preserve cells; prompt growth still "
-         "scrolls.");
+    puts("Physical resize and repeated clipping preserve line state; "
+         "prompt growth still scrolls.");
   return failed;
 }

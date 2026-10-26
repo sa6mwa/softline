@@ -80,6 +80,52 @@ static int geometry(struct editor *e, int rows, int columns) {
   e->bottom = rows - 1;
   return 0;
 }
+static int preserve_draft(const char *shell, const char *history_path) {
+  struct editor e;
+  const char *exits[] = {"exit\n", "fail\n", "partial\n"};
+  int failed = 0, index;
+  size_t mark;
+  REQUIRE(setenv("SHELL", shell, 1) == 0);
+  REQUIRE(start(&e, "examples/chat.lua", NULL, NULL) == 0);
+  REQUIRE(prompt(&e, 0) == 0);
+  REQUIRE(send_bytes(&e, "\033[200~draft first\nsecond tail\033[201~"
+                         "\002\002\002\002") == 0);
+  for (index = 0; index < 3; ++index) {
+    mark = e.length;
+    REQUIRE(send_bytes(&e, "\033s") == 0);
+    REQUIRE(wait_for(&e, "SHELL_READY -i cooked foreground", mark) == 0);
+    REQUIRE(e.top == 0 && e.bottom == e.rows - 1);
+    REQUIRE(contains(&e, "\033[?2004l", mark));
+    /* Suspending must not accept the draft into persistent history. */
+    REQUIRE(records(history_path, ""));
+    REQUIRE(send_bytes(&e, "clear\n") == 0);
+    REQUIRE(wait_for(&e, "SHELL_CLEARED", mark) == 0);
+    REQUIRE(geometry(&e, index == 1 ? 12 : 30, index == 1 ? 50 : 100) == 0);
+    mark = e.length;
+    REQUIRE(send_bytes(&e, exits[index]) == 0);
+    REQUIRE(prompt(&e, mark) == 0);
+    REQUIRE(contains(&e, "draft first", mark));
+    REQUIRE(contains(&e, "second tail", mark));
+    mark = e.length;
+    REQUIRE(send_bytes(&e, "X") == 0);
+    REQUIRE(wait_for(&e, "Xtail", mark) == 0);
+    REQUIRE(e.row == e.rows - 1 && e.column == 10);
+    mark = e.length;
+    REQUIRE(send_bytes(&e, "\037") == 0);
+    REQUIRE(wait_for(&e, "tail", mark) == 0);
+    REQUIRE(e.row == e.rows - 1 && e.column == 9);
+  }
+  REQUIRE(send_bytes(&e, "!\r") == 0);
+  REQUIRE(wait_records(&e, history_path, "draft first\\nsecond !tail\n") == 0);
+  REQUIRE(send_bytes(&e, "\003") == 0);
+  REQUIRE(wait_for(&e, c_chat ? "Operation cancelled" : "[operation] cancelled",
+                   0) == 0);
+  REQUIRE(prompt(&e, 0) == 0);
+  REQUIRE(quit(&e) == 0);
+cleanup:
+  close_editor(&e);
+  return failed;
+}
 static int exercise(const char *shell) {
   struct editor e;
   int failed = 0, alias, dimension, key, quotes;
@@ -169,6 +215,10 @@ static int exercise(const char *shell) {
     }
   REQUIRE(contains(&e, "Shell is available only between turns.", 0));
   mark = e.length;
+  REQUIRE(send_bytes(&e, "\033s") == 0);
+  settle(&e, .1);
+  REQUIRE(!contains(&e, "SHELL_READY", mark));
+  mark = e.length;
   REQUIRE(send_bytes(&e, "\025queued\r") == 0);
   REQUIRE(wait_for(&e, "Q 1. queued", mark) == 0);
   mark = e.length;
@@ -234,6 +284,12 @@ static int failed_launch(const char *directory) {
     return 1;
   REQUIRE(start(&e, "examples/chat.lua", NULL, NULL) == 0);
   REQUIRE(prompt(&e, 0) == 0);
+  mark = e.length;
+  REQUIRE(send_bytes(&e, "kept-draft\033s") == 0);
+  REQUIRE(wait_for(&e, "shell exited unsuccessfully", mark) == 0);
+  REQUIRE(prompt(&e, mark) == 0);
+  REQUIRE(contains(&e, "kept-draft", mark));
+  REQUIRE(send_bytes(&e, "\025") == 0);
   mark = e.length;
   REQUIRE(send_bytes(&e, "/shell\r") == 0);
   REQUIRE(wait_for(&e, "shell exited unsuccessfully", mark) == 0);
@@ -349,6 +405,9 @@ int main(int argc, char **argv) {
     goto cleanup;
   remove_files(history_dir);
   setenv("SOFTLINE_CHAT_OPERATION_STEP_MS", "500", 1);
+  if (preserve_draft(shell, history_path))
+    goto cleanup;
+  remove_files(history_dir);
   if (exercise(shell) || fallback(NULL) || fallback("") ||
       fallback("/bin/bash") || failed_launch(directory))
     goto cleanup;

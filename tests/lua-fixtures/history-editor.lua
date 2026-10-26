@@ -15,6 +15,12 @@ assert(sl:history_set_backend('editor-coroutine', {
 assert(sl:history_set_auto_add(true))
 assert(sl:set_prompt_queue(true, 8, 3))
 assert(sl:set_queue_delivery('manual'))
+local resets = 0
+assert(sl:bind_key(softline.KEY_ALT_BASE + string.byte('r'), function()
+  assert(sl:buffer() == 'queued' and sl:queue_count() == 0)
+  resets = resets + 1
+  return softline.KEY_ACTION_RESET
+end))
 assert(sl:bind_key(softline.KEY_TAB, function()
   local nested = coroutine.create(function()
     expected = coroutine.running()
@@ -43,7 +49,7 @@ end))
 editor = coroutine.create(function()
   expected = coroutine.running()
   local line = assert(sl:next_prompt('> '))
-  assert(line == 'direct' and calls == 4)
+  assert(line == 'direct' and calls == 4 and resets == 1)
   assert(sl:queue_take(1) == 'queued')
 end)
 assert(coroutine.resume(editor))

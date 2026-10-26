@@ -159,6 +159,8 @@ static int softline_lua_key_callback(sl_t *sl, sl_key_t key, void *userdata,
   case SL_KEY_ACTION_SUBMIT:
   case SL_KEY_ACTION_CANCEL:
   case SL_KEY_ACTION_INTERRUPT:
+  case SL_KEY_ACTION_RESET:
+  case SL_KEY_ACTION_SUSPEND:
     *action = (sl_key_action_t)result;
     return SL_OK;
   default:
@@ -1854,6 +1856,8 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "READLINE_INTERRUPTED");
   lua_pushinteger(L, SL_READLINE_ERROR);
   lua_setfield(L, -2, "READLINE_ERROR");
+  lua_pushinteger(L, SL_READLINE_SUSPENDED);
+  lua_setfield(L, -2, "READLINE_SUSPENDED");
   lua_pushinteger(L, SL_OK);
   lua_setfield(L, -2, "OK");
   lua_pushinteger(L, SL_ERROR);
@@ -1952,14 +1956,24 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "KEY_CTRL_J");
   lua_pushinteger(L, SL_KEY_CTRL_K);
   lua_setfield(L, -2, "KEY_CTRL_K");
+  lua_pushinteger(L, SL_KEY_CTRL_L);
+  lua_setfield(L, -2, "KEY_CTRL_L");
   lua_pushinteger(L, SL_KEY_CTRL_R);
   lua_setfield(L, -2, "KEY_CTRL_R");
+  lua_pushinteger(L, SL_KEY_CTRL_T);
+  lua_setfield(L, -2, "KEY_CTRL_T");
   lua_pushinteger(L, SL_KEY_CTRL_U);
   lua_setfield(L, -2, "KEY_CTRL_U");
   lua_pushinteger(L, SL_KEY_CTRL_V);
   lua_setfield(L, -2, "KEY_CTRL_V");
   lua_pushinteger(L, SL_KEY_CTRL_W);
   lua_setfield(L, -2, "KEY_CTRL_W");
+  lua_pushinteger(L, SL_KEY_CTRL_X);
+  lua_setfield(L, -2, "KEY_CTRL_X");
+  lua_pushinteger(L, SL_KEY_CTRL_Y);
+  lua_setfield(L, -2, "KEY_CTRL_Y");
+  lua_pushinteger(L, SL_KEY_CTRL_UNDERSCORE);
+  lua_setfield(L, -2, "KEY_CTRL_UNDERSCORE");
   lua_pushinteger(L, SL_KEY_ESCAPE);
   lua_setfield(L, -2, "KEY_ESCAPE");
   lua_pushinteger(L, SL_KEY_BACKSPACE);
@@ -1990,6 +2004,12 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "KEY_ALT_B");
   lua_pushinteger(L, SL_KEY_ALT_F);
   lua_setfield(L, -2, "KEY_ALT_F");
+  lua_pushinteger(L, SL_KEY_ALT_D);
+  lua_setfield(L, -2, "KEY_ALT_D");
+  lua_pushinteger(L, SL_KEY_ALT_BACKSPACE);
+  lua_setfield(L, -2, "KEY_ALT_BACKSPACE");
+  lua_pushinteger(L, SL_KEY_ALT_Y);
+  lua_setfield(L, -2, "KEY_ALT_Y");
   lua_pushinteger(L, SL_KEY_UNKNOWN);
   lua_setfield(L, -2, "KEY_UNKNOWN");
   lua_pushinteger(L, SL_KEY_PASTE_BEGIN);
@@ -2042,5 +2062,9 @@ int luaopen_softline(lua_State *L) {
   lua_setfield(L, -2, "KEY_ACTION_CANCEL");
   lua_pushinteger(L, SL_KEY_ACTION_INTERRUPT);
   lua_setfield(L, -2, "KEY_ACTION_INTERRUPT");
+  lua_pushinteger(L, SL_KEY_ACTION_RESET);
+  lua_setfield(L, -2, "KEY_ACTION_RESET");
+  lua_pushinteger(L, SL_KEY_ACTION_SUSPEND);
+  lua_setfield(L, -2, "KEY_ACTION_SUSPEND");
   return 1;
 }

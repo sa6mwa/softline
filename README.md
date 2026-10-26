@@ -148,7 +148,7 @@ Not currently implemented:
 - completion menus or completion provider APIs
 - inline hints, autosuggestions, or syntax highlighting
 - forward history search or history filtering hooks
-- kill ring, undo/redo, vi mode, or full readline-style command sets
+- redo, vi mode, or full readline-style command sets
 - full Unicode Text Segmentation, locale-specific ambiguous-width handling, or
   normalization
 - terminfo/termcap capability lookup
@@ -195,6 +195,11 @@ operation is running, with the draft left editable; they cannot be queued or
 steered. Piped input and redirected output cannot open a shell. Other text,
 including `/shell arguments`, remains an ordinary chat turn.
 
+Alt-S opens the same shell between turns while preserving the current draft,
+cursor, undo, history search and queued-entry editing state. Exit the shell to
+resume editing; nothing is submitted or added to history by the shortcut.
+The command forms still return to an empty prompt.
+
 The examples end the output session before launching the shell, restoring
 terminal input and the full scroll region. After the shell exits, they begin a
 new session on the same handle: the prompt is built afresh at the current
@@ -206,6 +211,21 @@ transcript is replayed. A failed shell launch or nonzero exit is reported and
 returns to chat. Applications can use this same `output_stream_end()` / child
 process / `output_stream_begin()` sequence outside an active editor callback;
 shell execution belongs to the application.
+
+To bind another key, return `SL_KEY_ACTION_SUSPEND` from its callback.
+`readline()` or `next_prompt()` returns NULL with `SL_READLINE_SUSPENDED`.
+The owner can perform the existing output-session handoff, then call the editor
+again to resume the draft before queued delivery. Lua exposes
+`softline.KEY_ACTION_SUSPEND` and `softline.READLINE_SUSPENDED` with a nil result.
+Suspension preserves logical editor state; the resumed prompt wraps to the
+current terminal size. It does not pause producers: the application must ensure
+exclusive terminal ownership before running a child. The chat examples allow
+this only between turns.
+
+Host `set_buffer()` and `insert()` calls remain undoable while suspended,
+including after the output session closes. Loading a different history/queue
+entry, accepting a search match, or rejecting an edited entry starts a fresh
+undo context; rejected content cannot be restored by undo or search cancellation.
 
 The queue UI, status line, and simulated operation stream activate only when
 both standard input and output are terminals; piped input or redirected output
@@ -255,9 +275,10 @@ session with the native terminal layout by default.
 ## Terminal-native chat
 
 A full-terminal output session starts the transcript at the current terminal
-cursor. The editable prompt starts at the bottom. Physical resize preserves
-the terminal's position for an unchanged prompt, including newly exposed rows
-below it. Only prompt layout changes update its cells.
+cursor. The active editable prompt stays at the terminal bottom after resize,
+including when the terminal grows. A retained frame between editor calls
+follows native reflow until editing resumes. Only changed prompt cells or
+placement are updated.
 A VT scroll region ends immediately above the current prompt frame. Producer
 bytes, including libmdf styles and wrapping, pass through unchanged. Softline keeps
 parser state and the output cursor; it does not cache, pad, rewrap, clear, or
@@ -325,13 +346,17 @@ Unicode/tab tails follow the opaque-feed limitation above. A clipped producer
 cursor can also resume on a different row. See the
 [review exception](docs/softline-mdf-stream-design.md#review-exception-output-clipped-behind-a-bottom-anchored-prompt).
 Every batch that positions the output cursor establishes its scroll margin
-alongside the producer bytes. Physical resize itself updates geometry;
-an unchanged prompt needs no cursor movement or repaint. Updating the margin
-does not scroll the transcript again. Softline does not recover or replay output
+alongside the producer bytes. Physical resize updates geometry, restores the
+output margin and moves an active prompt to the current bottom. Updating the
+margin does not scroll the transcript again. Softline does not recover or replay output
 that leaves the visible screen. An unfinished line that moves into scrollback
 continues at the first visible output row. If the clipped position was at a hard
-line boundary, new output starts next to the prompt. For example, with no
-prior scrollback, a bottom-anchored prompt can keep the hardware cursor at
+line boundary, new output starts next to the prompt. Width reflow resets a
+clipped position during resize reconciliation, even if no output arrives before
+the next resize, so growth cannot restore an invalid position over older text.
+Height-only round trips retain the native history position until a feed needs
+to address it. For example, with no prior scrollback, a bottom-anchored prompt
+can keep the hardware cursor at
 the bottom during a height shrink while a short CR-overwritten output line
 scrolls above the screen. Its continuation cannot resume at the original
 offscreen cell; it follows the clipped-line rule. Existing scrollback,
@@ -415,6 +440,22 @@ it never replays the transcript. A watched FD is the usual way to
 deliver producer events without blocking editor input. See the
 [composition contract](docs/softline-mdf-stream-design.md) for limits and
 failure semantics.
+
+Ctrl+L resets Softline's prompt layout: it rereads the PTY size, restores owned
+scroll margins, and repaints the editor, status and queue rows. It preserves
+the draft, cursor, history search, queues, approvals and live producer state.
+It leaves the terminal transcript intact and never replays producer output.
+Existing key bindings can override `SL_KEY_CTRL_L`; a binding returning
+`SL_KEY_ACTION_RESET` requests the same recovery from another key. Lua exposes
+`softline.KEY_CTRL_L` and `softline.KEY_ACTION_RESET`.
+
+Alt+B/F move between alphanumeric words, including Unicode letters and numbers.
+Up/Down retain the preferred screen column across short and empty rows.
+Ctrl+U/K/W and Alt+D/Alt+Backspace save deleted text in a ten-entry kill ring:
+Ctrl+Y yanks and Alt+Y rotates the last yank. Focused approval controls retain
+priority over Alt+Y. Ctrl+_ or Ctrl+X Ctrl+U undoes draft edits, and Ctrl+T
+transposes adjacent Unicode clusters. Undo belongs to the current draft; the
+kill ring persists across prompts on the same handle.
 
 ## Prompt queueing
 

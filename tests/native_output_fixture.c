@@ -2,6 +2,7 @@
 #include "softline/softline.h"
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -283,11 +284,33 @@ static int retained(const char *command_path, const char *reply_path,
   return state.result == SL_OK ? 0 : 1;
 }
 
+static int gated_fragment(sl_t *sl, char command) {
+  switch (command) {
+  case 'p':
+    return sl_output_stream_write(sl, "Y", 1);
+  case 'a':
+    return sl_output_stream_write(sl, "\033", 1);
+  case 'A':
+    return sl_output_stream_write(sl, "[32mCOLOR\033[0m", 13);
+  case 'u':
+    return sl_output_stream_write(sl, "\342", 1);
+  case 'U':
+    return sl_output_stream_write(sl, "\224\200", 2);
+  case 'v':
+    return sl_output_stream_write(sl, "\033[H", 3) == SL_ERROR_INVALID
+               ? SL_OK
+               : SL_ERROR;
+  default:
+    return SL_ERROR_INVALID;
+  }
+}
+
 struct live_gate {
   int command_fd;
   int ack_fd;
   int done;
   int result;
+  int panels;
 };
 
 static void live_gate_ack(struct live_gate *gate) {
@@ -310,12 +333,40 @@ static int live_gate_watch(sl_t *sl, const sl_watch_event_t *event,
   (void)event;
   if (read(gate->command_fd, &command, 1) != 1)
     gate->result = SL_ERROR;
-  else if (command == 'p')
-    gate->result = sl_output_stream_write(sl, "Y", 1);
-  else if (command == 'x')
+  else if (command == 'r')
+    gate->result = sl_output_stream_reconcile(sl);
+  else if (command == 'd') {
+    struct winsize size;
+    char damage[256];
+    int count = 0, row;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0)
+      gate->result = SL_ERROR_IO;
+    else {
+      count = snprintf(damage, sizeof(damage), "\033[r");
+      for (row = size.ws_row - (gate->panels ? 4 : 1); row < size.ws_row; row++)
+        count += snprintf(damage + count, sizeof(damage) - (size_t)count,
+                          "\033[%d;1HBROKEN\033[0K", row + 1);
+      gate->result = write(STDOUT_FILENO, damage, (size_t)count) == count
+                         ? SL_OK
+                         : SL_ERROR_IO;
+    }
+  } else if (command == 't') {
+    const char *elements[] = {"reset-state"};
+    gate->panels = 1;
+    gate->result =
+        sl_set_statusline(sl, 1, 0) == SL_OK &&
+                sl_set_status_elements(sl, elements, 1) == SL_OK &&
+                sl_set_status_message(sl, "working") == SL_OK &&
+                sl_set_prompt_queue(sl, 1, 8, 3) == SL_OK &&
+                sl_set_prompt_queue_delivery(
+                    sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_OK &&
+                sl_prompt_queue_append(sl, "queued for reset", 0, NULL) == SL_OK
+            ? SL_OK
+            : SL_ERROR;
+  } else if (command == 'x')
     gate->done = 1;
   else
-    gate->result = SL_ERROR;
+    gate->result = gated_fragment(sl, command);
   if (gate->result != SL_OK || gate->done)
     sl_cancel(sl);
   else
@@ -342,8 +393,8 @@ static int gated(const char *command_path, const char *ack_path,
       size_t i;
       for (i = 0; result == SL_OK && text[i]; i++)
         result = sl_output_stream_write(sl, text + i, 1);
-    } else if (command == 'p') {
-      result = sl_output_stream_write(sl, "Y", 1);
+    } else if (command == 'c') {
+      result = sl_output_stream_reconcile(sl);
     } else if (command == 'w') {
       result = sl_set_screen_width(sl, 12);
     } else if (command == 'f') {
@@ -365,6 +416,7 @@ static int gated(const char *command_path, const char *ack_path,
         gate.ack_fd = ack_fd;
         gate.done = 0;
         gate.result = SL_OK;
+        gate.panels = 0;
         result = sl_watch_add(sl, command_fd, SL_WATCH_READ, live_gate_watch,
                               &gate, &watch);
         if (result != SL_OK)
@@ -384,6 +436,8 @@ static int gated(const char *command_path, const char *ack_path,
     } else if (command == 'x') {
       result = sl_output_stream_end(sl);
       break;
+    } else if (command != 'r') {
+      result = gated_fragment(sl, command);
     }
     if (result != SL_OK || ioctl(STDOUT_FILENO, TIOCGWINSZ, &geometry) != 0)
       break;

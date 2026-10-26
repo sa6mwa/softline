@@ -75,9 +75,10 @@ features are exposed through the C receiver/free functions and Lua methods.
 
 The output session and editor prompt have one serial terminal owner. A
 full-terminal transcript begins at the existing terminal cursor. The editable
-prompt starts at the bottom. An unchanged frame follows the terminal's native
-resize position, including space exposed below it; only changed prompt layout
-updates cells. The VT scroll region ends immediately above the current prompt
+prompt stays at the current terminal bottom during active editing, including
+after height growth. A retained frame between editor calls follows native
+reflow until editing resumes. Changed prompt cells or placement are updated.
+The VT scroll region ends immediately above the current prompt
 frame. Native producer bytes are written unchanged. Softline retains bounded
 partial ANSI/UTF-8 parser state and an output cursor. It never rewraps, pads,
 clears, or replays native transcript text. Positions are distances from the terminal bottom.
@@ -132,9 +133,23 @@ Ordinary readline's optional scroll-region ownership is checked at startup
 and retried between producer callbacks after finite output advances its prompt.
 Multiple feeds in a single callback remain immediate and defer acquisition
 until the next input-owned boundary.
-Physical resize updates internal geometry without homing or repositioning an
-unchanged prompt. Each batch that positions the producer cursor establishes
-its output margin alongside the producer bytes, cursor moves, and prompt return.
+Physical resize updates internal geometry, restores the reserved output margin
+and repositions an active editor at the terminal bottom. Restoring margins
+invalidates the cached hardware cursor even when the text is unchanged; the
+renderer restores the input cursor before returning. A prompt-free full-height
+producer retains its hardware cursor and pending wrap. Retained-frame output
+preparation also restores the input cursor when an incomplete or rejected
+fragment emits no producer bytes; a later feed is not needed to restore it.
+The incremental ANSI/UTF-8 validator is unchanged. Each batch that positions
+the producer cursor establishes its output margin alongside the producer bytes,
+cursor moves, and prompt return.
+Ctrl-L performs an owner-thread layout reset. It rereads PTY geometry,
+reasserts owned margins and repaints every visible prompt/status/queue row,
+including unchanged cached rows. Cached ownership and reflow geometry remain
+available; producer counters, pending ANSI/UTF-8 fragments, draft/cursor,
+history-search state and queue/approval identities remain unchanged. This
+operation does not clear terminal history or replay producer bytes. Hosts may
+remap it through the RESET key action without changing the receiver layout.
 Margin state is not cached across these batches because terminal resize can
 reset it after the new PTY size becomes observable.
 Updating margins after physical resize
@@ -143,6 +158,15 @@ recovered or replayed. When an unfinished line leaves the screen, its next
 fragment resumes at the first visible output row. If the clipped position was
 at a hard line boundary, new output starts next to the prompt. Neither case
 changes cells or blank rows already in scrollback.
+Width reflow resets a clipped endpoint during resize reconciliation rather than
+waiting for another feed. A shrink followed by growth without intervening
+producer bytes must not revive that invalid row or column over earlier output.
+Height-only round trips retain the native history position until a feed needs
+to address it. This changes only endpoint counters; producer bytes remain
+unbuffered.
+Clipping resets physical column and wrap measurements without ending the
+producer line. Repeated resizes, SGR-only writes and CR preserve unfinished-line
+state; an actual LF establishes the hard line boundary.
 A cached previous prompt frame allows
 patches of only changed cells; native feeds preserve unchanged prompt cells
 and restore the editor cursor. Erasing an owned prompt row uses the default

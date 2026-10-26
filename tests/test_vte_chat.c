@@ -558,6 +558,53 @@ cleanup:
   close_chat(&c);
   return failed || errors;
 }
+/* Pause across both resizes: waiting until the next feed to drop a clipped
+ * reflow coordinate can overwrite the transcript after growth. */
+static int tiny_case(const char *example, int feed_small, int small_columns) {
+  struct chat c;
+  struct snapshot before, after;
+  char prefix[32768];
+  const char *at;
+  size_t length, anchor;
+  int failed = 0;
+  REQUIRE(start_chat(&c, example, "default", 80, 5) == 0);
+  send_input(&c, "one\r");
+  REQUIRE(wait_frame(&c, "Here is", "> \n", 0, 8) == 0);
+  REQUIRE(pause_worker(c.child, drain, &c, &c.worker) == 0 && c.worker > 0);
+  REQUIRE(coordinated_resize(&c, small_columns, 3, 1) == 0);
+  settle(.2);
+  if (feed_small) {
+    REQUIRE(kill(c.worker, SIGCONT) == 0);
+    c.worker = -1;
+    REQUIRE(wait_frame(&c, "italic", "> \n", 0, 8) == 0);
+    REQUIRE(pause_worker(c.child, drain, &c, &c.worker) == 0 && c.worker > 0);
+  }
+  REQUIRE(coordinated_resize(&c, 97, 80, 1) == 0);
+  settle(.2);
+  before = frame(&c);
+  at = strstr(before.text, feed_small ? "italic" : "Here is");
+  REQUIRE(at != NULL);
+  anchor = (size_t)(at - before.text);
+  length = anchor + strlen(feed_small ? "italic" : "Here is");
+  memcpy(prefix, before.text, length);
+  prefix[length] = 0;
+  REQUIRE(kill(c.worker, SIGCONT) == 0);
+  c.worker = -1;
+  REQUIRE(wait_frame(&c, "Try another prompt.", "> \n", 0, 8) == 0);
+  after = frame(&c);
+  if (strncmp(after.text, prefix, length))
+    fprintf(stderr, "Before continuation:\n%s\n", before.text);
+  REQUIRE(!strncmp(after.text, prefix, length));
+  REQUIRE(strstr(after.text + anchor,
+                 "italic context, bold emphasis, and code in one paragraph.") !=
+          NULL);
+  if (feed_small)
+    REQUIRE(!strncmp(after.text + anchor, "italic context,", 15));
+cleanup:
+  close_chat(&c);
+  return failed || errors;
+}
+
 static int streaming_case(const char *example, const char *theme) {
   struct chat c;
   struct snapshot s;
@@ -719,16 +766,99 @@ cleanup:
   close_chat(&c);
   return failed || errors;
 }
+/* Exercise the actual demo's native prompt and hardware cursor, rather than
+ * relying only on returned buffers from a minimal readline fixture. */
+static int line_keys_case(const char *example, const char *theme, int busy) {
+  struct chat c;
+  struct snapshot s;
+  int failed = 0;
+  setenv("SOFTLINE_CHAT_APPROVAL_DEMO", "1", 1);
+  setenv("SOFTLINE_CHAT_APPROVAL_MS", "100", 1);
+  REQUIRE(start_chat(&c, example, theme, 24, 10) == 0);
+  if (busy) {
+    send_input(&c, "hello\r");
+    REQUIRE(wait_frame(&c, NULL, "> \n", -1, 3) == 0);
+  }
+  send_input(&c, "ordinary");
+  REQUIRE(wait_frame(&c, NULL, "> ordinary\n", 0, 2) == 0);
+  send_input(&c, "\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+
+  send_input(&c, "alpha\n\nomega");
+  REQUIRE(wait_visible(&c, "  omega") == 0);
+  s = visible_frame(&c);
+  REQUIRE(row_distance(s.text, "> alpha", "  omega") == 2);
+  send_input(&c, "\033[A\025");
+  REQUIRE(wait_visible(&c, "> alpha\n  omega") == 0);
+  s = visible_frame(&c);
+  REQUIRE(s.column == 7);
+  send_input(&c, "\025\033[B\005\025\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+
+  send_input(&c, "alpha beta\nomega\001\027");
+  REQUIRE(wait_frame(&c, NULL, "> alpha betaomega\n", 0, 2) == 0);
+  s = visible_frame(&c);
+  REQUIRE(s.column == 12);
+  send_input(&c, "\027");
+  REQUIRE(wait_frame(&c, NULL, "> alpha omega\n", 0, 2) == 0);
+  send_input(&c, "\027\005\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+
+  send_input(&c, "tail\n");
+  REQUIRE(wait_visible(&c, "> tail") == 0);
+  send_input(&c, "\025");
+  REQUIRE(wait_frame(&c, NULL, "> tail\n", 0, 2) == 0);
+  send_input(&c, "\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+
+  send_input(&c, "one two\001\033f!");
+  REQUIRE(wait_frame(&c, NULL, "> one! two\n", 0, 2) == 0);
+  send_input(&c, "\005\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+  send_input(&c, "café—中文\001\033d\031\037\031");
+  REQUIRE(wait_frame(&c, NULL, "> café—中文\n", 0, 2) == 0);
+  send_input(&c, "\005\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+  send_input(&c, "abcdefghij\nx\nabcdefghij\001"
+                 "\006\006\006\006\006\006\006\006\033[A\033[A!");
+  REQUIRE(wait_visible(&c, "> abcdefgh!ij\n  x\n  abcdefghij") == 0);
+  send_input(&c, "\037\033[B\033[B\005\025\025\025\025\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+  send_input(&c, "ab\002\033[200~x\ny\033[201~\037!");
+  REQUIRE(wait_frame(&c, NULL, "> a!b\n", 0, 2) == 0);
+  send_input(&c, "\005\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+  send_input(&c, "abc\002\006X\030");
+  REQUIRE(wait_frame(&c, NULL, "> abcX\n", 0, 2) == 0);
+  settle(.15);
+  send_input(&c, "\025");
+  REQUIRE(wait_frame(&c, NULL, "> abc\n", 0, 2) == 0);
+  send_input(&c, "\005\025");
+  REQUIRE(wait_frame(&c, NULL, "> \n", 0, 2) == 0);
+cleanup:
+  close_chat(&c);
+  unsetenv("SOFTLINE_CHAT_APPROVAL_DEMO");
+  unsetenv("SOFTLINE_CHAT_APPROVAL_MS");
+  return failed || errors;
+}
+
 int main(int argc, char **argv) {
   const char *themes[] = {"plain", "default", "gruvbox"};
-  int theme, height;
+  int theme, height, busy;
   if (argc < 3 || load())
     return 2;
-  if (!strcmp(argv[1], "blank")) {
+  if (!strcmp(argv[1], "line-keys")) {
+    for (theme = 0; theme < 2; ++theme)
+      for (busy = 0; busy < 2; ++busy)
+        if (line_keys_case(argv[2], themes[theme], busy))
+          return 1;
+  } else if (!strcmp(argv[1], "blank")) {
     for (theme = 0; theme < 3; ++theme)
       for (height = 24; height <= 40; height += 16)
         if (blank_case(argv[2], themes[theme], height))
           return 1;
+  } else if (!strcmp(argv[1], "tiny")) {
+    return tiny_case(argv[2], 0, 12) || tiny_case(argv[2], 1, 12);
   } else if (!strcmp(argv[1], "streaming")) {
     for (theme = 0; theme < 3; theme += 2)
       if (streaming_case(argv[2], themes[theme]))

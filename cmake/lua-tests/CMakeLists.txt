@@ -27,6 +27,7 @@ foreach(mode history_auto readline simple chat)
     "${root}/tests/check_lua_console.sh" "${SOFTLINE_LUA_EXECUTABLE}" "${root}" "${mode}")
 endforeach()
 add_test(NAME lua_history_editor COMMAND "${pty_test}" history "${SOFTLINE_LUA_EXECUTABLE}" "${root}")
+add_test(NAME lua_readline_edit COMMAND "${pty_test}" readline_edit "${SOFTLINE_LUA_EXECUTABLE}" "${root}")
 string(SHA256 chat_history_key "softline.examples.chat")
 add_test(NAME lua_chat_history COMMAND "${pty_test}" store lua "${SOFTLINE_LUA_EXECUTABLE}"
   "${root}" "${root}/build" "${chat_history_key}.history")

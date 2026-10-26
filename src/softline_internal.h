@@ -2,6 +2,7 @@
 #define SOFTLINE_INTERNAL_H
 
 #include "softline/softline.h"
+#include "softline_edit.h"
 #include "softline_history.h"
 #include "softline_surface.h"
 
@@ -103,6 +104,16 @@ typedef struct {
   int cursor_col;
 } sl_reflow_frame_t;
 
+typedef struct sl_history_search {
+  char *saved;
+  char *query;
+  size_t query_len;
+  size_t query_cap;
+  int match_index;
+  int has_match;
+  char *prompt;
+} sl_history_search_t;
+
 typedef struct sl_impl {
   int input_fd;
   int output_fd;
@@ -133,6 +144,11 @@ typedef struct sl_impl {
   int disable_image_paste;
   char *image_paste_path_template;
   size_t cursor;
+  sl_edit_t edit;
+  int preferred_column;
+  int preferred_column_width;
+  int preferred_column_valid;
+  int control_x_pending;
   int raw_active;
   struct termios original_termios;
   tcflag_t original_output_oflag;
@@ -168,6 +184,8 @@ typedef struct sl_impl {
   /* Logical cursor is part of the prompt frame; this tracks whether the
    * terminal cursor currently matches it. Output may invalidate only this. */
   int rendered_cursor_valid;
+  /* Owner-requested repaint; cached geometry remains available for reflow. */
+  int render_reset;
   int rendered_width;
   int rendered_height;
   int native_prompt_rows;
@@ -181,6 +199,8 @@ typedef struct sl_impl {
   char *retained_prompt;
   int output_reconcile_active;
   int active_readline;
+  int readline_suspended;
+  sl_history_search_t suspended_search;
   int request_submit;
   int request_cancel;
   int request_queue_dispatch;

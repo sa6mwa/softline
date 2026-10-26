@@ -127,7 +127,7 @@ static int fixture_case(const char *tmux, const char *fixture,
        "A longer paragraph has different word lengths, punctuation, and enough "
        "text to cross multiple terminal rows during the width transitions.",
        "END unicode.", NULL, NULL}};
-  int failed = 0, step, width, height, owned, count, index, tail,
+  int failed = 0, step, width, height, owned, count, index, tail, native_cursor,
       prefix_pending = 0;
   int gap_count = 0, gap_sizes[3], shifted, actual_owned, retained, live_row,
       marker_row = -1, marker_copies = 1;
@@ -240,7 +240,8 @@ static int fixture_case(const char *tmux, const char *fixture,
         write(t.command_fd, "b", 1);
         CHECK(0);
       }
-      t.expected_prompt = atoi(cursor);
+      native_cursor = atoi(cursor);
+      t.expected_prompt = height - 1;
       owned = owned_row(&native, 0);
       delay(.03);
       mark = recording_size(&t);
@@ -269,10 +270,17 @@ static int fixture_case(const char *tmux, const char *fixture,
         shifted = live_row >= retained ? live_row - retained + 1 : 0;
       }
       CHECK(rows_equal(&actual, 0, &native, shifted, retained));
-      if (flags & GROW)
-        CHECK(rows_equal(&actual, t.expected_prompt + 1, &native,
-                         t.expected_prompt + 1,
-                         actual.count - t.expected_prompt - 1));
+      if (flags & GROW) {
+        /* Moving the owned frame must leave its old rows empty, while the
+         * output prefix above it remains byte-for-byte native content. */
+        for (index = owned; index <= native_cursor && index < actual_owned;
+             ++index)
+          CHECK(!nonblank(actual.rows[index]));
+        CHECK(rows_equal(&actual, native_cursor + 1, &native, native_cursor + 1,
+                         actual_owned > native_cursor
+                             ? actual_owned - native_cursor - 1
+                             : 0));
+      }
       delay(.03);
       CHECK(recording(&t, mark, raw, sizeof(raw)) == 0);
       if (flags & QUOTED) {
@@ -287,8 +295,10 @@ static int fixture_case(const char *tmux, const char *fixture,
         CHECK(count == 1 && !strstr(raw, quote[document]));
       }
       CHECK(controls_valid(raw, shifted,
-                           (flags & ROUNDTRIP) && !(flags & PAGED)));
-      if ((flags & ROUNDTRIP) && !(flags & PAGED))
+                           (flags & ROUNDTRIP) && !(flags & PAGED) &&
+                               native_cursor == t.expected_prompt));
+      if ((flags & ROUNDTRIP) && !(flags & PAGED) &&
+          native_cursor == t.expected_prompt)
         CHECK(!strstr(raw, "> draft") && !strstr(raw, "+ fixture"));
       if (flags & GROW) {
         CHECK(capture(&t, &history, 1, 0) == 0);
@@ -589,7 +599,7 @@ static int example_case(const char *tmux, const char *example,
   const int live_sizes[][2] = {{45, 24}, {30, 18}, {80, 28}};
   const int height_sizes[][2] = {{80, 8}, {80, 24}, {80, 6}, {80, 24}};
   CHECK(prepare(&t, tmux, build, "chat") == 0);
-  CHECK(launch(&t, "chat", example, 0, prefilled, 80, 24, 0, 1) == 0);
+  CHECK(launch(&t, "chat", example, 0, prefilled, 80, 24, 0, 5) == 0);
   CHECK(wait_initial(&t) == 0);
   strcpy(draft, "draft ");
   memset(draft + 6, 'x', 93);
@@ -662,12 +672,158 @@ cleanup:
   cleanup(&t);
   return failed;
 }
+static int wait_bottom_frame(struct terminal *t, int width, int height) {
+  char actual[128], expected[128];
+  double deadline = now() + 1;
+  snprintf(expected, sizeof(expected), "%d,%d,%d,%d", width, height, height - 1,
+           height - 4);
+  do {
+    if (query(t,
+              "#{pane_width},#{pane_height},#{cursor_y},#{scroll_region_lower}",
+              actual, sizeof(actual)))
+      return 1;
+    if (!strcmp(actual, expected))
+      return 0;
+    delay(.01);
+  } while (now() < deadline);
+  fprintf(stderr, "Resize frame width,height,cursor,margin: %s; expected %s\n",
+          actual, expected);
+  return 1;
+}
+
+static int single_grow_case(const char *tmux, const char *example,
+                            const char *build, int running) {
+  struct terminal t;
+  struct grid g;
+  int failed = 0, document = -1, flags = running, row, prompts, banners;
+  char cursor[32], before[65536], after[65536];
+  const char *draft = "keep café draft";
+  CHECK(prepare(&t, tmux, build, "grow") == 0);
+  CHECK(launch(&t, "grow", example, 0, 0, 120, 24, 0, running ? 1000 : 5) == 0);
+  CHECK(command(&t, NULL, 0, "set-option", "-g", "status", "off",
+                (const char *)NULL) == 0);
+  CHECK(wait_initial(&t) == 0);
+  if (running) {
+    CHECK(command(&t, NULL, 0, "send-keys", "-t", t.pane, "grow-check", "Enter",
+                  (const char *)NULL) == 0);
+    CHECK(wait_example(&t, "Thinking...", ">", 0, 0, 0, 0) == 0);
+  }
+  CHECK(command(&t, NULL, 0, "send-keys", "-t", t.pane, "-l", draft,
+                (const char *)NULL) == 0);
+  CHECK(wait_example(&t, NULL, draft, 0, 0, 0, 0) == 0);
+  CHECK(capture(&t, &g, 0, 1) == 0 && g.count >= 3);
+  g.count -= 3;
+  flatten(&g, before, 1);
+  CHECK(before[0]);
+  /* Start with little scrollback, then let each preceding size settle.
+   * The last growth gets no keypress, producer command or second resize. */
+  CHECK(resize_window(&t, 240, 80) == 0);
+  CHECK(wait_tty(&t, 240, 80) == 0);
+  delay(.3);
+  CHECK(resize_window(&t, 40, 8) == 0);
+  CHECK(wait_tty(&t, 40, 8) == 0);
+  delay(.3);
+  CHECK(resize_window(&t, 240, 80) == 0);
+  CHECK(wait_tty(&t, 240, 80) == 0);
+  CHECK(wait_bottom_frame(&t, 240, 80) == 0);
+  if (running)
+    CHECK(wait_example(&t, "# A", draft, 0, 0, 0, 0) == 0);
+  CHECK(capture(&t, &g, 0, 0) == 0);
+  CHECK(!strcmp(g.rows[79], "> keep café draft"));
+  prompts = 0;
+  for (row = 0; row < g.count; ++row)
+    prompts += strstr(g.rows[row], "keep café draft") != NULL;
+  CHECK(prompts == 1);
+  CHECK(query(&t, "#{cursor_x}", cursor, sizeof(cursor)) == 0);
+  CHECK(!strcmp(cursor, "17"));
+  CHECK(capture(&t, &g, 1, 1) == 0);
+  flatten(&g, after, 1);
+  CHECK(!strncmp(after, before, strlen(before)));
+  banners = 0;
+  for (row = 0; row < g.count; ++row)
+    banners += strstr(g.rows[row], "Enter sends or queues;") != NULL;
+  CHECK(banners == 1);
+  CHECK(command(&t, NULL, 0, "send-keys", "-t", t.pane, "-l", "!",
+                (const char *)NULL) == 0);
+  CHECK(wait_example(&t, NULL, "keep café draft!", 0, 0, 0, 0) == 0);
+  CHECK(wait_bottom_frame(&t, 240, 80) == 0);
+cleanup:
+  cleanup(&t);
+  return failed;
+}
+
+static int streaming_tiny_case(const char *tmux, const char *example,
+                               const char *build) {
+  struct terminal t;
+  struct grid g;
+  int failed = 0, document = -1, flags = 0, continuation_row, row;
+  char parent[32], path[128], expected[512], *italic;
+  FILE *children;
+  long child;
+  pid_t worker = -1;
+  CHECK(prepare(&t, tmux, build, "tiny") == 0);
+  CHECK(launch(&t, "tiny", example, 0, 0, 120, 80, 0, 5) == 0);
+  CHECK(command(&t, NULL, 0, "set-option", "-g", "status", "off",
+                (const char *)NULL) == 0);
+  CHECK(wait_initial(&t) == 0);
+  CHECK(command(&t, NULL, 0, "send-keys", "-t", t.pane, "one", "Enter",
+                (const char *)NULL) == 0);
+  CHECK(wait_example(&t, "Here is", ">", 0, 0, 0, 0) == 0);
+  CHECK(resize_window(&t, 120, 3) == 0 && wait_tty(&t, 120, 3) == 0);
+  CHECK(wait_example(&t, "italic", ">", 0, 0, 0, 0) == 0);
+  CHECK(query(&t, "#{pane_pid}", parent, sizeof(parent)) == 0);
+  snprintf(path, sizeof(path), "/proc/%s/task/%s/children", parent, parent);
+  children = fopen(path, "r");
+  CHECK(children != NULL);
+  row = fscanf(children, "%ld", &child);
+  fclose(children);
+  CHECK(row == 1 && child > 0);
+  worker = (pid_t)child;
+  CHECK(kill(worker, SIGSTOP) == 0);
+  delay(.1);
+  CHECK(resize_window(&t, 120, 80) == 0 && wait_tty(&t, 120, 80) == 0);
+  CHECK(wait_bottom_frame(&t, 120, 80) == 0);
+  CHECK(capture(&t, &g, 1, 1) == 0);
+  continuation_row = -1;
+  for (row = 0; row < g.count; ++row)
+    if ((italic = strstr(g.rows[row], "italic")) != NULL) {
+      CHECK(continuation_row < 0);
+      continuation_row = row;
+      CHECK((size_t)(italic - g.rows[row]) + 80 < sizeof(expected));
+      memcpy(expected, g.rows[row], (size_t)(italic - g.rows[row]));
+      strcpy(expected + (italic - g.rows[row]),
+             "italic context, bold emphasis, and code in one paragraph.");
+    }
+  CHECK(continuation_row >= 0);
+  CHECK(kill(worker, SIGCONT) == 0);
+  worker = -1;
+  CHECK(wait_example(&t, "Try another prompt.", ">", 0, 0, 0, 0) == 0);
+  CHECK(wait_bottom_frame(&t, 120, 80) == 0);
+  CHECK(capture(&t, &g, 1, 1) == 0);
+  CHECK(continuation_row < g.count);
+  if (strcmp(g.rows[continuation_row], expected))
+    fprintf(stderr, "Expected cursor continuation: |%s|\nActual: |%s|\n",
+            expected, g.rows[continuation_row]);
+  CHECK(!strcmp(g.rows[continuation_row], expected));
+cleanup:
+  if (worker > 0)
+    kill(worker, SIGCONT);
+  cleanup(&t);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   const char *mode;
   int document, prefilled, sequence;
   if (argc < 5 || argc > 6)
     return 2;
   mode = argc == 6 ? argv[5] : "default";
+  if (!strcmp(mode, "--streaming-tiny"))
+    return streaming_tiny_case(argv[1], argv[2], argv[3]);
+  if (!strcmp(mode, "--single-grow-idle") ||
+      !strcmp(mode, "--single-grow-running"))
+    return single_grow_case(argv[1], argv[2], argv[3],
+                            !strcmp(mode, "--single-grow-running"));
   if (!strcmp(mode, "--producer-only")) {
     for (document = 0; document < 3; ++document)
       for (prefilled = 0; prefilled < 2; ++prefilled)

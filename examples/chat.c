@@ -93,7 +93,7 @@ static int is_shell_command(const char *line) {
  * the session releases termios and the scroll region; beginning a new one
  * discards the old prompt frame and probes the shell's final cursor position.
  * system() handles parent SIGINT/SIGQUIT while the interactive shell runs. */
-static int run_shell(struct chat_state *state) {
+static int run_shell(struct chat_state *state, int preserve_draft) {
   int status;
   if (sl_output_stream_end(state->sl) != SL_OK)
     return -1;
@@ -111,7 +111,7 @@ static int run_shell(struct chat_state *state) {
             WTERMSIG(status));
   return sync_geometry(state) == 0 &&
                  sl_output_stream_begin(state->sl) == SL_OK &&
-                 set_chat_message(state->sl, NULL) == SL_OK
+                 (preserve_draft || set_chat_message(state->sl, NULL) == SL_OK)
              ? 0
              : -1;
 }
@@ -122,6 +122,16 @@ static int sink_to_softline(void *userdata, const char *bytes, size_t length) {
   if (!state || (!bytes && length > 0))
     return -1;
   return sl_output_stream_write(state->sl, bytes, length) == SL_OK ? 0 : -1;
+}
+
+static int shell_editor_key(sl_t *sl, sl_key_t key, void *userdata,
+                            sl_key_action_t *action) {
+  struct chat_state *state = (struct chat_state *)userdata;
+  (void)key;
+  *action = state->busy ? SL_KEY_ACTION_HANDLED : SL_KEY_ACTION_SUSPEND;
+  return state->busy
+             ? set_chat_message(sl, "Shell is available only between turns.")
+             : SL_OK;
 }
 
 static int chat_margin_left(int columns) { return columns >= 5 ? 2 : 0; }
@@ -745,6 +755,8 @@ int main(void) {
         sl_bind_key(state.sl, SL_KEY_ALT_ENTER, exit_editor_key, &state) !=
             SL_OK ||
         sl_bind_key(state.sl, SL_KEY_TAB, exit_editor_key, &state) != SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_ALT_BASE + 's', shell_editor_key,
+                    &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_CTRL_D, exit_editor_key, &state) !=
             SL_OK)) ||
       state.sl->output_stream_begin(state.sl) != SL_OK ||
@@ -760,7 +772,8 @@ int main(void) {
         render_note(&state,
                     "Enter sends or queues; Alt-Enter steers or promotes; "
                     "Alt-E edits queue. Esc/Ctrl-C cancels; `/quit` leaves. "
-                    "`!sh` or `/shell` opens your shell between turns.") != 0) {
+                    "`!sh` or `/shell` opens your shell between turns; "
+                    "Alt-S opens it while preserving your draft.") != 0) {
       report_failure(&state, "initial output");
       exit_code = 1;
       goto cleanup;
@@ -793,6 +806,14 @@ int main(void) {
     }
     if (!line) {
       status = sl_last_readline_status(state.sl);
+      if (status == SL_READLINE_SUSPENDED) {
+        if (run_shell(&state, 1) != 0) {
+          report_failure(&state, "shell handoff");
+          exit_code = 1;
+          break;
+        }
+        continue;
+      }
       if (status == SL_READLINE_CANCELLED ||
           status == SL_READLINE_INTERRUPTED) {
         cancelled_busy = interactive && state.busy;
@@ -832,7 +853,7 @@ int main(void) {
                                  : "Shell is available only between turns.");
       } else {
         failed =
-            render_user_prompt(&state, line) != 0 || run_shell(&state) != 0;
+            render_user_prompt(&state, line) != 0 || run_shell(&state, 0) != 0;
       }
       sl_free_string(state.sl, line);
       if (failed) {

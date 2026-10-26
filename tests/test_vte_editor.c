@@ -154,6 +154,24 @@ static int case_editor(const char *example, const char *source,
       goto cleanup;
     }
     stop_editor(&reference);
+    if (stage == 1) {
+      char damage[128];
+      int length;
+      current = snapshot(&actual.screen, 0);
+      length = snprintf(damage, sizeof(damage), "\rBROKEN\033[0K\r");
+      if (current.column > 0)
+        length += snprintf(damage + length, sizeof(damage) - (size_t)length,
+                           "\033[%ldC", current.column);
+      v.feed(actual.screen.terminal, damage, length);
+      pump();
+      v.send(actual.screen.terminal, "\014", 1);
+      if (rendered(&actual) || prompt(&actual, &observed) ||
+          strcmp(observed.text, expected.text) ||
+          observed.row != expected.row || observed.column != expected.column) {
+        fprintf(stderr, "Ctrl-L did not restore the owned editor frame\n");
+        goto cleanup;
+      }
+    }
   }
   v.send(actual.screen.terminal, "\r", 1);
   if (wait_marker(&actual, "submitted: "))
@@ -193,15 +211,15 @@ cleanup:
   return failed || errors;
 }
 int main(int argc, char **argv) {
-  const char *sources[] = {"one two three four",
-                           "alpha beta gamma delta epsilon zeta eta",
-                           "café 中文 é words", "abcdefghij"};
+  const char *sources[] = {
+      "one two three four", "alpha beta gamma delta epsilon zeta eta",
+      "café 中文 é words", "abcdefghij", "abcdefghijklmnopqrstuvwxyZ"};
   const char *positions[] = {"\001", "\001\033[C\033[C\033[C", ""};
   size_t source, position;
   int filled;
   if (argc != 2 || load())
     return 2;
-  for (source = 0; source < 4; ++source)
+  for (source = 0; source < sizeof(sources) / sizeof(sources[0]); ++source)
     for (position = 0; position < 3; ++position)
       for (filled = 0; filled < 2; ++filled)
         if (case_editor(argv[1], sources[source], positions[position], filled))

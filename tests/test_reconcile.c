@@ -91,8 +91,12 @@ static int run_case(int ansi, int timeout) {
         SL_OK);
   CHECK(sl_history_add(sl, "history sentinel") == SL_OK);
   CHECK(sl_output_stream_write(sl, "PRODUCER_SENTINEL\n", 18) == SL_OK);
-  CHECK(sl_output_stream_write(sl, prefix, strlen(prefix)) == SL_OK);
   CHECK(tcgetattr(slave, &before) == 0);
+  size.ws_col = 80;
+  size.ws_row = 30;
+  CHECK(ioctl(slave, TIOCSWINSZ, &size) == 0);
+  CHECK(sl_output_stream_write(sl, prefix, strlen(prefix)) == SL_OK);
+  CHECK(tcgetattr(slave, &after) == 0 && same_modes(&before, &after));
   size.ws_col = 61;
   size.ws_row = 18;
   CHECK(ioctl(slave, TIOCSWINSZ, &size) == 0);

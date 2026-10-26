@@ -60,12 +60,22 @@ The editor supports these built-in behaviors:
 
 - `Enter` submits the current buffer.
 - `Ctrl-J` inserts a newline.
+- `Ctrl-L` rereads PTY geometry, restores owned scroll margins and repaints
+  the prompt, status and queue rows, including unchanged cached cells. It
+  preserves the draft/cursor, history search, approval focus, queue identities,
+  producer position and pending ANSI/UTF-8 fragments. It leaves the transcript
+  intact and does not replay output. Bindings can override `SL_KEY_CTRL_L` or
+  return `SL_KEY_ACTION_RESET` from another key in C and Lua.
 - `Ctrl-D` returns `NULL` on an empty buffer and deletes forward inside text.
 - `Ctrl-C` restores terminal state and raises `SIGINT`.
-- `Ctrl-A` / Home moves to the start of the buffer.
-- `Ctrl-E` / End moves to the end of the buffer.
+- `Ctrl-A` / Home moves to the start of the current newline-delimited line.
+- `Ctrl-E` / End moves to the end of the current newline-delimited line.
+  Soft wrapping does not create line boundaries for either command.
 - `Ctrl-B` / Left and `Ctrl-F` / Right move by common UTF-8 cluster boundaries.
 - Up and Down navigate visual rows first, then history where applicable.
+  Consecutive vertical movements retain their preferred screen column across
+  short or empty rows. Other navigation, editing and width changes reset it;
+  producer output and Ctrl-L preserve it.
   `Ctrl-P` and `Ctrl-N` navigate previous and next history entries directly.
 - `Ctrl-R` starts reverse incremental search over the handle's current history.
   `history_search_active()` reports this mode, including a failed match, and
@@ -105,14 +115,47 @@ The editor supports these built-in behaviors:
   the draft stays unchanged and `last_error()` explains the failure. A custom
   binding for `SL_KEY_CTRL_V` overrides the built-in paste. This operation is
   unavailable on other platforms and does not change bracketed text paste.
-- `Alt-B` and `Alt-F` move by words.
+- `Alt-B` moves to the current or preceding alphanumeric word's beginning;
+  `Alt-F` moves to the current or next word's end. Punctuation separates words.
+  Unicode 16 letters, marks and numbers participate without splitting clusters.
+- `Alt-D` kills through the next alphanumeric word's end; `Alt-Backspace`
+  kills back to the preceding word's beginning. These word motions may cross
+  actual newlines; Ctrl-W retains the line boundary described below.
+- `Ctrl-T` transposes adjacent Unicode clusters. At a newline or buffer end it
+  swaps the preceding pair; at buffer start or with no preceding pair it is a no-op.
 - Backspace and Delete operate at the cursor.
-- `Ctrl-U`, `Ctrl-K`, and `Ctrl-W` edit across the whole multiline buffer.
+- `Ctrl-K` deletes from the cursor to the next newline or buffer end, preserving
+  later lines. At a newline it removes only that newline, joining the lines;
+  at buffer end it does nothing. Soft wrapping does not create line boundaries.
+- `Ctrl-U` deletes from the current newline-delimited line's start to the cursor,
+  preserving the preceding newline. At line start it removes only that preceding
+  newline, joining the lines. At buffer start it does nothing; soft wrapping does
+  not create line boundaries.
+- `Ctrl-W` deletes the preceding whitespace-delimited word and any trailing spaces
+  or tabs within the current actual line. At line start it removes only the
+  preceding newline, preserving words on the previous line. At buffer start it
+  does nothing.
+- Ctrl-U/K/W and Alt-D/Alt-Backspace save text in a ten-entry kill ring owned by
+  the handle. Consecutive kills append or prepend in textual order. Ctrl-Y inserts
+  the newest kill, and repeated Alt-Y rotates the immediately preceding yank.
+  Other editing/navigation ends yank rotation. Focused approval decisions retain
+  priority over Alt-Y. A yank exceeding `line_max_len` leaves the draft unchanged.
+- `Ctrl-_` and `Ctrl-X Ctrl-U` undo the last editing command. Continuous typing
+  and each bracketed paste are single undo groups; callback buffer edits within
+  one key command form a group. Undo restores text and cursor, preserving queue
+  identities and approval holds. Loading another queued/history entry or starting
+  a new readline resets undo; cancelling reverse search preserves it. The kill
+  ring persists across these boundaries. Undo contains draft edits only.
 - Bracketed paste mode is enabled while editing; pasted carriage returns become
   buffer content instead of submitting the prompt.
 - Input is limited by `line_max_len`.
 - Editing falls back to a plain line reader when either input or output is not
   a TTY; it does not emit prompts.
+
+The command names follow the [GNU Readline reference](https://tiswww.case.edu/php/chet/readline/rluserman.html).
+For actual newline boundaries, the supported line-deletion commands follow
+[prompt_toolkit's multiline Readline bindings](https://github.com/prompt-toolkit/python-prompt-toolkit/blob/main/src/prompt_toolkit/key_binding/bindings/named_commands.py).
+Ctrl-W additionally stops its word scan at the current line's beginning.
 
 UTF-8 is preserved as bytes while rendering uses terminal-cell width for
 combining marks, East Asian wide characters, and common emoji sequences.
@@ -137,8 +180,9 @@ Current rendering guarantees:
 
 Ordinary readline participates in terminal scrollback. Persistent chat uses
 native full-width output beginning at the original cursor and a prompt
-initially at the terminal bottom. Physical resize leaves an unchanged prompt
-at the terminal's native position; only prompt layout changes update cells.
+at the terminal bottom. After physical resize, an active editor returns to the
+current bottom and restores its output margin even while no output arrives.
+A retained frame between editor calls follows native reflow until editing resumes.
 Rectangular viewports and bounds configuration are unsupported.
 Softline never implies a retained full transcript.
 
@@ -238,7 +282,8 @@ entry with either focus state,
 even if newer entries exist. Approval headings use `A ` in the two-column
 gutter; normal text and wrapped continuations start with two spaces.
 Editing/submitting/requeueing retains
-its hold until explicit approval or auto-approval. Other keys return to normal
+its hold until explicit approval or auto-approval. Ctrl-L preserves approval
+focus while recovering layout. Other editing keys return to normal
 editing; plain Y/N are ordinary text even when focused. Focused Alt-Y/Alt-N,
 focus dismissal and offered-entry Alt-E take precedence over application
 bindings; other bindings keep their usual behavior.
@@ -308,6 +353,44 @@ transcript replay is unnecessary. Failed launches and nonzero exits report an
 error and return to chat. This uses existing output-session APIs and adds no
 library shell-execution API or ABI change.
 
+Alt-S uses the same between-operation shell handoff without submitting the
+draft. A key callback returns `SL_KEY_ACTION_SUSPEND`; the editor returns NULL
+(nil in Lua) with `SL_READLINE_SUSPENDED`, retaining text, cursor, preferred
+column, undo, kill ring, reverse search, history navigation and approval/edit
+state. The next readline/next_prompt resumes that continuation before automatic
+queue delivery. Held edits retain their identity, position and explicit approval
+requirement. Suspending does not append history, approve, requeue or cancel.
+The application runs the child outside callbacks, after ending its output
+session, then begins a fresh session and resumes editing. Shell clear/resize
+changes the physical layout only: owned UI wraps at the current geometry, with
+no producer transcript storage or replay. Exact `!sh` and `/shell` submissions
+still return to an empty prompt. Suspension does not pause background producers;
+the caller must arrange exclusive terminal ownership. The examples reject Alt-S
+while an operation is running. The generic action and status extend existing
+enums without changing the public receiver/configuration layouts or ABI.
+
+Host buffer replacements and insertions during suspension are journaled like
+active edits, including while the output session is closed. No-op or rejected
+mutations do not add undo entries. Undo validates a complete command group
+against the current draft length and allocation before changing bytes. Context
+changes such as accepting history search or rejecting an edited approval retire
+the old journal. Producer redraws preserve the preferred editing column unless
+the effective wrapping width changes. Unsupported Ctrl-X chords consume their
+complete UTF-8 character without leaking continuation bytes into the draft.
+
+Public cursor navigation ends typing coalescing in idle/watch callbacks as well
+as key bindings. A suspend callback that changes the draft or cursor ends its
+command normally: its edits form one undo group, separate from typing after
+resumption. Only a suspension without editor changes preserves the preceding
+command identity, including yank rotation.
+
+Vertical navigation clamps the preferred column to a cursor position owned by
+the requested visual row. A soft-wrap endpoint belongs to the following row;
+hard-newline positions remain on their preceding row. Rows containing only
+expanded tab continuation cells are skipped because no draft cursor position
+exists there. Navigation can reach the EOF position after an exactly full final
+row; its continuation row is painted only while the cursor occupies it.
+
 The C and Lua APIs also expose a quoted-prompt writer for an open output
 session. It wraps literal submitted text, repeats a configurable prefix on
 each visible row, and adds only the line breaks needed for one empty row on
@@ -322,6 +405,7 @@ either side. The quote prefix and italic text have independent colours.
 - submit
 - cancel
 - interrupt
+- reset prompt layout from PTY geometry while preserving editor/producer state
 - mutate the active buffer with public methods such as `insert()`,
   `set_buffer()`, `set_cursor()`, `submit()`, and `cancel()`
 
@@ -373,13 +457,13 @@ transcript text is never cached, padded, rewrapped, cleared, or replayed.
 Prompt updates compare the previous frame and patch only changed cells; output
 feeds preserve unchanged prompt cells and restore the editor cursor. The
 scroll region ends immediately above the current prompt frame.
-Resize preserves the terminal's prompt position, updating only changed prompt
-layout and internal output geometry. Output reinstates its margin when
-emission resumes. The terminal owns transcript reflow and any empty rows
-exposed below the prompt by growth. Ending chat restores the full scroll region
-and clears input rows
-while retaining queue and status rows. The cursor stays at column zero on the current input
-row; exit adds no newline or scroll. `clear_prompt_on_exit` defaults to zero;
+Resize anchors the active editor at the current terminal bottom, updating only
+changed prompt cells or placement and internal output geometry. The output
+margin is restored during reconciliation, before output resumes. The terminal
+owns transcript reflow; retained inactive frames follow that native position.
+Ending chat restores the full scroll region and clears input rows while
+retaining queue and status rows. The cursor stays at column zero on the current
+input row; exit adds no newline or scroll. `clear_prompt_on_exit` defaults to zero;
 setting it to one clears the whole prompt area and returns below the transcript.
 Ending a producer session inside an active editor retains the native prompt and
 scroll region for subsequent finite output or another stream; closing the handle
@@ -649,8 +733,8 @@ Positions are tracked relative to the terminal bottom,
 without terminal cursor save/restore. Resize reconciliation queries the live
 input cursor to account for terminal movement and adjusts only owned prompt
 rows whose cells or placement changed. Fitted, unchanged rows are preserved.
-Width changes rebuild prompt layout. The editable prompt starts at the bottom
-and follows the terminal's native resize position when its layout is unchanged.
+Width changes rebuild prompt layout. The active editable prompt stays at the
+terminal bottom even when unchanged text fits the larger terminal.
 
 A physical resize can race an in-flight VT batch and misplace even ASCII
 output. This accepted concurrency limit is documented with its reproducer in

@@ -9,6 +9,7 @@
 #include "softline_clipboard.h"
 #include "softline_internal.h"
 #include "softline_unicode.h"
+#include "softline_unicode_word.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -23,6 +24,7 @@ typedef struct sl_row {
   size_t len;
   size_t start;
   size_t end;
+  int has_cursor;
   int base_col;
   int cols;
 } sl_row_t;
@@ -198,6 +200,7 @@ static size_t sl_utf8_clamp_cluster_boundary(const char *buf, size_t len,
                                              size_t pos);
 static size_t sl_utf8_decode(const char *buf, size_t len, size_t pos,
                              unsigned long *codepoint);
+static size_t sl_utf8_next_cluster_len(const char *buf, size_t len, size_t pos);
 static int sl_render_clear_active(sl_t *self);
 static int sl_render_apply(sl_t *self, const char *prompt);
 static void sl_output_track_tail(sl_impl_t *impl, const char *bytes,
@@ -836,9 +839,10 @@ static int sl_prompt_top(sl_impl_t *impl, int prompt_rows) {
   if (prompt_rows > height)
     prompt_rows = height;
   top = sl_terminal_bottom(impl) - prompt_rows + 1;
-  if (sl_surface_is_native(impl->output_surface) && impl->rendered_rows > 0) {
-    /* Retain the terminal's prompt position after resize. Newly exposed rows
-     * below it belong to the terminal, not to prompt layout. */
+  if (!impl->active_prompt && sl_surface_is_native(impl->output_surface) &&
+      impl->rendered_rows > 0) {
+    /* A retained, inactive frame follows native reflow. An active editor
+     * stays at the current terminal bottom, including after height growth. */
     below =
         impl->rendered_height - impl->rendered_top_row - impl->rendered_rows;
     if (below > 0)
@@ -934,6 +938,10 @@ static int sl_output_surface_reconcile(sl_t *self, int prompt_top) {
       prompt_top == sl_terminal_rows(impl) &&
       sl_surface_matches(impl->output_surface, width, prompt_top))
     return 0;
+  /* A changed output region homes the hardware cursor, even if the prompt
+   * text is unchanged. Its cached cell comparison must still restore it. */
+  if (!sl_surface_matches(impl->output_surface, width, prompt_top))
+    impl->rendered_cursor_valid = 0;
   {
     int observed = sl_native_observe_producer(self);
     int col, row, result;
@@ -1069,6 +1077,39 @@ static int sl_buf_reserve(sl_t *self, size_t need) {
   return 0;
 }
 
+static int sl_buf_replace(sl_t *self, size_t at, size_t removed,
+                          const char *text, size_t inserted) {
+  sl_impl_t *impl = sl_impl(self);
+  size_t len;
+  if (!impl || at > impl->len || removed > impl->len - at ||
+      inserted > impl->line_max_len - (impl->len - removed)) {
+    sl_set_error(self, "edit exceeds the line limit");
+    return -1;
+  }
+  if (!removed && !inserted)
+    return 0;
+  if (removed == inserted && !memcmp(impl->buf + at, text, inserted))
+    return 0;
+  len = impl->len - removed + inserted;
+  if (sl_buf_reserve(self, len + 1) != 0)
+    return -1;
+  if (!impl->history_search_active &&
+      sl_edit_record(&impl->edit, at, impl->buf + at, removed, inserted,
+                     impl->cursor) != 0) {
+    sl_set_error(self, "out of memory while recording draft undo");
+    return -1;
+  }
+  memmove(impl->buf + at + inserted, impl->buf + at + removed,
+          impl->len - at - removed);
+  if (inserted)
+    memmove(impl->buf + at, text, inserted);
+  impl->len = len;
+  impl->buf[len] = '\0';
+  impl->edit.changed = 1;
+  impl->preferred_column_valid = 0;
+  return 0;
+}
+
 static int sl_buf_set(sl_t *self, const char *s) {
   sl_impl_t *impl;
   size_t n;
@@ -1078,46 +1119,39 @@ static int sl_buf_set(sl_t *self, const char *s) {
   n = s ? strlen(s) : 0;
   if (sl_buf_reserve(self, n + 1) != 0)
     return -1;
+  /* A recalled/queued draft is a new editing context, not an undoable
+   * mutation of the previous entry's identity. Public set_buffer is journaled.
+   */
+  if (!impl->history_search_active)
+    sl_edit_clear_undo(&impl->edit);
   if (n > 0)
     memcpy(impl->buf, s, n);
   impl->buf[n] = '\0';
   impl->len = n;
   impl->cursor = n;
+  impl->edit.changed = 1;
+  impl->preferred_column_valid = 0;
   return 0;
 }
 
 static int sl_buf_insert(sl_t *self, size_t at, const char *s, size_t n) {
   sl_impl_t *impl;
-  size_t tail;
   impl = sl_impl(self);
   if (!impl || !s)
     return -1;
   if (at > impl->len)
     at = impl->len;
-  if (n == 0)
-    return 0;
-  if (sl_buf_reserve(self, impl->len + n + 1) != 0)
-    return -1;
-  tail = impl->len - at;
-  memmove(impl->buf + at + n, impl->buf + at, tail);
-  memcpy(impl->buf + at, s, n);
-  impl->len += n;
-  impl->buf[impl->len] = '\0';
-  return 0;
+  return sl_buf_replace(self, at, 0, s, n);
 }
 
-static void sl_buf_delete(sl_t *self, size_t at, size_t n) {
+static int sl_buf_delete(sl_t *self, size_t at, size_t n) {
   sl_impl_t *impl;
-  size_t tail;
   impl = sl_impl(self);
   if (!impl || at >= impl->len || n == 0)
-    return;
-  if (at + n > impl->len)
+    return 0;
+  if (n > impl->len - at)
     n = impl->len - at;
-  tail = impl->len - at - n;
-  memmove(impl->buf + at, impl->buf + at + n, tail);
-  impl->len -= n;
-  impl->buf[impl->len] = '\0';
+  return sl_buf_replace(self, at, n, NULL, 0);
 }
 
 static int sl_buf_insert_cstr(sl_t *self, const char *text) {
@@ -1134,10 +1168,21 @@ static int sl_buf_insert_cstr(sl_t *self, const char *text) {
 }
 
 static int sl_buf_set_public(sl_t *self, const char *text) {
-  if (!self || !text)
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl || !text)
     return SL_ERROR_INVALID;
-  if (sl_buf_set(self, text) != 0)
+  if (sl_buf_replace(self, 0, impl->len, text, strlen(text)) != 0)
     return SL_ERROR;
+  if (impl->cursor != impl->len) {
+    if (impl->edit.open && (impl->edit.command == SL_EDIT_INSERT ||
+                            impl->edit.command == SL_EDIT_PASTE))
+      impl->edit.group++;
+    impl->edit.changed = 1;
+    impl->edit.last_command = SL_EDIT_OTHER;
+  }
+  impl->cursor = impl->len;
+  impl->preferred_column_valid = 0;
+  impl->edit.yank_valid = 0;
   return SL_OK;
 }
 
@@ -1165,6 +1210,15 @@ static int sl_set_cursor_method(sl_t *self, size_t cursor) {
   if (cursor > impl->len)
     cursor = impl->len;
   impl->cursor = sl_utf8_clamp_cluster_boundary(impl->buf, impl->len, cursor);
+  /* A watch may navigate while a typed UTF-8 key awaits continuation. That
+   * key must start a new run without splitting a key callback's own group. */
+  if (impl->edit.open && (impl->edit.command == SL_EDIT_INSERT ||
+                          impl->edit.command == SL_EDIT_PASTE))
+    impl->edit.group++;
+  impl->edit.last_command = SL_EDIT_OTHER;
+  impl->edit.changed = 1;
+  impl->preferred_column_valid = 0;
+  impl->edit.yank_valid = 0;
   return SL_OK;
 }
 
@@ -1186,15 +1240,49 @@ static int sl_cancel_method(sl_t *self) {
   return SL_OK;
 }
 
-static size_t sl_word_forward(const char *buf, size_t len, size_t pos) {
-  while (pos < len && !isspace((unsigned char)buf[pos]))
-    pos++;
-  while (pos < len && isspace((unsigned char)buf[pos]))
+static size_t sl_line_start(const char *buf, size_t pos) {
+  while (pos > 0 && buf[pos - 1] != '\n')
+    pos--;
+  return pos;
+}
+
+static size_t sl_line_end(const char *buf, size_t len, size_t pos) {
+  while (pos < len && buf[pos] != '\n')
     pos++;
   return pos;
 }
 
+static int sl_word_at(const char *buf, size_t len, size_t pos) {
+  unsigned long cp;
+  (void)sl_utf8_decode(buf, len, pos, &cp);
+  return sl_codepoint_is_word(cp);
+}
+
+static size_t sl_word_forward(const char *buf, size_t len, size_t pos) {
+  while (pos < len && !sl_word_at(buf, len, pos))
+    pos += sl_utf8_next_cluster_len(buf, len, pos);
+  while (pos < len && sl_word_at(buf, len, pos))
+    pos += sl_utf8_next_cluster_len(buf, len, pos);
+  return pos;
+}
+
 static size_t sl_word_backward(const char *buf, size_t pos) {
+  size_t at = 0, start = 0, last = 0;
+  int in_word = 0;
+  /* A forward cluster walk keeps this linear even for a long Unicode word. */
+  while (at < pos) {
+    int word = sl_word_at(buf, pos, at);
+    if (word && !in_word)
+      start = at;
+    if (word)
+      last = start;
+    in_word = word;
+    at += sl_utf8_next_cluster_len(buf, pos, at);
+  }
+  return last;
+}
+
+static size_t sl_whitespace_word_backward(const char *buf, size_t pos) {
   if (pos == 0)
     return 0;
   pos--;
@@ -1848,6 +1936,7 @@ static int sl_render_new_row_at(sl_render_t *render, size_t start,
   render->rows[render->count].len = 0;
   render->rows[render->count].start = start;
   render->rows[render->count].end = start;
+  render->rows[render->count].has_cursor = 0;
   render->rows[render->count].base_col = base_col;
   render->rows[render->count].cols = base_col;
   render->count++;
@@ -2132,6 +2221,8 @@ static int sl_render_store_reflow(sl_impl_t *impl, int width, int height,
 
 static int sl_row_equal(sl_impl_t *impl, sl_render_t *render, int row,
                         int render_row) {
+  if (impl->render_reset)
+    return 0;
   if (row >= impl->rendered_rows || render_row >= render->count)
     return 0;
   if (impl->rendered_cols[row] != render->rows[render_row].cols ||
@@ -2986,6 +3077,24 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   return 0;
 }
 
+/* Bounds describe cursor positions owned by this visual row, rather than
+ * the content endpoint that can belong to the next soft-wrapped row. A row
+ * filled only by a tab continuation may have no addressable position. */
+static void sl_render_cursor(sl_render_t *render, size_t offset, int col,
+                             size_t cursor) {
+  sl_row_t *row = &render->rows[render->count - 1];
+  if (!row->has_cursor) {
+    row->start = offset;
+    row->base_col = col;
+    row->has_cursor = 1;
+  }
+  row->end = offset;
+  if (offset == cursor) {
+    render->cursor_row = render->count - 1;
+    render->cursor_col = col;
+  }
+}
+
 static int sl_render_build(sl_t *self, const char *prompt,
                            sl_render_t *render) {
   sl_impl_t *impl;
@@ -3035,10 +3144,6 @@ static int sl_render_build(sl_t *self, const char *prompt,
   if (indent >= width)
     indent = width > 1 ? width - 1 : 0;
   col = prompt_width;
-  if (impl->cursor == 0) {
-    render->cursor_row = render->editor_first;
-    render->cursor_col = col;
-  }
   i = 0;
   while (i < impl->len) {
     char ch;
@@ -3049,11 +3154,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
     if (char_len == 0)
       char_len = 1;
     if (ch == '\n') {
-      if (i == impl->cursor) {
-        render->cursor_row = render->count - 1;
-        render->cursor_col = col;
-      }
-      render->rows[render->count - 1].end = i;
+      sl_render_cursor(render, i, col, impl->cursor);
       if (sl_render_new_input_row(render, indent, i + 1, input_style) != 0)
         return -1;
       col = indent;
@@ -3075,7 +3176,6 @@ static int sl_render_build(sl_t *self, const char *prompt,
         avail = 1;
       if (word_len > 0 && word_width <= avail &&
           col + (int)spaces + word_width > width) {
-        render->rows[render->count - 1].end = i;
         if (sl_render_new_input_row(render, indent, i + spaces, input_style) !=
             0)
           return -1;
@@ -3109,10 +3209,7 @@ static int sl_render_build(sl_t *self, const char *prompt,
         return -1;
       col = indent;
     }
-    if (i == impl->cursor) {
-      render->cursor_row = render->count - 1;
-      render->cursor_col = col;
-    }
+    sl_render_cursor(render, i, col, impl->cursor);
     if (ch == '\t') {
       int spaces;
       spaces = 8 - (col % 8);
@@ -3133,17 +3230,15 @@ static int sl_render_build(sl_t *self, const char *prompt,
         return -1;
       col += char_width;
     }
-    render->rows[render->count - 1].end = i + char_len;
     i += char_len;
   }
-  if (impl->cursor == impl->len) {
+  if (col < width || impl->cursor == impl->len) {
     if (col >= width) {
       if (sl_render_new_input_row(render, indent, impl->len, input_style) != 0)
         return -1;
       col = indent;
     }
-    render->cursor_row = render->count - 1;
-    render->cursor_col = col;
+    sl_render_cursor(render, impl->len, col, impl->cursor);
   }
   if (sl_render_close_input_row(render, input_style) != 0)
     return -1;
@@ -3185,6 +3280,7 @@ static int sl_move_visual(sl_t *self, const char *prompt, int direction) {
   sl_impl_t *impl;
   sl_render_t render;
   int target_row;
+  int eof_row;
   size_t target;
   impl = sl_impl(self);
   if (!impl)
@@ -3194,12 +3290,29 @@ static int sl_move_visual(sl_t *self, const char *prompt, int direction) {
     return 0;
   }
   target_row = render.cursor_row + direction;
-  if (target_row < render.editor_first || target_row >= render.count) {
+  while (target_row >= render.editor_first && target_row < render.count &&
+         !render.rows[target_row].has_cursor)
+    target_row += direction;
+  /* A full final row paints its EOF continuation only while the cursor is
+   * there. Navigation may reach it without reserving an extra painted row. */
+  eof_row = direction > 0 && target_row == render.count &&
+            render.rows[render.count - 1].cols >= render.width &&
+            render.rows[render.count - 1].end < impl->len;
+  if (!eof_row &&
+      (target_row < render.editor_first || target_row >= render.count)) {
     sl_render_free(&render);
     return 0;
   }
-  target = sl_cursor_for_render_col(&render, target_row, render.cursor_col,
-                                    impl->buf);
+  if (!impl->preferred_column_valid ||
+      impl->preferred_column_width != render.width) {
+    impl->preferred_column = render.cursor_col;
+    impl->preferred_column_width = render.width;
+    impl->preferred_column_valid = 1;
+  }
+  target = eof_row
+               ? impl->len
+               : sl_cursor_for_render_col(&render, target_row,
+                                          impl->preferred_column, impl->buf);
   sl_render_free(&render);
   if (target == impl->cursor)
     return 0;
@@ -3450,6 +3563,16 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
   }
   if (impl->rendered_rows == 0)
     (void)sl_native_observe_producer(self);
+  if (impl->render_reset) {
+    if (sl_surface_is_native(impl->output_surface)) {
+      if (sl_surface_native_restore_region(impl->output_surface) != 0)
+        return -1;
+    } else if (impl->auto_scroll_pinned &&
+               sl_set_scroll_region(impl->output_fd, 0, top - 1) != 0) {
+      return -1;
+    }
+    impl->rendered_cursor_valid = 0;
+  }
   if (sl_render_visible_equal(impl, render, first, visible, cursor_row,
                               render->cursor_col, top)) {
     if (!impl->rendered_cursor_valid) {
@@ -3491,7 +3614,8 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
       patch_row = 0;
       prefix_len = 0;
       prefix_col = 0;
-      if (!input_styled && old_row >= 0 && old_row < old_rows &&
+      if (!impl->render_reset && !input_styled && old_row >= 0 &&
+          old_row < old_rows &&
           impl->rendered_cols[old_row] <= render->rows[render_row].cols &&
           render_row >= render->editor_first) {
         prefix_len = sl_row_shared_prefix(
@@ -3507,7 +3631,7 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
         if (sl_write_frame_cursor(impl, height, top + i, 0) != 0)
           rc = -1;
         if (rc == 0 &&
-            (old_row < 0 || old_row >= old_rows ||
+            (impl->render_reset || old_row < 0 || old_row >= old_rows ||
              impl->rendered_cols[old_row] > render->rows[render_row].cols) &&
             sl_clear_prompt_row(impl) != 0)
           rc = -1;
@@ -3531,7 +3655,7 @@ static int sl_render_apply_absolute(sl_t *self, sl_render_t *render) {
         current_col = render->rows[render_row].cols;
       }
       if (rc == 0 &&
-          (old_row < 0 || old_row >= old_rows ||
+          (impl->render_reset || old_row < 0 || old_row >= old_rows ||
            impl->rendered_cols[old_row] > render->rows[render_row].cols) &&
           sl_clear_prompt_tail(impl) != 0)
         rc = -1;
@@ -3597,6 +3721,9 @@ retry:
     sl_set_error(self, "failed to render editor state");
     return -1;
   }
+  if (impl->preferred_column_valid &&
+      impl->preferred_column_width != render.width)
+    impl->preferred_column_valid = 0;
   if (sl_prompt_uses_absolute_rows(impl)) {
     rc = sl_render_apply_absolute(self, &render);
     sl_render_free(&render);
@@ -3656,7 +3783,7 @@ retry:
           sl_write_all(fd, render.rows[i].text, render.rows[i].len) != 0)
         rc = -1;
       if (rc == 0 &&
-          (i >= render.count ||
+          (impl->render_reset || i >= render.count ||
            (resizing_width && i < render.count &&
             render.rows[i].cols < width) ||
            (i < old_rows && impl->rendered_cols[i] > render.rows[i].cols)) &&
@@ -4039,6 +4166,20 @@ static int sl_prepare_native_output(sl_t *self) {
         }
       }
     }
+  }
+  /* Margin changes home the cursor. A partial or rejected fragment may emit
+   * no producer bytes, so restore the retained input cursor here rather than
+   * depending on the suffix of a later native write. */
+  if (!impl->active_prompt && impl->rendered_rows > 0 &&
+      !impl->rendered_cursor_valid) {
+    if (sl_write_frame_cursor(impl, impl->rendered_height,
+                              impl->rendered_top_row +
+                                  impl->rendered_cursor_row,
+                              impl->rendered_cursor_col) != 0) {
+      sl_set_error(self, "failed to restore retained prompt cursor");
+      return SL_ERROR_IO;
+    }
+    impl->rendered_cursor_valid = 1;
   }
   return SL_OK;
 }
@@ -5405,6 +5546,8 @@ static int sl_read_key(sl_t *self) {
     return SL_KEY_ALT_F;
   if (ch == '\r')
     return SL_KEY_ALT_ENTER;
+  if (ch == 127 || ch == 8)
+    return SL_KEY_ALT_BACKSPACE;
   if (ch != '[' && ch != 'O') {
     if (ch >= 'a' && ch <= 'z')
       return SL_KEY_ALT_BASE + (unsigned char)ch;
@@ -5656,16 +5799,6 @@ static void sl_history_nav(sl_t *self, int dir) {
     (void)sl_buf_set(self, impl->history.items[next]);
 }
 
-typedef struct sl_history_search {
-  char *saved;
-  char *query;
-  size_t query_len;
-  size_t query_cap;
-  int match_index;
-  int has_match;
-  char *prompt;
-} sl_history_search_t;
-
 static void sl_history_search_cleanup(sl_t *self, sl_history_search_t *search) {
   sl_impl_t *impl = sl_impl(self);
   if (impl)
@@ -5843,6 +5976,9 @@ static int sl_history_search_cancel(sl_t *self, sl_history_search_t *search) {
 }
 
 static int sl_history_search_accept(sl_t *self, sl_history_search_t *search) {
+  sl_impl_t *impl = sl_impl(self);
+  if (impl && impl->history_search_active)
+    sl_edit_clear_undo(&impl->edit);
   sl_history_search_cleanup(self, search);
   return 0;
 }
@@ -6012,6 +6148,79 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   return SL_OK;
 }
 
+static int sl_kill_draft(sl_t *self, size_t start, size_t end, int backward) {
+  sl_impl_t *impl = sl_impl(self);
+  char *text;
+  size_t len;
+  if (start == end) {
+    impl->edit.command = SL_EDIT_OTHER;
+    return 0;
+  }
+  text = sl_edit_prepare_kill(&impl->edit, impl->buf + start, end - start,
+                              backward, &len);
+  if (!text || sl_buf_delete(self, start, end - start) != 0) {
+    free(text);
+    impl->edit.command = SL_EDIT_OTHER;
+    sl_set_error(self, "failed to retain killed draft text");
+    return -1;
+  }
+  sl_edit_commit_kill(&impl->edit, text, len);
+  impl->cursor = start;
+  return 0;
+}
+
+static int sl_yank_draft(sl_t *self, int rotate) {
+  sl_impl_t *impl = sl_impl(self);
+  sl_edit_t *edit = &impl->edit;
+  int index = 0;
+  size_t at = impl->cursor, removed = 0;
+  if (!edit->kill_count)
+    return -1;
+  if (rotate) {
+    if (!edit->yank_valid || (edit->last_command != SL_EDIT_YANK &&
+                              edit->last_command != SL_EDIT_YANK_POP))
+      return -1;
+    index = (edit->yank_index + 1) % edit->kill_count;
+    at = edit->yank_at;
+    removed = edit->yank_len;
+  }
+  if (sl_buf_replace(self, at, removed, edit->kills[index].text,
+                     edit->kills[index].len) != 0)
+    return -1;
+  impl->cursor = at + edit->kills[index].len;
+  edit->yank_valid = 1;
+  edit->yank_at = at;
+  edit->yank_len = edit->kills[index].len;
+  edit->yank_index = index;
+  return 0;
+}
+
+static int sl_transpose_draft(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  size_t end, right, left;
+  char *text;
+  int status;
+  if (!impl->cursor)
+    return 0;
+  end = impl->cursor;
+  if (end < impl->len && impl->buf[end] != '\n')
+    end += sl_utf8_next_cluster_len(impl->buf, impl->len, end);
+  right = end - sl_utf8_prev_cluster_len(impl->buf, end);
+  if (!right)
+    return 0;
+  left = right - sl_utf8_prev_cluster_len(impl->buf, right);
+  text = malloc(end - left);
+  if (!text)
+    return -1;
+  memcpy(text, impl->buf + right, end - right);
+  memcpy(text + end - right, impl->buf + left, right - left);
+  status = sl_buf_replace(self, left, end - left, text, end - left);
+  free(text);
+  if (!status)
+    impl->cursor = end;
+  return status;
+}
+
 static char *sl_readline_impl(sl_t *self, const char *prompt,
                               int queue_dispatch, sl_prompt_source_t *source) {
   sl_impl_t *impl;
@@ -6021,6 +6230,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   int eof;
   int cancelled;
   int interrupted;
+  int suspended;
   int failed;
   char *promoted;
   char *queued;
@@ -6028,7 +6238,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   if (!impl)
     return NULL;
   impl->prompt_queue.last_id = 0;
-  impl->prompt_queue.approval_id = 0;
+  if (!impl->readline_suspended)
+    impl->prompt_queue.approval_id = 0;
   if (source)
     *source = SL_PROMPT_SOURCE_NONE;
   sl_set_readline_status(self, SL_READLINE_NONE);
@@ -6044,7 +6255,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
-  if (sl_buf_set(self, "") != 0) {
+  if (!impl->readline_suspended && sl_buf_set(self, "") != 0) {
     sl_disable_raw(self);
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
@@ -6055,21 +6266,27 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
-  memset(&search, 0, sizeof(search));
-  search.match_index = -1;
-  impl->history_search_active = 0;
-  impl->history_index = -1;
+  if (impl->readline_suspended) {
+    search = impl->suspended_search;
+  } else {
+    memset(&search, 0, sizeof(search));
+    search.match_index = -1;
+    impl->history_search_active = 0;
+    impl->history_index = -1;
+    free(impl->history_edit);
+    impl->history_edit = NULL;
+  }
   impl->bracketed_paste = 0;
   impl->request_submit = 0;
   impl->request_cancel = 0;
   impl->request_queue_dispatch = 0;
+  impl->control_x_pending = 0;
   impl->active_readline = 1;
-  free(impl->history_edit);
-  impl->history_edit = NULL;
   if (!sl_surface_is_native(impl->output_surface))
     sl_render_store_clear(impl);
-  impl->active_prompt = prompt;
-  if (sl_render_apply(self, prompt) != 0) {
+  impl->active_prompt =
+      impl->history_search_active && search.prompt ? search.prompt : prompt;
+  if (sl_render_apply(self, impl->active_prompt) != 0) {
     impl->active_prompt = NULL;
     impl->active_readline = 0;
     sl_disable_bracketed_paste(impl);
@@ -6077,6 +6294,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     sl_set_readline_status(self, SL_READLINE_ERROR);
     return NULL;
   }
+  impl->readline_suspended = 0;
+  memset(&impl->suspended_search, 0, sizeof(impl->suspended_search));
   /* Acquire optional scroll-region ownership before invoking producers.
    * Feed callbacks themselves never perform a terminal round trip. */
   impl->scroll_region_probe_pending = 0;
@@ -6086,15 +6305,18 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   eof = 0;
   cancelled = 0;
   interrupted = 0;
+  suspended = 0;
   failed = 0;
   promoted = NULL;
   queued = NULL;
+  impl->edit.enabled = 1;
   while (!done) {
     const char *render_prompt;
     char paste_bytes[8];
     size_t paste_len;
     int key;
     sl_key_action_t action;
+    sl_edit_end(&impl->edit);
     if (!queue_dispatch)
       impl->request_queue_dispatch = 0;
     if (impl->prompt_queue.approval_id &&
@@ -6112,12 +6334,52 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       key = sl_read_paste_input(self, paste_bytes, &paste_len);
     else
       key = sl_read_key(self);
+    if (key != SL_KEY_NONE && impl->control_x_pending) {
+      int approval_key =
+          key == SL_KEY_ALT_A || key == SL_KEY_ALT_E ||
+          (impl->prompt_queue.approval_focused &&
+           (key == SL_KEY_ALT_Y || key == SL_KEY_ALT_BASE + 'Y' ||
+            key == SL_KEY_ALT_BASE + 'n' || key == SL_KEY_ALT_BASE + 'N'));
+      impl->control_x_pending = 0;
+      if (key == SL_KEY_CTRL_U)
+        key = SL_KEY_CTRL_UNDERSCORE;
+      else if (!approval_key && key != SL_KEY_PASTE_BEGIN &&
+               key != SL_KEY_CTRL_C && key != SL_KEY_CTRL_L &&
+               key != SL_KEY_ESCAPE) {
+        if (key >= 128 && key < 256) {
+          char bytes[4];
+          size_t byte_len;
+          (void)sl_read_utf8_input(self, (char)key, bytes, &byte_len);
+        }
+        key = SL_KEY_UNKNOWN;
+      }
+    }
+    if (key != SL_KEY_NONE &&
+        (key != SL_KEY_CTRL_L || sl_find_key_binding(impl, (sl_key_t)key))) {
+      int command = SL_EDIT_OTHER;
+      if (impl->bracketed_paste && key != SL_KEY_PASTE_END)
+        command = SL_EDIT_PASTE;
+      else if (sl_find_key_binding(impl, (sl_key_t)key))
+        command = SL_EDIT_OTHER;
+      else if (key == SL_KEY_CTRL_U || key == SL_KEY_CTRL_K ||
+               key == SL_KEY_CTRL_W || key == SL_KEY_ALT_D ||
+               key == SL_KEY_ALT_BACKSPACE)
+        command = SL_EDIT_KILL;
+      else if (key == SL_KEY_CTRL_Y)
+        command = SL_EDIT_YANK;
+      else if (key == SL_KEY_ALT_Y)
+        command = SL_EDIT_YANK_POP;
+      else if (key >= 32 && key < 256 && key != 127)
+        command = SL_EDIT_INSERT;
+      sl_edit_begin(&impl->edit, command);
+    }
     /* A watch completion may become ready while a key sequence is being
      * decoded. Preserve a real key; release FIFO work only on an otherwise
      * idle iteration. */
     if (key == SL_KEY_NONE && queue_dispatch && impl->request_queue_dispatch &&
         impl->len == 0 && !impl->prompt_queue.editing.info.id &&
         !impl->history_search_active && !impl->bracketed_paste &&
+        !impl->control_x_pending &&
         impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
         sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
       queued = sl_prompt_queue_deliver_raw(
@@ -6234,8 +6496,12 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         action = SL_KEY_ACTION_SUBMIT;
       else if (impl->request_cancel)
         action = SL_KEY_ACTION_CANCEL;
-      if (action == SL_KEY_ACTION_HANDLED)
+      if (action != SL_KEY_ACTION_PASS)
+        impl->edit.command = SL_EDIT_OTHER;
+      if (action == SL_KEY_ACTION_HANDLED) {
+        impl->preferred_column_valid = 0;
         break;
+      }
       if (action == SL_KEY_ACTION_SUBMIT) {
         sl_history_search_accept(self, &search);
         done = 1;
@@ -6251,6 +6517,47 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         interrupted = 1;
         done = 1;
         break;
+      }
+      if (action == SL_KEY_ACTION_SUSPEND) {
+        if (!impl->edit.changed)
+          impl->edit.command = impl->edit.last_command;
+        suspended = 1;
+        done = 1;
+        break;
+      }
+      if (action == SL_KEY_ACTION_RESET || key == SL_KEY_CTRL_L) {
+        int reset_status;
+        render_prompt = impl->history_search_active && search.prompt
+                            ? search.prompt
+                            : prompt;
+        impl->active_prompt = render_prompt;
+        impl->render_reset = 1;
+        reset_status = sl_render_apply(self, render_prompt);
+        impl->render_reset = 0;
+        if (reset_status != 0) {
+          sl_set_error(self, "failed to reset prompt layout");
+          failed = 1;
+          done = 1;
+        }
+        break;
+      }
+      if (key == SL_KEY_CTRL_X && !impl->history_search_active) {
+        impl->control_x_pending = 1;
+        break;
+      }
+      if (key != SL_KEY_UP && key != SL_KEY_DOWN)
+        impl->preferred_column_valid = 0;
+      /* A callback owns a fresh undo group. PASS still retains the built-in
+       * kill/yank command identity used for coalescing and yank rotation. */
+      if (action == SL_KEY_ACTION_PASS) {
+        if (key == SL_KEY_CTRL_U || key == SL_KEY_CTRL_K ||
+            key == SL_KEY_CTRL_W || key == SL_KEY_ALT_D ||
+            key == SL_KEY_ALT_BACKSPACE)
+          impl->edit.command = SL_EDIT_KILL;
+        else if (key == SL_KEY_CTRL_Y)
+          impl->edit.command = SL_EDIT_YANK;
+        else if (key == SL_KEY_ALT_Y)
+          impl->edit.command = SL_EDIT_YANK_POP;
       }
       if (key == SL_KEY_ALT_A &&
           sl_prompt_approval_index(impl, impl->prompt_queue.approval_id) >= 0) {
@@ -6352,6 +6659,25 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         if (sl_buf_insert(self, impl->cursor, "\n", 1) == 0)
           impl->cursor++;
         break;
+      case SL_KEY_CTRL_UNDERSCORE:
+        if (sl_edit_undo(&impl->edit, impl->buf, impl->cap, &impl->len,
+                         &impl->cursor) < 0) {
+          sl_set_error(self, "invalid draft undo state");
+          failed = 1;
+          done = 1;
+        }
+        break;
+      case SL_KEY_CTRL_Y:
+      case SL_KEY_ALT_Y:
+        if (sl_yank_draft(self, key == SL_KEY_ALT_Y) != 0) {
+          impl->edit.command = SL_EDIT_OTHER;
+          sl_prompt_queue_bell(impl);
+        }
+        break;
+      case SL_KEY_CTRL_T:
+        if (sl_transpose_draft(self) != 0)
+          sl_prompt_queue_bell(impl);
+        break;
       case SL_KEY_CTRL_R:
         if (sl_history_search_start(self, &search) != 0) {
           sl_set_error(self, "failed to start reverse history search");
@@ -6417,25 +6743,41 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         break;
       case SL_KEY_HOME:
       case SL_KEY_CTRL_A:
-        impl->cursor = 0;
+        impl->cursor = sl_line_start(impl->buf, impl->cursor);
         break;
       case SL_KEY_END:
       case SL_KEY_CTRL_E:
-        impl->cursor = impl->len;
+        impl->cursor = sl_line_end(impl->buf, impl->len, impl->cursor);
         break;
-      case SL_KEY_CTRL_U:
-        sl_buf_delete(self, 0, impl->cursor);
-        impl->cursor = 0;
+      case SL_KEY_CTRL_U: {
+        size_t start;
+        start = sl_line_start(impl->buf, impl->cursor);
+        if (start == impl->cursor && start > 0)
+          start--;
+        if (sl_kill_draft(self, start, impl->cursor, 1) != 0)
+          sl_prompt_queue_bell(impl);
         break;
-      case SL_KEY_CTRL_K:
-        sl_buf_delete(self, impl->cursor, impl->len - impl->cursor);
+      }
+      case SL_KEY_CTRL_K: {
+        size_t end;
+        end = sl_line_end(impl->buf, impl->len, impl->cursor);
+        /* At a line boundary, remove only the newline to join the lines. */
+        if (end == impl->cursor && end < impl->len)
+          end++;
+        if (sl_kill_draft(self, impl->cursor, end, 0) != 0)
+          sl_prompt_queue_bell(impl);
         break;
+      }
       case SL_KEY_CTRL_W:
         if (impl->cursor > 0) {
-          size_t wp;
-          wp = sl_word_backward(impl->buf, impl->cursor);
-          sl_buf_delete(self, wp, impl->cursor - wp);
-          impl->cursor = wp;
+          size_t start, wp;
+          start = sl_line_start(impl->buf, impl->cursor);
+          wp = start + sl_whitespace_word_backward(impl->buf + start,
+                                                   impl->cursor - start);
+          if (wp == impl->cursor)
+            wp--;
+          if (sl_kill_draft(self, wp, impl->cursor, 1) != 0)
+            sl_prompt_queue_bell(impl);
         }
         break;
       case SL_KEY_BACKSPACE:
@@ -6443,8 +6785,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         if (impl->cursor > 0) {
           size_t prev_len;
           prev_len = sl_utf8_prev_cluster_len(impl->buf, impl->cursor);
-          sl_buf_delete(self, impl->cursor - prev_len, prev_len);
-          impl->cursor -= prev_len;
+          if (sl_buf_delete(self, impl->cursor - prev_len, prev_len) == 0)
+            impl->cursor -= prev_len;
         }
         break;
       case SL_KEY_DELETE:
@@ -6464,6 +6806,17 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       case SL_KEY_ALT_F:
         impl->cursor = sl_word_forward(impl->buf, impl->len, impl->cursor);
         break;
+      case SL_KEY_ALT_D:
+        if (sl_kill_draft(self, impl->cursor,
+                          sl_word_forward(impl->buf, impl->len, impl->cursor),
+                          0) != 0)
+          sl_prompt_queue_bell(impl);
+        break;
+      case SL_KEY_ALT_BACKSPACE:
+        if (sl_kill_draft(self, sl_word_backward(impl->buf, impl->cursor),
+                          impl->cursor, 1) != 0)
+          sl_prompt_queue_bell(impl);
+        break;
       case SL_KEY_UNKNOWN:
       case SL_KEY_ESCAPE:
         break;
@@ -6481,8 +6834,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     }
     /* Every submit route (Enter, key binding, idle/watch callback) shares the
      * hold gate. Editing never becomes implicit approval. */
-    if (done && !failed && !cancelled && !interrupted && !eof && !promoted &&
-        !queued && impl->prompt_queue.editing.info.id &&
+    if (done && !failed && !cancelled && !interrupted && !suspended && !eof &&
+        !promoted && !queued && impl->prompt_queue.editing.info.id &&
         (impl->prompt_queue.editing.info.held || impl->len == 0)) {
       int status = SL_OK;
       impl->request_submit = 0;
@@ -6504,7 +6857,36 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       done = 1;
     }
   }
+  sl_edit_end(&impl->edit);
+  impl->edit.enabled = 0;
   impl->active_readline = 0;
+  if (suspended) {
+    /* Only the editor continuation is retained. The owner closes the output
+     * session before a child runs; producer bytes are never saved or replayed.
+     */
+    if (!impl->output_stream_active &&
+        (sl_surface_is_native(impl->output_surface)
+             ? sl_native_session_close(self)
+             : sl_render_clear_active(self)) != 0) {
+      failed = 1;
+    } else {
+      impl->suspended_search = search;
+      impl->readline_suspended = 1;
+      /* Public host edits remain part of this draft while the owner has
+       * terminal control. Unjournaled mutations would invalidate undo ranges.
+       */
+      impl->edit.enabled = 1;
+      impl->active_prompt = NULL;
+      sl_disable_bracketed_paste(impl);
+      if (!impl->output_stream_active) {
+        sl_release_auto_scroll_region(impl);
+        sl_disable_raw(self);
+      }
+      (void)sl_show_cursor(impl);
+      sl_set_readline_status(self, SL_READLINE_SUSPENDED);
+      return NULL;
+    }
+  }
   impl->active_prompt = prompt;
   if (interrupted) {
     sl_prompt_queue_restore_edit(self);
@@ -6662,7 +7044,7 @@ static char *sl_next_prompt_method(sl_t *self, const char *prompt,
   impl->prompt_queue.last_id = 0;
   if (sl_prompt_queue_enabled(impl) &&
       impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      !impl->prompt_queue.editing.info.id &&
+      !impl->readline_suspended && !impl->prompt_queue.editing.info.id &&
       sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
     result = sl_prompt_queue_deliver_raw(
         &impl->prompt_queue, sl_prompt_queue_first_queued(&impl->prompt_queue));
@@ -6711,8 +7093,10 @@ static void sl_destroy_method(sl_t *self) {
     sl_render_store_clear(impl);
     sl_surface_destroy(impl->output_surface);
     free(impl->history_edit);
+    sl_history_search_cleanup(self, &impl->suspended_search);
     free(impl->pending_input);
     free(impl->retained_prompt);
+    sl_edit_destroy(&impl->edit);
     free(impl->buf);
     free(impl);
   }
@@ -7126,15 +7510,17 @@ static int sl_prompt_queue_reject_method(sl_t *self, sl_prompt_id_t id) {
     if (sl_prompt_queue_require_fifo(self, impl,
                                      &impl->prompt_queue.editing.info) != SL_OK)
       return SL_ERROR_INVALID;
+    /* Rejection ends the search context as well as the edited identity.
+     * Clear its undo baseline before replacing the candidate buffer. */
+    impl->history_search_active = 0;
     if (sl_buf_set(self, "") != 0)
       return SL_ERROR_NOMEM;
     if (impl->prompt_queue.approval_id == id)
       impl->prompt_queue.approval_id = 0;
     sl_prompt_queue_finish_edit(&impl->prompt_queue);
     impl->request_submit = 0;
-    /* The read loop owns the search allocation and frees it on exit/restart.
-     * Retire its saved draft now so Ctrl-G cannot restore rejected content. */
-    impl->history_search_active = 0;
+    /* The read loop owns the retired search allocation and frees it on
+     * exit/restart. Ctrl-G can no longer restore rejected content. */
     sl_history_nav_reset(impl);
     return SL_OK;
   }

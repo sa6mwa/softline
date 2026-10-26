@@ -309,10 +309,10 @@ int sl_surface_is_native(const sl_surface_t *surface) {
   return surface && surface->native_stream;
 }
 
-static int sl_surface_native_region(sl_surface_t *surface) {
+int sl_surface_native_restore_region(sl_surface_t *surface) {
   char seq[48];
   int count;
-  if (surface->height < 2)
+  if (!sl_surface_is_native(surface) || surface->height < 2)
     return -1;
   count = snprintf(seq, sizeof(seq), "\033[1;%dr", surface->height);
   return count > 0 && count < (int)sizeof(seq)
@@ -391,7 +391,7 @@ sl_surface_t *sl_surface_create_native(int fd, int width, int height, int row,
    * cursor commands would discard pending wrap from earlier terminal text. */
   if (height != surface->terminal_rows) {
     count = sl_surface_cursor(seq, sizeof(seq), surface->producer_below, col);
-    if (sl_surface_native_region(surface) != 0 || count < 0 ||
+    if (sl_surface_native_restore_region(surface) != 0 || count < 0 ||
         sl_surface_write_all(fd, seq, (size_t)count) != 0)
       goto fail;
   }
@@ -472,6 +472,24 @@ static int sl_surface_continues_row(const char *bytes, size_t length) {
   return 0;
 }
 
+/* Width reflow can invalidate a clipped endpoint. Reset it at that boundary,
+ * even if no feed follows before growth, rather than reviving a stale row
+ * inside terminal-owned history. Height-only history positions remain valid
+ * until a feed needs to address them. */
+static void sl_surface_clip_producer(sl_surface_t *surface) {
+  if (SL_ROW(surface) >= 0 || surface->producer_cursor_live)
+    return;
+  /* Continue an unfinished line at the top; start a new line by the prompt.
+   * Discard only physical measurements: clipping consumes no newline. */
+  surface->producer_below = surface->line_open
+                                ? surface->terminal_rows - 1
+                                : surface->terminal_rows - surface->height;
+  surface->col = 0;
+  surface->line_cells = 0;
+  surface->line_extent = 0;
+  surface->ascii_line = 1;
+}
+
 int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
                             size_t length, int prompt_row, int prompt_col) {
   struct iovec parts[3];
@@ -487,19 +505,7 @@ int sl_surface_native_write(sl_surface_t *surface, const char *bytes,
   /* Track the line discipline without changing the producer's bytes. */
   newline_returns =
       (attributes.c_oflag & OPOST) && (attributes.c_oflag & ONLCR);
-  if (SL_ROW(surface) < 0 && !surface->producer_cursor_live) {
-    /* Continue a clipped, unfinished line at the first visible output row.
-     * At a hard line boundary there is no text to continue: start new output
-     * next to the prompt. Existing scrollback remains untouched. */
-    surface->producer_below = surface->line_open
-                                  ? surface->terminal_rows - 1
-                                  : surface->terminal_rows - surface->height;
-    surface->col = 0;
-    surface->line_cells = 0;
-    surface->line_extent = 0;
-    surface->ascii_line = 1;
-    surface->line_open = 0;
-  }
+  sl_surface_clip_producer(surface);
   count = 0;
   if (!surface->producer_cursor_live || prompt_row >= 0) {
     /* Resize can reset margins after its PTY size is already observable.
@@ -655,7 +661,7 @@ int sl_surface_native_resize_pending(const sl_surface_t *surface) {
 int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   struct winsize terminal;
   char seq[64];
-  int shift, count, previous_height, retain_cursor, physical_resize;
+  int shift, count, previous_height, retain_cursor, width_changed;
   if (!sl_surface_is_native(surface) || width < 1 || height < 2 ||
       sl_surface_terminal_size(surface->fd, &terminal) != 0)
     return -1;
@@ -668,8 +674,7 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   retain_cursor = surface->producer_cursor_live &&
                   surface->height == surface->terminal_rows &&
                   height == (int)terminal.ws_row;
-  physical_resize = surface->terminal_rows != (int)terminal.ws_row ||
-                    surface->terminal_columns != (int)terminal.ws_col;
+  width_changed = surface->width != width;
   previous_height =
       surface->height + (int)terminal.ws_row - surface->terminal_rows;
   if (previous_height < 2)
@@ -678,7 +683,7 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
     previous_height = terminal.ws_row;
   surface->terminal_rows = terminal.ws_row;
   surface->terminal_columns = terminal.ws_col;
-  if (surface->width != width) {
+  if (width_changed) {
     /* Deliberate opaque-feed limit: Unicode and tabs have no span or reflow
      * model here. Keep the tracked endpoint, clamping only an offscreen
      * column. Their reflow, and CR tails containing them, are terminal-owned.
@@ -720,7 +725,11 @@ int sl_surface_resize(sl_surface_t *surface, int width, int height) {
   if (retain_cursor)
     return 0;
   surface->producer_cursor_live = 0;
-  return physical_resize ? 0 : sl_surface_native_region(surface);
+  if (width_changed)
+    sl_surface_clip_producer(surface);
+  /* The terminal may reset margins during resize. Reserve the prompt's
+   * region immediately, including when no producer bytes follow. */
+  return sl_surface_native_restore_region(surface);
 }
 
 int sl_surface_validate(sl_surface_t *surface, const char *bytes, size_t length,

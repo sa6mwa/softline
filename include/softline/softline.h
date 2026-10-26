@@ -83,11 +83,11 @@ typedef enum sl_key {
   SL_KEY_CTRL_C = 3,
   /** Ctrl-D, EOF on an empty buffer or delete-forward in text. */
   SL_KEY_CTRL_D = 4,
-  /** Ctrl-A, move to beginning of buffer. */
+  /** Ctrl-A, move to the current newline-delimited line's beginning. */
   SL_KEY_CTRL_A = 1,
   /** Ctrl-B, move backward by one UTF-8 cluster. */
   SL_KEY_CTRL_B = 2,
-  /** Ctrl-E, move to end of buffer. */
+  /** Ctrl-E, move to the current newline-delimited line's end. */
   SL_KEY_CTRL_E = 5,
   /** Ctrl-F, move forward by one UTF-8 cluster. */
   SL_KEY_CTRL_F = 6,
@@ -95,8 +95,12 @@ typedef enum sl_key {
   SL_KEY_TAB = 9,
   /** Ctrl-J, insert a literal newline. */
   SL_KEY_CTRL_J = 10,
-  /** Ctrl-K, delete from cursor to end of buffer. */
+  /** Ctrl-K, delete to the next newline or buffer end. At a newline,
+   * delete only that newline to join lines. Soft wraps are not boundaries. */
   SL_KEY_CTRL_K = 11,
+  /** Ctrl-L, reread PTY geometry and repaint softline's owned prompt area.
+   * Preserves the draft, queues and transcript; does not clear the terminal. */
+  SL_KEY_CTRL_L = 12,
   /** Enter or carriage return. During reverse history search, accept the match
    * into the normal editable prompt without submitting or queueing it. */
   SL_KEY_ENTER = 13,
@@ -108,12 +112,23 @@ typedef enum sl_key {
    * the displayed match to normal editing; Escape or Ctrl-G restores the draft.
    * An explicit Enter binding may request SL_KEY_ACTION_SUBMIT instead. */
   SL_KEY_CTRL_R = 18,
-  /** Ctrl-U, delete from beginning of buffer to cursor. */
+  /** Ctrl-T, transpose adjacent UTF-8 clusters. */
+  SL_KEY_CTRL_T = 20,
+  /** Ctrl-U, delete from the current line's beginning to the cursor,
+   * or at line start delete only the preceding newline. Soft wraps are not
+   * boundaries. At buffer start, do nothing. */
   SL_KEY_CTRL_U = 21,
   /** Ctrl-V, paste an X11 clipboard image path when no binding overrides it. */
   SL_KEY_CTRL_V = 22,
-  /** Ctrl-W, delete the previous word. */
+  /** Ctrl-W, delete the previous whitespace-delimited word within the current
+   * line, or at line start delete only the preceding newline. */
   SL_KEY_CTRL_W = 23,
+  /** Ctrl-X prefix; Ctrl-X Ctrl-U requests undo unless Ctrl-X is rebound. */
+  SL_KEY_CTRL_X = 24,
+  /** Ctrl-Y, insert the newest text from this handle's kill ring. */
+  SL_KEY_CTRL_Y = 25,
+  /** Ctrl-underscore, undo the last draft editing command or typing run. */
+  SL_KEY_CTRL_UNDERSCORE = 31,
   /** Escape key. */
   SL_KEY_ESCAPE = 27,
   /** Backspace key. */
@@ -126,9 +141,9 @@ typedef enum sl_key {
   SL_KEY_LEFT = 1002,
   /** Right arrow. */
   SL_KEY_RIGHT = 1003,
-  /** Home key. */
+  /** Home key, move to the current newline-delimited line's beginning. */
   SL_KEY_HOME = 1004,
-  /** End key. */
+  /** End key, move to the current newline-delimited line's end. */
   SL_KEY_END = 1005,
   /** Delete key. */
   SL_KEY_DELETE = 1006,
@@ -170,12 +185,18 @@ typedef enum sl_key {
   SL_KEY_PAGE_UP = 1024,
   /** Page Down key. */
   SL_KEY_PAGE_DOWN = 1025,
+  /** Alt-Backspace, kill the preceding alphanumeric word. */
+  SL_KEY_ALT_BACKSPACE = 1026,
   /** Base value for Alt-letter bindings not listed as dedicated constants. */
   SL_KEY_ALT_BASE = 4096,
   /** Alt-A, focus the oldest pending approval when the draft is empty. */
   SL_KEY_ALT_A = SL_KEY_ALT_BASE + 'a',
   /** Alt-E, edit the newest queued draft by default. */
   SL_KEY_ALT_E = SL_KEY_ALT_BASE + 'e',
+  /** Alt-D, kill through the end of the next alphanumeric word. */
+  SL_KEY_ALT_D = SL_KEY_ALT_BASE + 'd',
+  /** Alt-Y, rotate the last yank; focused approval controls take precedence. */
+  SL_KEY_ALT_Y = SL_KEY_ALT_BASE + 'y',
   /** Alt-M key. */
   SL_KEY_ALT_M = 4205
 } sl_key_t;
@@ -197,7 +218,14 @@ typedef enum sl_key_action {
   /** Cancel the active readline() call. */
   SL_KEY_ACTION_CANCEL = 3,
   /** Restore terminal state and raise SIGINT. */
-  SL_KEY_ACTION_INTERRUPT = 4
+  SL_KEY_ACTION_INTERRUPT = 4,
+  /** Reset prompt layout from PTY geometry and repaint owned UI rows while
+   * preserving editor and producer state. Also the default Ctrl-L action. */
+  SL_KEY_ACTION_RESET = 5,
+  /** Return NULL with SL_READLINE_SUSPENDED, retaining the editor for the next
+   * readline()/next_prompt(). The owner may hand off the terminal between
+   * calls using output_stream_end()/begin(); never launch a child here. */
+  SL_KEY_ACTION_SUSPEND = 6
 } sl_key_action_t;
 
 /**
@@ -246,7 +274,10 @@ typedef enum sl_readline_status {
   SL_READLINE_INTERRUPTED = 4,
   /** readline() returned NULL because an I/O, allocation, or render error
      occurred. */
-  SL_READLINE_ERROR = 5
+  SL_READLINE_ERROR = 5,
+  /** Editing was suspended without submission or cancellation. The next
+   * readline()/next_prompt() resumes it before delivering queued prompts. */
+  SL_READLINE_SUSPENDED = 6
 } sl_readline_status_t;
 
 /** How a text value returned by sl_next_prompt() entered the application. */
@@ -502,16 +533,19 @@ struct sl {
    * Read one submitted line.
    *
    * Returns a softline-allocated string on submitted input, or NULL for EOF,
-   * cancellation, interrupt, or error. Use last_readline_status() before the
-   * next readline() call to classify a NULL return.
-   * While raw mode is owned, kernel tab expansion (TAB3/OXTABS) is disabled;
-   * OPOST/ONLCR are preserved and original flags are restored on release.
-   * Optional ordinary-readline scroll-region ownership is acquired at startup
-   * and retried between producer callbacks as output advances the prompt.
-   * Multiple feeds in one callback stay immediate; ownership is refreshed at
-   * the next input-owned boundary.
-   * Ctrl-C restores terminal state before raising SIGINT. If the handler
-   * returns, an existing native output session remains available.
+   * cancellation, interrupt, suspension, or error. Use last_readline_status()
+   * before the next readline() call to classify a NULL return. While raw mode
+   * is owned, kernel tab expansion (TAB3/OXTABS) is disabled; OPOST/ONLCR are
+   * preserved and original flags are restored on release. Optional
+   * ordinary-readline scroll-region ownership is acquired at startup and
+   * retried between producer callbacks as output advances the prompt. Multiple
+   * feeds in one callback stay immediate; ownership is refreshed at the next
+   * input-owned boundary. Ctrl-C restores terminal state before raising SIGINT.
+   * If the handler returns, an existing native output session remains
+   * available. SL_KEY_ACTION_SUSPEND retains the draft, cursor and editing
+   * context for the next readline()/next_prompt(), ahead of queued delivery. It
+   * does not pause producers. The application owns exclusive terminal handoff
+   * between calls.
    */
   char *(*readline)(sl_t *self, const char *prompt);
   /** Destroy the handle; NULL-safe through sl_destroy(). */
@@ -550,9 +584,10 @@ struct sl {
   int (*bind_key)(sl_t *self, sl_key_t key, sl_key_callback_t callback,
                   void *userdata);
   /** Insert text bytes at the active cursor position. UTF-8 text is kept
-   * cluster-safe. */
+   * cluster-safe. Mutations remain undoable while the editor is suspended. */
   int (*insert)(sl_t *self, const char *text);
   /** Replace the active buffer with text bytes and move the cursor to the end.
+   * Mutations remain undoable while the editor is suspended.
    */
   int (*set_buffer)(sl_t *self, const char *text);
   /** Return the active buffer as a handle-owned NUL-terminated string. */
@@ -874,12 +909,16 @@ sl_t *sl_create_with_config(const sl_config_t *config);
 
 /**
  * readline() returns a project-allocated string on submitted input and NULL for
- * EOF, cancellation, interrupt, or error. Call sl_last_readline_status() before
- * the next readline() call to classify NULL precisely.
- * While raw mode is owned, kernel tab expansion (TAB3/OXTABS) is disabled;
- * OPOST/ONLCR are preserved and original flags are restored on release.
- * Ctrl-C restores terminal state before raising SIGINT. A returning handler
- * leaves an existing native output session available.
+ * EOF, cancellation, interrupt, suspension, or error. Call
+ * sl_last_readline_status() before the next readline() call to classify NULL
+ * precisely. While raw mode is owned, kernel tab expansion (TAB3/OXTABS) is
+ * disabled; OPOST/ONLCR are preserved and original flags are restored on
+ * release. Ctrl-C restores terminal state before raising SIGINT. A returning
+ * handler leaves an existing native output session available.
+ * SL_KEY_ACTION_SUSPEND retains the editor for the next
+ * readline()/next_prompt(), before queued delivery. Terminal handoff and
+ * producer coordination belong to the application, outside callbacks, using
+ * output_stream_end()/begin().
  */
 char *sl_readline(sl_t *self, const char *prompt);
 

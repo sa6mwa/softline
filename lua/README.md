@@ -59,7 +59,7 @@ live scroll regions, status lines, and spinners are off; the theme is
 ## Methods
 
 - `sl:readline([prompt])` returns a submitted string, or `nil, status` for EOF,
-  cancellation, interrupt, or error. Ctrl-C restores terminal state before
+  cancellation, interrupt, suspension, or error. Ctrl-C restores terminal state before
   raising SIGINT; if a handler returns, an existing native output session
   remains available.
   Ctrl-R searches history. Enter accepts the displayed match into the normal
@@ -252,6 +252,8 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:insert(text)` inserts text bytes at the active cursor.
 - `sl:set_buffer(text)` replaces the active buffer and moves the cursor to the
   end.
+  Both buffer mutations remain undoable while the editor is suspended; failed
+  mutations leave the draft and its undo history intact.
 - `sl:buffer()` returns the active buffer as a Lua string.
 - `sl:cursor()` returns the cursor as a byte offset into `sl:buffer()`.
 - `sl:set_cursor(offset)` clamps the byte offset to a valid UTF-8 cluster
@@ -264,6 +266,15 @@ live scroll regions, status lines, and spinners are off; the theme is
   Binding `softline.KEY_ENTER` to return `softline.KEY_ACTION_SUBMIT` opts into
   immediate submission of a reverse-search match instead of accepting it for
   editing.
+  `softline.KEY_CTRL_L` resets prompt layout from the PTY size and repaints
+  owned UI rows while preserving editor and producer state and the transcript.
+  Return `softline.KEY_ACTION_RESET` from another key binding to remap recovery;
+  a Ctrl-L binding overrides the built-in behavior normally.
+  Ctrl-Y yanks killed draft text and Alt-Y rotates that yank; focused approval
+  controls retain priority over Alt-Y. Ctrl-_ or Ctrl-X Ctrl-U undoes draft
+  edits, Ctrl-T transposes Unicode clusters, and Alt-D/Alt-Backspace kill words.
+  Undo is scoped to the current draft; the ten-entry kill ring persists across
+  prompts on the same instance. These keys can be rebound like other keys.
   The default `softline.KEY_CTRL_V` action saves a PNG or JPEG from the Linux
   X11 clipboard and inserts its persistent cache path; a binding overrides
   that action. It uses `DISPLAY`, including one forwarded by `ssh -Y`, and a
@@ -397,6 +408,7 @@ without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 - `softline.READLINE_CANCELLED`
 - `softline.READLINE_INTERRUPTED`
 - `softline.READLINE_ERROR`
+- `softline.READLINE_SUSPENDED`
 - `softline.OK`
 - `softline.ERROR`
 - `softline.ERROR_INVALID`
@@ -446,10 +458,15 @@ without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 - `softline.KEY_CTRL_F`
 - `softline.KEY_CTRL_J`
 - `softline.KEY_CTRL_K`
+- `softline.KEY_CTRL_L`
 - `softline.KEY_CTRL_R`
+- `softline.KEY_CTRL_T`
 - `softline.KEY_CTRL_U`
 - `softline.KEY_CTRL_V`
 - `softline.KEY_CTRL_W`
+- `softline.KEY_CTRL_X`
+- `softline.KEY_CTRL_Y`
+- `softline.KEY_CTRL_UNDERSCORE`
 - `softline.KEY_ESCAPE`
 - `softline.KEY_BACKSPACE`
 - `softline.KEY_TAB`
@@ -467,6 +484,9 @@ without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 - `softline.KEY_DELETE`
 - `softline.KEY_ALT_B`
 - `softline.KEY_ALT_F`
+- `softline.KEY_ALT_D`
+- `softline.KEY_ALT_BACKSPACE`
+- `softline.KEY_ALT_Y`
 - `softline.KEY_UNKNOWN`
 - `softline.KEY_PASTE_BEGIN`
 - `softline.KEY_PASTE_END`
@@ -491,6 +511,8 @@ without a named constant, add the letter byte to `softline.KEY_ALT_BASE`.
 - `softline.KEY_ACTION_SUBMIT`
 - `softline.KEY_ACTION_CANCEL`
 - `softline.KEY_ACTION_INTERRUPT`
+- `softline.KEY_ACTION_RESET`
+- `softline.KEY_ACTION_SUSPEND`
 
 ## Examples
 
@@ -505,6 +527,17 @@ commands. The example ends its output session before `os.execute()` and begins
 a new session on return. Clear and resize inside the shell are allowed; history,
 queue and settings survive, and the transcript is never replayed. Failed launches
 and nonzero exits report an error and return to chat.
+
+Alt-S uses that same shell handoff between turns while keeping the draft,
+cursor, undo, kill ring, history search and queue-edit/approval state. The
+command forms still return to an empty prompt. A key callback may return
+`softline.KEY_ACTION_SUSPEND`: `sl:readline()` or `sl:next_prompt()` returns
+`nil, softline.READLINE_SUSPENDED` without submission, history append or
+cancellation. The next editor call resumes that draft before automatic queue
+delivery. Run the child in the owner loop after `sl:output_stream_end()`, then
+call `sl:output_stream_begin()` and resume editing at the current geometry.
+Suspension does not pause producers; the application must ensure exclusive
+terminal ownership. The example rejects Alt-S while an operation runs.
 
 ```sh
 make lua-test
