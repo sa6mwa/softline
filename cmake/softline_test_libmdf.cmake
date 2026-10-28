@@ -4,7 +4,7 @@ set(SOFTLINE_TEST_LIBMDF_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 
 # libmdf is only for examples and integration tests. It must never be linked
 # by a Softline library target or appear in exported package metadata.
-set(SOFTLINE_TEST_LIBMDF_VERSION "0.15.0")
+set(SOFTLINE_TEST_LIBMDF_VERSION "0.17.0")
 
 function(softline_test_libmdf_supported output)
   if(SL_TARGET_ID MATCHES
@@ -25,19 +25,19 @@ function(softline_enable_dev_libmdf target)
   set(_softline_libmdf_name
     "libmdf-${SOFTLINE_TEST_LIBMDF_VERSION}-${SL_TARGET_ID}.tar.gz")
   if(SL_TARGET_ID STREQUAL "x86_64-linux-gnu")
-    set(_softline_libmdf_sha "e5b6240ad4f0a864caf19a26e205745253fa7e2304f9908f1d53a71ba2e08d2b")
+    set(_softline_libmdf_sha "7563dcd74b48afad1d7358815d0115c798c1a46219dc7cabdbcbb45e4edac53c")
   elseif(SL_TARGET_ID STREQUAL "x86_64-linux-musl")
-    set(_softline_libmdf_sha "d802385afddd14f1c5d6de02efe82dbe1f44f3b7694b7497f11490a2257d0961")
+    set(_softline_libmdf_sha "08e11370793274b3db78ea35b45ee9459f906103487c3345c0188c07ce897f3f")
   elseif(SL_TARGET_ID STREQUAL "aarch64-linux-gnu")
-    set(_softline_libmdf_sha "b2d2f54900831aeaa889930b4df400d3742afebef35611aaca44fcf5b4e8f987")
+    set(_softline_libmdf_sha "366e5b9e1cb0bae99a07a367d6b92e67aa616139cda59298446b8e4661cf50f0")
   elseif(SL_TARGET_ID STREQUAL "aarch64-linux-musl")
-    set(_softline_libmdf_sha "7236ae96fa9e48b2d7410a179ed2b99918b39c913384fa22a662ad9ce8b9e16e")
+    set(_softline_libmdf_sha "348c544a44b98ff9b4762c9ef4e9095f5e03817e99c134da6afbc62a2d0fb0bc")
   elseif(SL_TARGET_ID STREQUAL "armhf-linux-gnu")
-    set(_softline_libmdf_sha "8b65d51c2f703335bb075a95b74e22ae4098aee8f646a249369bc130ff4a8ebe")
+    set(_softline_libmdf_sha "6aa7e024b2378ed1a7cf3ddab02f836d3c448d1d83e86eeb7b7cc0fdaaabe424")
   elseif(SL_TARGET_ID STREQUAL "armhf-linux-musl")
-    set(_softline_libmdf_sha "22fa276f975945797bbda44694a84ebcade0e0a7ea47d53590a4bcc2eceebc5d")
+    set(_softline_libmdf_sha "3c56e55e115c939496f088f3f5f0ff8fb6ac229bed40da643239fde554d5f47b")
   else()
-    set(_softline_libmdf_sha "7785a575339d03789bd0471c7212dafd81b55a3c41e081abd8ebdd02804a1048")
+    set(_softline_libmdf_sha "616299de8ec6956c10819e77e2e7ebec07be4215283227a81a2d9516bba2bd29")
   endif()
 
   include(${SOFTLINE_TEST_LIBMDF_MODULE_DIR}/softline_verified_archive.cmake)
@@ -83,6 +83,11 @@ function(softline_enable_dev_libmdf target)
         "libmdf SDK archive has an unexpected layout: ${_softline_libmdf_archive_root}")
     endif()
     file(COPY "${_softline_libmdf_archive_root}/" DESTINATION "${_softline_libmdf_root}")
+    # Release archives normalize timestamps. Mark replaced SDK inputs as new
+    # so existing consumers rebuild against the new headers and libraries.
+    file(GLOB_RECURSE _softline_libmdf_inputs LIST_DIRECTORIES FALSE
+      "${_softline_libmdf_root}/include/*" "${_softline_libmdf_root}/lib/*")
+    file(TOUCH ${_softline_libmdf_inputs})
     get_filename_component(_softline_libmdf_contract_dir
       "${_softline_libmdf_contract}" DIRECTORY)
     file(MAKE_DIRECTORY "${_softline_libmdf_contract_dir}")
@@ -103,6 +108,9 @@ function(softline_enable_dev_libmdf target)
   # The extracted SDK records absolute target paths. An active cross sysroot
   # would incorrectly prefix those paths during this private lookup.
   set(ENV{PKG_CONFIG_SYSROOT_DIR} "")
+  # Resolve the extracted target SDK directly rather than searching for it
+  # inside the toolchain sysroot. Absolute library inputs give Ninja link deps.
+  set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY NEVER)
   pkg_check_modules(SOFTLINE_TEST_LIBMDF REQUIRED IMPORTED_TARGET
     "libmdf=${SOFTLINE_TEST_LIBMDF_VERSION}")
   set(ENV{PKG_CONFIG_PATH} "${_softline_old_pkg_config_path}")
@@ -110,11 +118,6 @@ function(softline_enable_dev_libmdf target)
   set(ENV{PKG_CONFIG_SYSROOT_DIR} "${_softline_old_pkg_config_sysroot_dir}")
 
   target_link_libraries(${target} PRIVATE PkgConfig::SOFTLINE_TEST_LIBMDF)
-  # CMake's sysroot-only library search can retain -lmdf while dropping the
-  # relocatable -L entry from a third-party .pc file. Keep pkg-config as the
-  # authoritative include/link contract and make its SDK library directory
-  # explicit for this private test executable.
-  target_link_directories(${target} PRIVATE "${_softline_libmdf_root}/lib")
   set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH
     "${_softline_libmdf_root}/lib")
   set(SOFTLINE_TEST_LIBMDF_RUNTIME_ROOT "${_softline_libmdf_root}" PARENT_SCOPE)

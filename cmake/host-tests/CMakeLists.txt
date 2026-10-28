@@ -48,6 +48,9 @@ add_test(NAME public_exports COMMAND "${BASH_EXECUTABLE}"
 set_tests_properties(sdk_metadata public_exports PROPERTIES TIMEOUT 30 LABELS "host;packaging")
 add_test(NAME runtime_config COMMAND "${BASH_EXECUTABLE}"
   "${root}/tests/lifecycle/cache.sh" "${root}")
+add_test(NAME libmdf_upgrade COMMAND "${BASH_EXECUTABLE}"
+  "${root}/tests/lifecycle/libmdf-upgrade.sh" "${root}")
+set_tests_properties(libmdf_upgrade PROPERTIES TIMEOUT 30 LABELS "host;lifecycle")
 add_test(NAME artifact_portability COMMAND "${BASH_EXECUTABLE}" "${root}/tests/lifecycle/artifact-portability.sh" "${root}")
 add_test(NAME artifact_runtime COMMAND "${BASH_EXECUTABLE}" "${root}/tests/lifecycle/artifact-runtime.sh" "${root}")
 add_test(NAME lua_env COMMAND "${BASH_EXECUTABLE}" "${root}/tests/lifecycle/lua-env.sh" "${root}")

@@ -169,7 +169,7 @@ Not currently implemented:
 `example_simple` is the normal terminal prompt. Output is printed after each
 submitted line and the next prompt proceeds below it like an ordinary REPL.
 
-`example_chat` is the C streaming Markdown demo. It links pinned libmdf 0.15.0
+`example_chat` is the C streaming Markdown demo. It links pinned libmdf 0.17.0
 only as an example dependency: libsoftline and its installed package remain
 independent of libmdf. The composer gives libmdf a two-column left margin and its default
 ANSI palette for terminal output (escape-free when redirected), updating both
