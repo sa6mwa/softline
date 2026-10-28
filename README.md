@@ -185,15 +185,37 @@ example starts the oldest remaining queue entry as the next turn. The
 example uses the status spinner only as a presentation of its application-owned
 busy state. Escape or Ctrl-C returns cancellation to the application; the C chat
 example uses it to stop the active simulated operation, retain its queue, and keep the
-chat open. Automatic FIFO release stays stopped until the user submits a new
-turn or manually promotes a queued one.
+chat open. `/status` inspects the paused backlog without releasing it;
+`/resume` explicitly resumes it. New direct chat turns retain their usual
+resumption behavior.
 
 Both chat examples accept the exact, argument-free commands `!sh` and `/shell`
 between turns. Enter (or idle Alt-Enter) opens `$SHELL -i`, falling back to
-`/bin/sh -i` when `SHELL` is unset or empty. Commands are rejected while an
-operation is running, with the draft left editable; they cannot be queued or
-steered. Piped input and redirected output cannot open a shell. Other text,
-including `/shell arguments`, remains an ordinary chat turn.
+`/bin/sh -i` when `SHELL` is unset or empty. While an operation is running,
+these commands remain in Softline's visible, editable queue until the whole
+turn ends. Alt-Enter, including empty-editor promotion, does not waive this
+execution hold. Piped input and redirected output cannot open a shell. Other
+text, including `/shell arguments`, remains a simulated chat turn.
+
+Both chat examples install the native submission classifier for slash and
+shell commands, including idle Enter. Try these policy demonstrations in
+`run-chat-*` or the Lua chat targets:
+
+| Input | Demonstration |
+| --- | --- |
+| `/status` | Show busy/idle, backlog stop, queue count and auto-approval without starting a turn or releasing paused work. |
+| `/approve`, `/approve on`, `/approve off` | Change approval locally, even behind a blocked command. |
+| `/steer TEXT` + Enter | Retain the command until the current turn completes. |
+| `/steer TEXT` + Alt-Enter | Apply it at the next response seam, subject to native ordering and approval. |
+| `!sh` or `/shell` | Wait for a whole turn; Alt-E edits the same queued entry. |
+| `/resume` | Explicitly release the backlog retained by Escape/Ctrl-C. |
+
+Enter then Alt-E in one input burst edits an idle command before execution.
+The examples use `queue_info().eligible` for host takes and update execution
+readiness at actual producer seams/completion. They keep no second application
+queue. The C and Lua terminal tests gate their simulated workers with an
+inherited `SOFTLINE_CHAT_GATE_FD` (3..9, one newline-terminated token per turn),
+so boundary assertions do not depend on sleeps.
 
 Alt-S opens the same shell between turns while preserving the current draft,
 cursor, undo, history search and queued-entry editing state. Exit the shell to
@@ -479,6 +501,61 @@ for (;;) {
 }
 ```
 
+Applications can opt into command admission with `sl_set_prompt_queue_policy()`
+(receiver `set_prompt_queue_policy`). A short owner-thread classifier selects
+`sl_prompt_queue_policy_t` for deliberate Enter/Alt-Enter or callback submission:
+
+```c
+static int classify(sl_t *sl, const char *text, sl_prompt_queue_mode_t mode,
+                    sl_prompt_queue_policy_t *policy, void *userdata) {
+  int boundary_ready = *(const int *)userdata;
+  (void)sl;
+  (void)mode;
+  policy->enqueue = text[0] == '/' || text[0] == '!';
+  policy->independent = strcmp(text, "/status") == 0;
+  policy->executable = policy->independent || boundary_ready;
+  return SL_OK;
+}
+```
+
+The classifier only inspects state; it must not mutate the editor/queue,
+recursively enter input, destroy the handle or perform blocking work. Install it
+with `sl->set_prompt_queue_policy(sl, classify, &boundary_ready)`, and use
+`next_prompt()` for delivery. Non-TTY input is unchanged. Managed entries use
+their declared readiness instead of the busy flag; manual mode still retains
+them. All other profiles and ordinary prompt admission keep their existing
+behavior. Softline does not recognize slash or shell command names.
+
+`sl_prompt_queue_info()` exposes identity, mode, approval hold, policy, per-entry
+`stopped` state, and effective `eligible` state. Owner-thread consumers can use
+that same eligibility as native delivery; `sl_prompt_queue_take()` rejects
+ineligible entries. Ordinary turns retain FIFO order. Steering retains its seam
+priority over ordinary turns, but cannot pass older policy-managed commands or
+waive its own execution hold. Legacy approval suggestions do not hold ordinary
+user input. Independent feed-local
+queries can pass blocked work without consuming or modifying it. Approval
+decisions remain strictly FIFO. The active draft, paste and search selection
+take precedence over automatic dispatch; same-burst Enter then Alt-E edits the
+admitted identity before it can run. Edits retain position, capacity and holds.
+History records admission once, without duplicate appends on editing/delivery.
+
+`sl_prompt_queue_set_executable(sl, id, ready)` changes execution readiness for a
+queued or edited identity without approval or cancellation side effects. Update
+it from the owner thread, for example in a watch callback when a tool/turn/shell
+finishes. Changes schedule delivery without polling or simulated keystrokes.
+Steering intent never waives an execution hold. Managed steering delivery reports
+`SL_PROMPT_SOURCE_PROMOTED` and the original `sl_last_prompt_id()`.
+
+Cancellation stops retained work. `sl_get_prompt_queue_stopped()` exposes that
+state; `sl_prompt_queue_resume()` explicitly resumes the backlog while preserving
+manual mode, approval and execution holds. Fresh managed actions can execute
+after cancellation without releasing older stopped entries. Passive enqueue,
+injection and editing preserve the stop. Alt-Enter can explicitly promote one
+managed entry without resuming the rest; automatic delivery setters never clear
+the backlog stop. C and Lua expose equivalent operations; see the
+[Lua policy methods](lua/README.md) and the executable regression examples in
+`tests/test_queue_policy.c` and `tests/lua-fixtures/queue-policy.lua`.
+
 Tab queues a nonempty active editor and leaves a FIFO preview panel above the
 current input; Tab on an empty editor is a no-op. The panel uses the themed
 `Q 1. preview` layout, shows oldest-first previews, and adds `... N more` when
@@ -684,11 +761,11 @@ the caller's normal chat history. These test stores remain available for
 diagnosis until `make clean`.
 
 Every project-owned C target is compiled as C89 with POSIX terminal APIs.
-Shared builds use `SOFTLINE_ABI_VERSION=2` for SONAME/SOVERSION. Per-entry queue
-approval and identity methods extend the public receiver layout, and queue
-insertion now takes a hold flag and optional identity output. Rebuild consumers
-against the new header/library pair. ABI 2 advances exactly once from released
-v0.11.0's ABI 1, independently of the project release version.
+Shared builds use `SOFTLINE_ABI_VERSION=3` for SONAME/SOVERSION. Queue policy
+methods extend the public receiver layout and entry information includes
+execution eligibility and cancellation state. Rebuild consumers against the new
+header/library pair. ABI 3 advances exactly once from released v0.13.0's ABI 2,
+independently of the project release version.
 The ABI is fixed by the source, not a CMake option. Reconfiguring an existing
 build discards any obsolete cached ABI value before generating library names
 and installed metadata.

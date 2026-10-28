@@ -32,6 +32,8 @@ typedef struct softline_lua_handle {
   lua_State *history_caller;
   char history_callback_error[SOFTLINE_LUA_IDLE_ERROR_LEN];
   int idle_callback_ref;
+  int policy_callback_ref;
+  int policy_callback_active;
   int idle_callback_active;
   int idle_callback_failed;
   char idle_callback_error[SOFTLINE_LUA_IDLE_ERROR_LEN];
@@ -413,6 +415,8 @@ static int softline_lua_new(lua_State *L) {
     handle->watches[i].file_ref = LUA_NOREF;
   }
   handle->idle_callback_ref = LUA_NOREF;
+  handle->policy_callback_ref = LUA_NOREF;
+  handle->policy_callback_active = 0;
   handle->idle_callback_active = 0;
   handle->watch_callback_active = 0;
   softline_lua_clear_idle_error(handle);
@@ -431,8 +435,8 @@ static int softline_lua_gc(lua_State *L) {
   softline_lua_handle_t *handle;
   int i;
   handle = (softline_lua_handle_t *)luaL_checkudata(L, 1, SOFTLINE_LUA_HANDLE);
-  if (handle->idle_callback_active || handle->watch_callback_active ||
-      handle->history_callback_active)
+  if (handle->policy_callback_active || handle->idle_callback_active ||
+      handle->watch_callback_active || handle->history_callback_active)
     return 0;
   for (i = 0; i < SOFTLINE_LUA_MAX_KEY_BINDINGS; i++) {
     if (handle->key_bindings[i].ref != LUA_NOREF) {
@@ -443,6 +447,10 @@ static int softline_lua_gc(lua_State *L) {
   if (handle->idle_callback_ref != LUA_NOREF) {
     luaL_unref(L, LUA_REGISTRYINDEX, handle->idle_callback_ref);
     handle->idle_callback_ref = LUA_NOREF;
+  }
+  if (handle->policy_callback_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, handle->policy_callback_ref);
+    handle->policy_callback_ref = LUA_NOREF;
   }
   for (i = 0; i < SOFTLINE_LUA_MAX_WATCHES; i++) {
     softline_lua_release_watch_ref(L, handle, i);
@@ -459,8 +467,8 @@ static int softline_lua_gc(lua_State *L) {
 static int softline_lua_close(lua_State *L) {
   softline_lua_handle_t *handle;
   handle = (softline_lua_handle_t *)luaL_checkudata(L, 1, SOFTLINE_LUA_HANDLE);
-  if (handle->idle_callback_active || handle->watch_callback_active ||
-      handle->history_callback_active)
+  if (handle->policy_callback_active || handle->idle_callback_active ||
+      handle->watch_callback_active || handle->history_callback_active)
     return luaL_error(L, "cannot close softline handle from its callback");
   return softline_lua_gc(L);
 }
@@ -959,6 +967,116 @@ softline_lua_queue_push_info(lua_State *L,
   lua_setfield(L, -2, "mode");
   lua_pushboolean(L, info->held);
   lua_setfield(L, -2, "held");
+  lua_pushboolean(L, info->stopped);
+  lua_setfield(L, -2, "stopped");
+  lua_pushboolean(L, info->eligible);
+  lua_setfield(L, -2, "eligible");
+  lua_newtable(L);
+  lua_pushboolean(L, info->policy.enqueue);
+  lua_setfield(L, -2, "enqueue");
+  lua_pushboolean(L, info->policy.independent);
+  lua_setfield(L, -2, "independent");
+  lua_pushboolean(L, info->policy.executable);
+  lua_setfield(L, -2, "executable");
+  lua_setfield(L, -2, "policy");
+}
+
+static int softline_lua_policy_field(lua_State *L, const char *field,
+                                     int *value) {
+  int valid;
+  lua_pushstring(L, field);
+  lua_rawget(L, -2);
+  valid = lua_isnil(L, -1) || lua_isboolean(L, -1);
+  if (lua_isboolean(L, -1))
+    *value = lua_toboolean(L, -1);
+  lua_pop(L, 1);
+  return valid;
+}
+
+static int softline_lua_policy_callback(sl_t *sl, const char *text,
+                                        sl_prompt_queue_mode_t mode,
+                                        sl_prompt_queue_policy_t *policy,
+                                        void *userdata) {
+  softline_lua_handle_t *handle = userdata;
+  lua_State *L = handle->history_caller ? handle->history_caller : handle->L;
+  int valid;
+  sl_prompt_queue_entry_info_t info;
+  (void)sl;
+  memset(&info, 0, sizeof(info));
+  info.policy = *policy;
+  lua_rawgeti(L, LUA_REGISTRYINDEX, handle->policy_callback_ref);
+  lua_pushstring(L, text);
+  lua_pushinteger(L, mode);
+  softline_lua_queue_push_info(L, &info);
+  lua_getfield(L, -1, "policy");
+  lua_remove(L, -2);
+  handle->policy_callback_active = 1;
+  valid = lua_pcall(L, 3, 1, 0) == LUA_OK;
+  handle->policy_callback_active = 0;
+  if (valid && !lua_isnil(L, -1)) {
+    valid = lua_istable(L, -1) &&
+            softline_lua_policy_field(L, "enqueue", &policy->enqueue) &&
+            softline_lua_policy_field(L, "independent", &policy->independent) &&
+            softline_lua_policy_field(L, "executable", &policy->executable);
+  }
+  lua_pop(L, 1);
+  return valid ? SL_OK : SL_ERROR_INVALID;
+}
+
+static int softline_lua_set_queue_policy(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  int ref = LUA_NOREF, status;
+  if (handle->policy_callback_active)
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  if (!lua_isnoneornil(L, 2)) {
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  status = sl_set_prompt_queue_policy(
+      handle->sl, ref == LUA_NOREF ? NULL : softline_lua_policy_callback,
+      handle);
+  if (status != SL_OK) {
+    if (ref != LUA_NOREF)
+      luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    return softline_lua_status(L, status);
+  }
+  if (handle->policy_callback_ref != LUA_NOREF)
+    luaL_unref(L, LUA_REGISTRYINDEX, handle->policy_callback_ref);
+  handle->policy_callback_ref = ref;
+  return softline_lua_status(L, status);
+}
+
+static int softline_lua_queue_identity(lua_State *L, sl_prompt_id_t *id) {
+  lua_Integer value = luaL_checkinteger(L, 2);
+  if (value <= 0 || (lua_Unsigned)value > (lua_Unsigned)LONG_MAX)
+    return 0;
+  *id = (sl_prompt_id_t)value;
+  return 1;
+}
+
+static int softline_lua_queue_set_executable(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  sl_prompt_id_t id;
+  if (!softline_lua_queue_identity(L, &id))
+    return softline_lua_status(L, SL_ERROR_INVALID);
+  luaL_checktype(L, 3, LUA_TBOOLEAN);
+  return softline_lua_status(
+      L, sl_prompt_queue_set_executable(handle->sl, id, lua_toboolean(L, 3)));
+}
+
+static int softline_lua_queue_stopped(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  int stopped, status = sl_get_prompt_queue_stopped(handle->sl, &stopped);
+  if (status != SL_OK)
+    return softline_lua_status(L, status);
+  lua_pushboolean(L, stopped);
+  return 1;
+}
+
+static int softline_lua_queue_resume(lua_State *L) {
+  softline_lua_handle_t *handle = softline_lua_check(L, 1);
+  return softline_lua_status(L, sl_prompt_queue_resume(handle->sl));
 }
 
 static int softline_lua_queue_info(lua_State *L) {
@@ -985,14 +1103,6 @@ static int softline_lua_queue_draft_info(lua_State *L) {
     lua_pushnil(L);
   else
     softline_lua_queue_push_info(L, &info);
-  return 1;
-}
-
-static int softline_lua_queue_identity(lua_State *L, sl_prompt_id_t *id) {
-  lua_Integer value = luaL_checkinteger(L, 2);
-  if (value <= 0 || (lua_Unsigned)value > (lua_Unsigned)LONG_MAX)
-    return 0;
-  *id = (sl_prompt_id_t)value;
   return 1;
 }
 
@@ -1777,6 +1887,10 @@ static const luaL_Reg softline_lua_methods[] = {
     {"get_auto_approval", softline_lua_get_auto_approval},
     {"queue_info", softline_lua_queue_info},
     {"queue_draft_info", softline_lua_queue_draft_info},
+    {"set_queue_policy", softline_lua_set_queue_policy},
+    {"queue_set_executable", softline_lua_queue_set_executable},
+    {"queue_stopped", softline_lua_queue_stopped},
+    {"queue_resume", softline_lua_queue_resume},
     {"queue_approve", softline_lua_queue_approve},
     {"queue_reject", softline_lua_queue_reject},
     {"last_prompt_id", softline_lua_last_prompt_id},

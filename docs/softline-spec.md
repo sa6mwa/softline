@@ -221,7 +221,7 @@ never reused, and an approval hold independent of QUEUED/STEER intent. C
 `sl_prompt_queue_append()` and `sl_prompt_queue_insert()` take a hold flag and
 optional ID output. Lua `queue_append`/`queue_insert` take an optional boolean
 hold and return the ID. `sl_prompt_queue_info()` / Lua `queue_info()` expose
-`id`, `mode`, and `held`. Held entries appear in the approval panel/count;
+`id`, `mode`, `held`, `policy`, `stopped`, and `eligible`. Held entries appear in the approval panel/count;
 ordinary Q/S previews remain visible and use their own preview limit.
 
 Automatic delivery skips held entries while preserving FIFO order among
@@ -304,7 +304,40 @@ the full original text. Page Up/Down keep their ordinary binding behavior.
 last read/take, including directly submitted queued edits. Ordinary direct
 input and unsuccessful reads/takes report zero. Lua `next_prompt()` returns
 `line, source, id`, and `queue_take()` returns `text, id`. This receiver/API
-extension uses ABI 2, one increment from released v0.11.0's ABI 1.
+extension first shipped with ABI 2. Native admission/execution policies extend
+the receiver and entry layout to ABI 3, one increment from released v0.13.0.
+
+`sl_set_prompt_queue_policy()` (Lua `set_queue_policy`) installs an optional,
+short owner-thread classifier for deliberate interactive submission. It only
+inspects state and returns boolean `enqueue`, `independent` and `executable`
+fields. Passive enqueue never calls it. Opted-in submissions enter the visible
+native queue even while idle; callback failures and full queues preserve the
+draft. Pending keys, paste and history selection precede automatic delivery, so
+same-burst Alt-E can edit the admitted entry before it runs. Editing preserves
+its identity, reserved position, approval and stop state; history appends only
+once at admission. Non-TTY input remains unchanged.
+
+`sl_prompt_queue_set_executable()` (Lua `queue_set_executable`) updates execution
+readiness by identity, including an active edit. This is independent of approval
+and cancellation. Managed entries use explicit execution readiness rather than
+the busy signal, including steering; manual mode still prevents automatic
+delivery. Updates from watch callbacks schedule delivery through the native
+reactor. Effective `eligible` metadata and `prompt_queue_take()` share the native
+ordering and hold checks. Ordinary turns retain FIFO ordering. Steering keeps
+its seam priority over ordinary turns, but cannot pass an earlier managed
+command or waive its own execution hold. Legacy approval suggestions do not
+hold ordinary user input;
+independent feed-local queries may pass blocked work without modifying it or
+changing FIFO approval decisions. No command names are built into Softline.
+
+Cancellation marks retained entries as stopped. Fresh managed submissions can
+execute without releasing that backlog, while passive enqueues and edits retain
+the stop. Explicit Alt-Enter promotion resumes only that entry, with draft and
+empty-editor promotion both retaining execution holds. `sl_get_prompt_queue_stopped()`
+(Lua `queue_stopped`) inspects the backlog stop; `sl_prompt_queue_resume()`
+(Lua `queue_resume`) explicitly resumes it while preserving manual mode, active
+edits, approval and execution holds. An automatic delivery setter never clears
+the stop. Ordinary profiles retain their existing direct-submission behavior.
 
 ### Prompt Themes And Status Lines
 
@@ -585,10 +618,10 @@ Current build surfaces include:
 - CMake presets
 - static and shared library builds
 - shared-library ABI/SOVERSION policy through the source-owned
-  `SOFTLINE_ABI_VERSION`, currently `2`, decoupled from the project release
-  version and not a CMake cache option. Queue approval methods change the
-  exposed C receiver layout and existing insertion signatures, advancing
-  exactly once from released v0.11.0's ABI 1. Consumers must rebuild.
+  `SOFTLINE_ABI_VERSION`, currently `3`, decoupled from the project release
+  version and not a CMake cache option. Queue policy methods and entry-state
+  fields change exposed C layouts, advancing exactly once from released
+  v0.13.0's ABI 2. Consumers must rebuild.
 - installed CMake package exports with canonical target `softline::softline`
 - installed pkg-config metadata
 - Lua 5.5 facade packaged as LuaRocks source artifacts

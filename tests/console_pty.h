@@ -19,7 +19,7 @@ struct editor {
   pid_t child;
   int master;
   char bytes[262144];
-  size_t length;
+  size_t length, read_limit;
   int rows, columns, row, column, top, bottom;
   char escape[128], printed[65536];
   uint16_t print_rows[65536], print_columns[65536];
@@ -189,6 +189,7 @@ static int consume(struct editor *e, const char *bytes, size_t length) {
 }
 static int pump(struct editor *e, int timeout) {
   struct pollfd descriptor;
+  size_t capacity;
   ssize_t bytes;
   descriptor.fd = e->master;
   descriptor.events = POLLIN;
@@ -198,8 +199,10 @@ static int pump(struct editor *e, int timeout) {
     fprintf(stderr, "Console PTY capture exhausted\n");
     return -1;
   }
-  bytes =
-      read(e->master, e->bytes + e->length, sizeof(e->bytes) - e->length - 1);
+  capacity = sizeof(e->bytes) - e->length - 1;
+  if (e->read_limit && capacity > e->read_limit)
+    capacity = e->read_limit;
+  bytes = read(e->master, e->bytes + e->length, capacity);
   if (bytes > 0) {
     if (consume(e, e->bytes + e->length, (size_t)bytes))
       return -1;

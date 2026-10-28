@@ -74,7 +74,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Lua interaction tests share the interpreter's prepared native configuration.
-  foreach(test console_pty chat_shell)
+  foreach(test console_pty chat_shell chat_policies)
     add_executable(test_${test} "${softline_root}/tests/test_${test}.c")
     target_compile_options(test_${test} PRIVATE
       -std=c89 -Wall -Wextra -Wpedantic -pedantic-errors -Werror)

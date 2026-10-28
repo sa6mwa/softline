@@ -30,7 +30,7 @@ set(SL_TARGET_ID "" CACHE STRING "Release target identifier")
 # The shared-library ABI belongs to the source, not to build configuration.
 # Discard cache entries left by older configurations before selecting it.
 unset(SOFTLINE_ABI_VERSION CACHE)
-set(SOFTLINE_ABI_VERSION "2")
+set(SOFTLINE_ABI_VERSION "3")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

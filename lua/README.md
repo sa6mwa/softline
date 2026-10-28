@@ -177,7 +177,9 @@ live scroll regions, status lines, and spinners are off; the theme is
   refuses held entries. Insert/append return a new opaque per-handle ID, never
   reused, with `held` defaulting to false. Automatic approval overrides explicit
   holds. Replacement preserves ID and hold.
-- `sl:queue_info(index)` returns `{id, mode, held}`. `sl:queue_draft_info()`
+- `sl:queue_info(index)` returns `{id, mode, held, policy, stopped, eligible}`;
+  `policy` contains boolean `enqueue`, `independent` and `executable` fields.
+  `sl:queue_draft_info()`
   returns the same metadata for an Alt-E edit, or nil for an ordinary draft.
   `sl:last_prompt_id()` returns the last read/take ID, or zero for direct input,
   cancellation or failure. IDs remain integers across C and Lua (1..LONG_MAX).
@@ -222,6 +224,37 @@ live scroll regions, status lines, and spinners are off; the theme is
   `PROMPT_THEME_MONOCHROME`, `PROMPT_THEME_MONOGREEN`, `PROMPT_THEME_OUTRUN`,
   `PROMPT_THEME_RICED`, or `PROMPT_THEME_SYNTHWAVE` for the whole interactive
   prompt UI, including status lines and queue panels.
+- `sl:set_queue_policy(callback)` opts into native admission of deliberate
+  interactive submissions. The short owner-thread callback receives
+  `(text, mode, policy)` and returns a policy table, or nil to keep its initial
+  values. Fields are booleans: `enqueue` (default false), `independent` (default
+  false), `executable` (default true). Editing starts with the original policy.
+  Only inspect state in this callback; do not mutate or recursively enter the
+  editor/queue, close the handle, or block. A callback error or invalid policy
+  preserves the draft and queue. Pass nil to remove the callback.
+  Managed entries enter the visible native queue even when idle. Same-burst
+  Alt-E precedes delivery, preserving identity, position and approval. History
+  records admission once, without a second append on editing or delivery.
+  Passive `sl:queue_draft()` and background injection never call the classifier.
+- `sl:queue_set_executable(id, ready)` sets a boolean execution boundary for a
+  queued entry or active edit. It never approves or resumes work. A readiness
+  change from an owner-thread watch schedules native delivery; no synthetic
+  input or polling is required. Managed entries use this readiness instead of
+  the busy flag, including steering entries. Manual delivery still blocks
+  automatic release. `queue_take` rejects entries whose `eligible` is false.
+  Independent queries may pass blocked entries without modifying them; normal
+  queued turns retain FIFO ordering. Steering may pass ordinary turns at a
+  seam, but not older managed commands or its own execution hold. Legacy
+  approval suggestions do not hold ordinary user prompts. This does not change FIFO
+  approval decisions. Non-TTY input retains its existing direct behavior.
+- `sl:queue_stopped()` exposes the backlog stop caused by cancellation.
+  Fresh managed submissions can execute without releasing the old backlog;
+  passive enqueues and edits inherit the stop. `sl:queue_resume()` explicitly
+  resumes that backlog, preserving execution and approval holds and manual
+  delivery. Setting automatic delivery does not clear the stop. Explicit
+  Alt-Enter promotion resumes only the managed entry, preserving its execution
+  hold and steering intent. Existing direct submission/promotion semantics
+  remain unchanged when no policy is installed.
 - `sl:set_statusline(enabled, starting_element)` enables the optional status
   line and chooses the palette slot for its first element. Themes provide
   eight element colours, and subsequent elements cycle through those colours.
@@ -258,7 +291,8 @@ live scroll regions, status lines, and spinners are off; the theme is
 - `sl:cursor()` returns the cursor as a byte offset into `sl:buffer()`.
 - `sl:set_cursor(offset)` clamps the byte offset to a valid UTF-8 cluster
   boundary when possible.
-- `sl:submit()` submits the active buffer from a callback-driven edit.
+- `sl:submit()` submits the active buffer or reverse-search match from a callback,
+  applying queue admission. Idle/watch submissions have ordinary queued intent.
 - `sl:cancel()` cancels the active `readline()`.
 - `sl:bind_key(key, callback)` binds a decoded key to a callback. The callback
   receives the key code and returns a `softline.KEY_ACTION_*` value, or `nil`

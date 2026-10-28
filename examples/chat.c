@@ -77,6 +77,8 @@ struct chat_state {
 static int start_operation(struct chat_state *state);
 static int dispatch_next_turn(struct chat_state *state);
 static int sync_geometry(struct chat_state *state);
+static int handle_command(struct chat_state *state, const char *line,
+                          int *handled);
 
 /* Keep the reasoning row separate from queue/approval rows while idle.
  * Actual messages retain the normal status prefix. */
@@ -87,6 +89,61 @@ static int set_chat_message(sl_t *sl, const char *message) {
 
 static int is_shell_command(const char *line) {
   return strcmp(line, "!sh") == 0 || strcmp(line, "/shell") == 0;
+}
+
+static int command_named(const char *line, const char *name) {
+  size_t length = strlen(name);
+  return !strncmp(line, name, length) &&
+         (line[length] == '\0' || line[length] == ' ');
+}
+
+static int is_local_command(const char *line) {
+  return !strcmp(line, "/status") || !strcmp(line, "/resume") ||
+         command_named(line, "/approve");
+}
+
+static int command_ready(const struct chat_state *state, const char *line,
+                         sl_prompt_queue_mode_t mode, int at_seam) {
+  return is_local_command(line) || !state->busy ||
+         (at_seam && mode == SL_PROMPT_QUEUE_MODE_STEER &&
+          !is_shell_command(line));
+}
+
+static int classify_prompt(sl_t *sl, const char *text,
+                           sl_prompt_queue_mode_t mode,
+                           sl_prompt_queue_policy_t *policy, void *userdata) {
+  struct chat_state *state = userdata;
+  (void)sl;
+  policy->enqueue = text[0] == '/' || text[0] == '!';
+  policy->independent = is_local_command(text);
+  policy->executable = command_ready(state, text, mode, 0);
+  return SL_OK;
+}
+
+/* Readiness follows real operation events. Inspection does not consume an
+ * entry, clear cancellation, approve it, or change its destination. */
+static int sync_queue_readiness(struct chat_state *state, int at_seam) {
+  size_t index;
+  sl_prompt_queue_entry_info_t draft;
+  if (sl_prompt_queue_draft_info(state->sl, &draft) != SL_OK)
+    return -1;
+  if (draft.id && sl_prompt_queue_set_executable(
+                      state->sl, draft.id,
+                      !state->busy || draft.policy.independent) != SL_OK)
+    return -1;
+  for (index = 0; index < sl_prompt_queue_count(state->sl); index++) {
+    sl_prompt_queue_entry_info_t info;
+    char *text = NULL;
+    int ready;
+    if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK ||
+        sl_prompt_queue_peek(state->sl, index, &text) != SL_OK)
+      return -1;
+    ready = command_ready(state, text, info.mode, at_seam);
+    sl_free_string(state->sl, text);
+    if (sl_prompt_queue_set_executable(state->sl, info.id, ready) != SL_OK)
+      return -1;
+  }
+  return 0;
 }
 
 /* Run only in the idle owner loop, after next_prompt() has returned. Ending
@@ -212,7 +269,7 @@ static int set_busy(struct chat_state *state, int busy) {
       set_chat_message(state->sl, busy ? "Thinking..." : NULL) != SL_OK)
     return -1;
   state->busy = busy;
-  return 0;
+  return sync_queue_readiness(state, 0);
 }
 
 static int show_goodbye(struct chat_state *state) {
@@ -222,7 +279,7 @@ static int show_goodbye(struct chat_state *state) {
       sl_set_status_busy(state->sl, 0) != SL_OK ||
       set_chat_message(state->sl, "Goodbye.") != SL_OK)
     return -1;
-  return 0;
+  return sl_output_stream_reconcile(state->sl) == SL_OK ? 0 : -1;
 }
 
 static int finish_response_document(struct chat_state *state) {
@@ -236,14 +293,71 @@ static int finish_response_document(struct chat_state *state) {
   return 0;
 }
 
+static int command_message(struct chat_state *state, const char *message) {
+  return set_chat_message(state->sl, message) == SL_OK &&
+                 sl_output_stream_reconcile(state->sl) == SL_OK
+             ? 0
+             : -1;
+}
+
+static int handle_command(struct chat_state *state, const char *line,
+                          int *handled) {
+  int enabled, stopped;
+  *handled = 1;
+  if (!strcmp(line, "/status")) {
+    char text[256];
+    if (sl_get_prompt_queue_stopped(state->sl, &stopped) != SL_OK ||
+        sl_get_auto_approval(state->sl, &enabled) != SL_OK)
+      return -1;
+    (void)snprintf(text, sizeof(text),
+                   "Status: %s / backlog %s / %lu queued / auto-approval %s",
+                   state->busy ? "busy" : "idle",
+                   stopped ? "paused" : "running",
+                   (unsigned long)sl_prompt_queue_count(state->sl),
+                   enabled ? "on" : "off");
+    return command_message(state, text);
+  }
+  if (!strcmp(line, "/resume"))
+    return sl_prompt_queue_resume(state->sl) == SL_OK
+               ? command_message(state, "Backlog resumed.")
+               : -1;
+  if (command_named(line, "/approve")) {
+    if (sl_get_auto_approval(state->sl, &enabled) != SL_OK)
+      return -1;
+    if (!strcmp(line, "/approve"))
+      enabled = !enabled;
+    else if (!strcmp(line, "/approve on"))
+      enabled = 1;
+    else if (!strcmp(line, "/approve off"))
+      enabled = 0;
+    else
+      return command_message(state, "Usage: /approve [on|off]");
+    return sl_set_auto_approval(state->sl, enabled) == SL_OK
+               ? command_message(
+                     state,
+                     enabled
+                         ? "Auto-approval ON (all waiting requests approved)."
+                         : "Auto-approval OFF (new requests need approval).")
+               : -1;
+  }
+  if (command_named(line, "/steer"))
+    return render_user_prompt(state, line) == 0
+               ? render_note(state, "Steering applied.")
+               : -1;
+  *handled = 0;
+  return 0;
+}
+
 static int deliver_steers(struct chat_state *state, int at_seam) {
   size_t index;
   sl_prompt_queue_entry_info_t info;
   char *line;
+  if (sync_queue_readiness(state, at_seam) != 0)
+    return -1;
   for (index = 0; index < sl_prompt_queue_count(state->sl);) {
     if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
       return -1;
-    if (info.mode != SL_PROMPT_QUEUE_MODE_STEER || info.held) {
+    if (info.mode != SL_PROMPT_QUEUE_MODE_STEER || !info.eligible) {
       index++;
       continue;
     }
@@ -260,12 +374,15 @@ static int deliver_steers(struct chat_state *state, int at_seam) {
       state->exit_requested = 1;
       return show_goodbye(state) == 0 && sl_cancel(state->sl) == SL_OK ? 0 : -1;
     }
-    if (is_shell_command(line)) {
-      sl_free_string(state->sl, line);
-      if (render_note(state, "Shell commands cannot be queued or steered.") !=
-          0)
-        return -1;
-      continue;
+    {
+      int handled;
+      int rc = handle_command(state, line, &handled);
+      if (rc != 0 || handled) {
+        sl_free_string(state->sl, line);
+        if (rc != 0)
+          return -1;
+        continue;
+      }
     }
     if (render_user_prompt(state, line) != 0) {
       sl_free_string(state->sl, line);
@@ -273,7 +390,7 @@ static int deliver_steers(struct chat_state *state, int at_seam) {
     }
     sl_free_string(state->sl, line);
   }
-  return 0;
+  return sync_queue_readiness(state, 0);
 }
 
 static unsigned int character_delay_us(void) {
@@ -395,7 +512,20 @@ static int start_operation(struct chat_state *state) {
   int flags;
   pid_t pid;
   unsigned int delay;
+  int gate_fd = -1;
+  const char *gate = getenv("SOFTLINE_CHAT_GATE_FD");
   size_t i;
+  if (gate) {
+    char *end;
+    long value;
+    errno = 0;
+    value = strtol(gate, &end, 10);
+    if (errno || end == gate || *end || value < 3 || value > 9) {
+      fprintf(stderr, "SOFTLINE_CHAT_GATE_FD must be an inherited FD 3..9\n");
+      return -1;
+    }
+    gate_fd = (int)value;
+  }
   if (state->busy || sync_geometry(state) != 0)
     return -1;
   if (state->response_documents > 0 && state->response_renderer->begin_document(
@@ -425,6 +555,17 @@ static int start_operation(struct chat_state *state) {
   if (pid == 0) {
     close(pipe_fds[0]);
     (void)signal(SIGINT, SIG_IGN);
+    if (gate_fd >= 0) {
+      char token;
+      ssize_t amount;
+      do {
+        do {
+          amount = read(gate_fd, &token, 1);
+        } while (amount < 0 && errno == EINTR);
+        if (amount != 1)
+          _exit(1);
+      } while (token != '\n');
+    }
     for (i = 0; answer[i] != '\0'; i++) {
       if (write(pipe_fds[1], answer + i, 1) != 1)
         break;
@@ -455,7 +596,7 @@ static int dispatch_next_turn(struct chat_state *state) {
   for (index = 0; index < sl_prompt_queue_count(state->sl);) {
     if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
       return -1;
-    if (info.held) {
+    if (!info.eligible || info.policy.enqueue) {
       index++;
       continue;
     }
@@ -466,13 +607,6 @@ static int dispatch_next_turn(struct chat_state *state) {
       sl_free_string(state->sl, line);
       state->exit_requested = 1;
       return show_goodbye(state) == 0 && sl_cancel(state->sl) == SL_OK ? 0 : -1;
-    }
-    if (is_shell_command(line)) {
-      sl_free_string(state->sl, line);
-      if (render_note(state, "Shell commands cannot be queued or steered.") !=
-          0)
-        return -1;
-      continue;
     }
     if (render_user_prompt(state, line) != 0 || start_operation(state) != 0) {
       sl_free_string(state->sl, line);
@@ -604,63 +738,16 @@ static int cancel_editor_key(sl_t *sl, sl_key_t key, void *userdata,
   return SL_OK;
 }
 
-/* Status changes must render before readline releases its active prompt. */
+/* EOF still paints its farewell before leaving the active editor. Commands
+ * use native admission, so Enter/Alt-Enter need no interception. */
 static int exit_editor_key(sl_t *sl, sl_key_t key, void *userdata,
                            sl_key_action_t *action) {
   struct chat_state *state = (struct chat_state *)userdata;
   const char *text = sl_buffer(sl);
-  char *queued = NULL;
   int leaving = key == SL_KEY_CTRL_D && text[0] == '\0';
   *action = SL_KEY_ACTION_PASS;
-  /* Search keys edit/select a match; they do not submit, queue or steer it. */
   if (sl->history_search_active(sl))
     return SL_OK;
-  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER || key == SL_KEY_TAB) &&
-      strncmp(text, "/approve", 8) == 0 &&
-      (text[8] == '\0' || text[8] == ' ')) {
-    int enabled;
-    sl_prompt_queue_entry_info_t draft;
-    *action = SL_KEY_ACTION_HANDLED;
-    if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
-      return SL_ERROR;
-    if (draft.id)
-      return set_chat_message(sl, "Finish editing the queued message first.");
-    if (!strcmp(text, "/approve")) {
-      if (sl_get_auto_approval(sl, &enabled) != SL_OK)
-        return SL_ERROR;
-      enabled = !enabled;
-    } else if (!strcmp(text, "/approve on"))
-      enabled = 1;
-    else if (!strcmp(text, "/approve off"))
-      enabled = 0;
-    else
-      return set_chat_message(sl, "Usage: /approve [on|off]");
-    if (sl_set_auto_approval(sl, enabled) != SL_OK ||
-        sl_set_buffer(sl, "") != SL_OK)
-      return SL_ERROR;
-    return set_chat_message(
-        sl, enabled ? "Auto-approval ON (all waiting requests approved)."
-                    : "Auto-approval OFF (new requests need approval).");
-  }
-  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER || key == SL_KEY_TAB) &&
-      is_shell_command(text) && (state->busy || key == SL_KEY_TAB)) {
-    *action = SL_KEY_ACTION_HANDLED;
-    return set_chat_message(
-        sl, state->busy ? "Shell is available only between turns."
-                        : "Use Enter to open the shell; it cannot be queued.");
-  }
-  if (!state->busy && (key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER)) {
-    if (key == SL_KEY_ALT_ENTER && text[0] == '\0' &&
-        sl_prompt_queue_count(sl) > 0) {
-      int result =
-          sl_prompt_queue_peek(sl, sl_prompt_queue_count(sl) - 1, &queued);
-      if (result != SL_OK)
-        return result;
-      text = queued;
-    }
-    leaving = strcmp(text, "/quit") == 0;
-  }
-  sl_free_string(sl, queued);
   return leaving && show_goodbye(state) != 0 ? SL_ERROR_IO : SL_OK;
 }
 
@@ -742,8 +829,10 @@ int main(void) {
        (sl_set_prompt_queue(state.sl, 1, 64, 3) != SL_OK ||
         sl_set_prompt_queue_profile(
             state.sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) != SL_OK ||
-        sl_set_prompt_queue_delivery(
-            state.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
+        sl_set_prompt_queue_delivery(state.sl, SL_PROMPT_QUEUE_DELIVERY_AUTO) !=
+            SL_OK ||
+        sl_set_prompt_queue_policy(state.sl, classify_prompt, &state) !=
+            SL_OK ||
         sl_set_statusline(state.sl, 1, 0) != SL_OK ||
         sl_set_status_elements(state.sl, status_elements,
                                sizeof(status_elements) /
@@ -751,10 +840,6 @@ int main(void) {
         set_prompt_theme_from_environment(state.sl) != 0 ||
         sl_bind_key(state.sl, SL_KEY_ESCAPE, cancel_editor_key, NULL) !=
             SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_ENTER, exit_editor_key, &state) != SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_ALT_ENTER, exit_editor_key, &state) !=
-            SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_TAB, exit_editor_key, &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_ALT_BASE + 's', shell_editor_key,
                     &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_CTRL_D, exit_editor_key, &state) !=
@@ -769,11 +854,13 @@ int main(void) {
   if (interactive) {
     (void)signal(SIGINT, keep_chat_on_interrupt);
     if (set_busy(&state, 0) != 0 || setup_approval_demo(&state) != 0 ||
-        render_note(&state,
-                    "Enter sends or queues; Alt-Enter steers or promotes; "
-                    "Alt-E edits queue. Esc/Ctrl-C cancels; `/quit` leaves. "
-                    "`!sh` or `/shell` opens your shell between turns; "
-                    "Alt-S opens it while preserving your draft.") != 0) {
+        render_note(
+            &state,
+            "Enter sends or queues; Alt-Enter steers or promotes; "
+            "Alt-E edits queue. Esc/Ctrl-C cancels; `/quit` leaves. "
+            "`!sh` or `/shell` opens your shell between turns; "
+            "Policy demo: `/status` / `/approve` / `/steer` / `/resume`. "
+            "Alt-S opens it while preserving your draft.") != 0) {
       report_failure(&state, "initial output");
       exit_code = 1;
       goto cleanup;
@@ -834,6 +921,8 @@ int main(void) {
       break;
     }
     if (strcmp(line, "/quit") == 0) {
+      if (show_goodbye(&state) != 0)
+        exit_code = 1;
       sl_free_string(state.sl, line);
       break;
     }
@@ -847,7 +936,7 @@ int main(void) {
     }
     if (is_shell_command(line)) {
       int failed = 0;
-      if (!interactive || state.busy || source != SL_PROMPT_SOURCE_DIRECT) {
+      if (!interactive || state.busy) {
         failed = render_note(
             &state, !interactive ? "Shell requires an interactive terminal."
                                  : "Shell is available only between turns.");
@@ -862,6 +951,19 @@ int main(void) {
         break;
       }
       continue;
+    }
+    if (interactive) {
+      int handled;
+      if (handle_command(&state, line, &handled) != 0) {
+        sl_free_string(state.sl, line);
+        report_failure(&state, "command");
+        exit_code = 1;
+        break;
+      }
+      if (handled) {
+        sl_free_string(state.sl, line);
+        continue;
+      }
     }
     if (render_user_prompt(&state, line) != 0) {
       sl_free_string(state.sl, line);

@@ -81,7 +81,10 @@ set(aliases destroy close prompt_queue_count queue_count prompt_queue_capacity q
   prompt_queue_approve queue_approve prompt_queue_reject queue_reject
   set_prompt_queue_delivery set_queue_delivery get_prompt_queue_delivery queue_delivery
   set_prompt_queue_profile set_queue_profile get_prompt_queue_profile queue_profile
-  set_prompt_queue_keys set_queue_keys get_prompt_queue_keys queue_keys)
+  set_prompt_queue_keys set_queue_keys get_prompt_queue_keys queue_keys
+  set_prompt_queue_policy set_queue_policy
+  prompt_queue_set_executable queue_set_executable
+  get_prompt_queue_stopped queue_stopped prompt_queue_resume queue_resume)
 set(expected)
 foreach(method IN LISTS receiver)
   if(method STREQUAL free_string)

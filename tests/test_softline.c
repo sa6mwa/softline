@@ -3912,12 +3912,85 @@ static void test_normal_prompt_proceeds_after_output(void) {
   PASS();
 }
 
-static void test_normal_wrapped_prompt_proceeds_after_output(void) {
-  int master_fd;
-  int slave_fd;
-  int result_pipe[2];
+/* These two interaction cases always close their PTY and reap their child,
+ * including failed assertions. A stranded child retains CTest's capture pipe.
+ */
+struct prompt_output_child {
+  int master, slave, result[2], gate[2], ready[2];
   pid_t pid;
+};
+
+static int prompt_output_open(struct prompt_output_child *child, int columns) {
   struct winsize ws;
+  child->master = child->slave = -1;
+  child->result[0] = child->result[1] = -1;
+  child->gate[0] = child->gate[1] = -1;
+  child->ready[0] = child->ready[1] = -1;
+  child->pid = -1;
+  memset(&ws, 0, sizeof(ws));
+  ws.ws_col = (unsigned short)columns;
+  ws.ws_row = 8;
+  return openpty(&child->master, &child->slave, NULL, NULL, &ws) ||
+         pipe(child->result) || pipe(child->gate) || pipe(child->ready);
+}
+
+static void prompt_output_close_fd(int *fd) {
+  if (*fd >= 0)
+    close(*fd);
+  *fd = -1;
+}
+
+static void prompt_output_parent(struct prompt_output_child *child) {
+  prompt_output_close_fd(&child->slave);
+  prompt_output_close_fd(&child->result[1]);
+  prompt_output_close_fd(&child->gate[0]);
+  prompt_output_close_fd(&child->ready[1]);
+}
+
+static int prompt_output_cleanup(struct prompt_output_child *child) {
+  int status, failed = 0;
+  pid_t reaped;
+  prompt_output_close_fd(&child->master);
+  prompt_output_close_fd(&child->slave);
+  prompt_output_close_fd(&child->result[0]);
+  prompt_output_close_fd(&child->result[1]);
+  prompt_output_close_fd(&child->gate[0]);
+  prompt_output_close_fd(&child->gate[1]);
+  prompt_output_close_fd(&child->ready[0]);
+  prompt_output_close_fd(&child->ready[1]);
+  if (child->pid > 0) {
+    (void)kill(child->pid, SIGKILL);
+    do {
+      reaped = waitpid(child->pid, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    failed = reaped != child->pid;
+    child->pid = -1;
+  }
+  return failed;
+}
+
+static int prompt_output_before_deadline(const struct timespec *deadline) {
+  struct timespec current;
+  return clock_gettime(CLOCK_MONOTONIC, &current) == 0 &&
+         (current.tv_sec < deadline->tv_sec ||
+          (current.tv_sec == deadline->tv_sec &&
+           current.tv_nsec < deadline->tv_nsec));
+}
+
+#define OUTPUT_REQUIRE(condition, message)                                     \
+  do {                                                                         \
+    if (!(condition)) {                                                        \
+      failure = message;                                                       \
+      goto output_cleanup;                                                     \
+    }                                                                          \
+  } while (0)
+
+/* mode 1 gates the child across a quiet read; mode 2 exits before completion.
+ */
+static const char *run_wrapped_output_prompt(int mode) {
+  struct prompt_output_child child;
+  struct timespec deadline;
+  const char *failure = NULL;
   char terminal[16384];
   char buf[512];
   struct vt_screen screen;
@@ -3927,57 +4000,66 @@ static void test_normal_wrapped_prompt_proceeds_after_output(void) {
   int status;
   int tries;
 
-  TEST("normal wrapped prompt proceeds after output");
-  memset(&ws, 0, sizeof(ws));
-  ws.ws_col = 80;
-  ws.ws_row = 8;
-  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0,
-              "openpty failed");
-  ASSERT_TRUE(pipe(result_pipe) == 0, "pipe failed");
-  pid = fork();
-  ASSERT_TRUE(pid >= 0, "fork failed");
-  if (pid == 0) {
+  OUTPUT_REQUIRE(prompt_output_open(&child, 80) == 0, "pty or pipe failed");
+  child.pid = fork();
+  OUTPUT_REQUIRE(child.pid >= 0, "fork failed");
+  if (child.pid == 0) {
     sl_config_t cfg;
     sl_t *sl;
     char *line;
-    close(master_fd);
-    close(result_pipe[0]);
+    close(child.master);
+    close(child.result[0]);
+    close(child.gate[1]);
+    close(child.ready[0]);
+    if (mode == 2)
+      _exit(0);
+    if (mode == 1 && read(child.gate[0], buf, 1) != 1)
+      _exit(5);
     sl_config_init(&cfg);
-    cfg.input_fd = slave_fd;
-    cfg.output_fd = slave_fd;
+    cfg.input_fd = child.slave;
+    cfg.output_fd = child.slave;
     sl = sl_create_with_config(&cfg);
     if (!sl)
       _exit(2);
     line = sl->readline(sl, "softline> ");
     if (!line)
       _exit(3);
-    (void)write(slave_fd, "submitted: ", 11);
-    (void)write(slave_fd, line, strlen(line));
-    (void)write(slave_fd, "\r\n", 2);
+    (void)write(child.slave, "submitted: ", 11);
+    (void)write(child.slave, line, strlen(line));
+    (void)write(child.slave, "\r\n", 2);
     sl->free_string(sl, line);
     line = sl->readline(sl, "softline> ");
     if (!line)
       _exit(4);
-    (void)write(result_pipe[1], line, strlen(line));
+    (void)write(child.result[1], line, strlen(line));
     sl->free_string(sl, line);
     sl->destroy(sl);
-    close(slave_fd);
-    close(result_pipe[1]);
+    close(child.slave);
+    close(child.result[1]);
     _exit(0);
   }
-  close(slave_fd);
-  close(result_pipe[1]);
+  prompt_output_parent(&child);
   terminal_len = 0;
   terminal[0] = '\0';
+  OUTPUT_REQUIRE(clock_gettime(CLOCK_MONOTONIC, &deadline) == 0,
+                 "clock failed");
+  deadline.tv_sec += 5;
   while (!contains_bytes(terminal, "softline> ")) {
-    n = read_some_with_timeout_ms(master_fd, buf, sizeof(buf), 20);
-    ASSERT_TRUE(n > 0, "prompt was not rendered");
+    OUTPUT_REQUIRE(prompt_output_before_deadline(&deadline),
+                   "prompt was not rendered");
+    n = read_some_with_timeout_ms(child.master, buf, sizeof(buf), 20);
+    if (mode == 1 && child.gate[1] >= 0 && n == 0) {
+      OUTPUT_REQUIRE(write(child.gate[1], "x", 1) == 1, "gate release failed");
+      prompt_output_close_fd(&child.gate[1]);
+    }
+    OUTPUT_REQUIRE(n >= 0, "prompt was not rendered");
     append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
   }
   input = "hello world jspdi jsdip jfjpisd rjfsdpi fpisdmjfpisi "
           "jpdstjfjpisjdfpijj\r";
-  ASSERT_TRUE(write(master_fd, input, strlen(input)) == (ssize_t)strlen(input),
-              "write input failed");
+  OUTPUT_REQUIRE(write(child.master, input, strlen(input)) ==
+                     (ssize_t)strlen(input),
+                 "write input failed");
   tries = 0;
   while (tries < 300) {
     vt_init(&screen, 8, 80);
@@ -3986,7 +4068,7 @@ static void test_normal_wrapped_prompt_proceeds_after_output(void) {
         vt_contains(&screen, "submitted: hello world jspdi jsdip") &&
         vt_contains(&screen, "softline>"))
       break;
-    n = read_some_with_timeout_ms(master_fd, buf, sizeof(buf), 20);
+    n = read_some_with_timeout_ms(child.master, buf, sizeof(buf), 20);
     if (n > 0)
       append_terminal_bytes(terminal, &terminal_len, sizeof(terminal), buf, n);
     tries++;
@@ -3996,18 +4078,37 @@ static void test_normal_wrapped_prompt_proceeds_after_output(void) {
   if (!vt_contains(&screen, "submitted: hello world jspdi jsdip") ||
       !vt_contains(&screen, "softline>"))
     vt_dump(&screen);
-  ASSERT_TRUE(vt_contains(&screen, "submitted: hello world jspdi jsdip"),
-              "submitted output missing");
-  ASSERT_TRUE(vt_contains(&screen, "softline>"),
-              "next prompt missing after wrapped submit");
-  ASSERT_TRUE(write(master_fd, "ok\r", 3) == 3, "second submit failed");
-  n = read_some_with_timeout(result_pipe[0], buf, sizeof(buf));
-  ASSERT_TRUE(n > 0, "read result failed");
-  close(master_fd);
-  close(result_pipe[0]);
-  ASSERT_TRUE(waitpid(pid, &status, 0) == pid, "waitpid failed");
-  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "child editor failed");
+  OUTPUT_REQUIRE(vt_contains(&screen, "submitted: hello world jspdi jsdip"),
+                 "submitted output missing");
+  OUTPUT_REQUIRE(vt_contains(&screen, "softline>"),
+                 "next prompt missing after wrapped submit");
+  OUTPUT_REQUIRE(write(child.master, "ok\r", 3) == 3, "second submit failed");
+  n = read_until_eof_with_timeout(child.result[0], buf, sizeof(buf));
+  OUTPUT_REQUIRE(n == 2 && memcmp(buf, "ok", 2) == 0, "read result failed");
+  OUTPUT_REQUIRE(waitpid(child.pid, &status, 0) == child.pid, "waitpid failed");
+  child.pid = -1;
+  OUTPUT_REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                 "child editor failed");
+output_cleanup:
+  if (prompt_output_cleanup(&child))
+    failure = "failed to reap PTY child";
+  return failure;
+}
+
+static void test_normal_wrapped_prompt_proceeds_after_output(void) {
+  const char *failure;
+  TEST("normal wrapped prompt proceeds after output");
+  failure = run_wrapped_output_prompt(0);
+  ASSERT_TRUE(!failure, failure);
+  PASS();
+  TEST("wrapped prompt waits through a gated startup gap");
+  failure = run_wrapped_output_prompt(1);
+  ASSERT_TRUE(!failure, failure);
+  PASS();
+  TEST("missing wrapped prompt fails and reaps its PTY child");
+  failure = run_wrapped_output_prompt(2);
+  ASSERT_TRUE(failure && strcmp(failure, "prompt was not rendered") == 0,
+              "missing output or child cleanup failure was hidden");
   PASS();
 }
 
@@ -9456,14 +9557,28 @@ static void test_unbounded_stream_then_readline_preserves_transcript(void) {
   PASS();
 }
 
-static void test_finite_output_then_readline_preserves_transcript(void) {
-  struct winsize ws;
+struct prompt_output_gate {
+  int fd, mode;
+};
+
+static int gate_draft_output(sl_t *sl, sl_key_t key, void *userdata,
+                             sl_key_action_t *action) {
+  struct prompt_output_gate *gate = userdata;
+  char byte;
+  (void)key;
+  if (gate->mode == 2)
+    _exit(0);
+  if (read(gate->fd, &byte, 1) != 1 || sl_insert(sl, "a") != SL_OK)
+    return SL_ERROR;
+  *action = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static const char *run_finite_output_prompt(int mode) {
+  struct prompt_output_child child;
+  struct timespec deadline;
+  const char *failure = NULL;
   struct vt_screen screen;
-  int master_fd;
-  int slave_fd;
-  int ready_pipe[2];
-  int result_pipe[2];
-  pid_t pid;
   char terminal[8192];
   char result[16];
   char ready;
@@ -9471,27 +9586,23 @@ static void test_finite_output_then_readline_preserves_transcript(void) {
   ssize_t n;
   int status;
 
-  TEST("readline after finite output preserves its final row");
-  memset(&ws, 0, sizeof(ws));
-  ws.ws_col = 30;
-  ws.ws_row = 8;
-  ASSERT_TRUE(openpty(&master_fd, &slave_fd, NULL, NULL, &ws) == 0 &&
-                  pipe(ready_pipe) == 0 && pipe(result_pipe) == 0,
-              "pty or pipe failed");
-  pid = fork();
-  ASSERT_TRUE(pid >= 0, "fork failed");
-  if (pid == 0) {
+  OUTPUT_REQUIRE(prompt_output_open(&child, 30) == 0, "pty or pipe failed");
+  child.pid = fork();
+  OUTPUT_REQUIRE(child.pid >= 0, "fork failed");
+  if (child.pid == 0) {
     sl_config_t cfg;
     sl_t *sl;
     struct idle_ready_state idle;
     struct one_chunk_once middle;
+    struct prompt_output_gate gate;
     char *line;
-    close(master_fd);
-    close(ready_pipe[0]);
-    close(result_pipe[0]);
+    close(child.master);
+    close(child.ready[0]);
+    close(child.result[0]);
+    close(child.gate[1]);
     sl_config_init(&cfg);
-    cfg.input_fd = slave_fd;
-    cfg.output_fd = slave_fd;
+    cfg.input_fd = child.slave;
+    cfg.output_fd = child.slave;
     cfg.screen_width = 10;
     sl = sl_create_with_config(&cfg);
     middle.text = "MIDDLE\n";
@@ -9501,49 +9612,92 @@ static void test_finite_output_then_readline_preserves_transcript(void) {
         sl_output_stream_end(sl) != SL_OK ||
         sl_print_above(sl, one_chunk_once_stream, &middle) != SL_OK)
       _exit(2);
-    idle.fd = ready_pipe[1];
+    gate.fd = child.gate[0];
+    gate.mode = mode;
+    if (mode && sl_bind_key(sl, 'a', gate_draft_output, &gate) != SL_OK)
+      _exit(5);
+    idle.fd = child.ready[1];
     idle.ready = 0;
     if (sl_set_idle_callback(sl, idle_signal_ready_once, &idle) != SL_OK)
       _exit(3);
     line = sl_readline(sl, "> ");
     if (!line)
       _exit(4);
-    (void)write(result_pipe[1], line, strlen(line));
+    (void)write(child.result[1], line, strlen(line));
     sl_free_string(sl, line);
     sl_destroy(sl);
-    close(slave_fd);
-    close(ready_pipe[1]);
-    close(result_pipe[1]);
+    close(child.slave);
+    close(child.ready[1]);
+    close(child.result[1]);
     _exit(0);
   }
-  close(slave_fd);
-  close(ready_pipe[1]);
-  close(result_pipe[1]);
-  ASSERT_TRUE(read_some_with_timeout(ready_pipe[0], &ready, 1) == 1 &&
-                  ready == 'R',
-              "readline did not become idle after finite output");
-  used = read_live_pty_output(master_fd, terminal, sizeof(terminal));
-  ASSERT_TRUE(used > 0 && write(master_fd, "draft", 5) == 5,
-              "finite output or input missing");
-  used +=
-      read_live_pty_output(master_fd, terminal + used, sizeof(terminal) - used);
+  prompt_output_parent(&child);
+  OUTPUT_REQUIRE(read_some_with_timeout(child.ready[0], &ready, 1) == 1 &&
+                     ready == 'R',
+                 "readline did not become idle after finite output");
+  used = read_live_pty_output(child.master, terminal, sizeof(terminal));
+  OUTPUT_REQUIRE(used > 0 && write(child.master, "draft", 5) == 5,
+                 "finite output or input missing");
+  OUTPUT_REQUIRE(clock_gettime(CLOCK_MONOTONIC, &deadline) == 0,
+                 "clock failed");
+  deadline.tv_sec += 5;
+  for (;;) {
+    vt_init(&screen, 8, 30);
+    vt_apply(&screen, terminal);
+    if (vt_contains(&screen, "> draft"))
+      break;
+    OUTPUT_REQUIRE(used + 1 < sizeof(terminal) &&
+                       prompt_output_before_deadline(&deadline),
+                   "readline overwrote finite output");
+    n = read_some_with_timeout_ms(child.master, terminal + used,
+                                  sizeof(terminal) - used - 1, 20);
+    if (mode == 1 && child.gate[1] >= 0 && n == 0) {
+      OUTPUT_REQUIRE(write(child.gate[1], "x", 1) == 1, "gate release failed");
+      prompt_output_close_fd(&child.gate[1]);
+    }
+    OUTPUT_REQUIRE(n >= 0, "readline overwrote finite output");
+    used += (size_t)n;
+    terminal[used] = '\0';
+  }
   vt_init(&screen, 8, 30);
   vt_apply(&screen, terminal);
-  ASSERT_TRUE(vt_contains(&screen, "FIRST") && vt_contains(&screen, "MIDDLE") &&
-                  vt_contains(&screen, "> draft"),
-              "readline overwrote finite output");
-  ASSERT_TRUE(write(master_fd, "\r", 1) == 1, "submit failed");
-  n = read_some_with_timeout(result_pipe[0], result, sizeof(result));
-  ASSERT_TRUE(n == 5 && memcmp(result, "draft", 5) == 0,
-              "readline did not return submitted input");
-  close(master_fd);
-  close(ready_pipe[0]);
-  close(result_pipe[0]);
-  ASSERT_TRUE(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
-                  WEXITSTATUS(status) == 0,
-              "finite output child failed");
+  OUTPUT_REQUIRE(vt_contains(&screen, "FIRST") &&
+                     vt_contains(&screen, "MIDDLE") &&
+                     vt_contains(&screen, "> draft"),
+                 "readline overwrote finite output");
+  OUTPUT_REQUIRE(write(child.master, "\r", 1) == 1, "submit failed");
+  n = read_until_eof_with_timeout(child.result[0], result, sizeof(result));
+  OUTPUT_REQUIRE(n == 5 && memcmp(result, "draft", 5) == 0,
+                 "readline did not return submitted input");
+  OUTPUT_REQUIRE(waitpid(child.pid, &status, 0) == child.pid, "waitpid failed");
+  child.pid = -1;
+  OUTPUT_REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                 "finite output child failed");
+output_cleanup:
+  if (prompt_output_cleanup(&child))
+    failure = "failed to reap PTY child";
+  return failure;
+}
+
+static void test_finite_output_then_readline_preserves_transcript(void) {
+  const char *failure;
+  TEST("readline after finite output preserves its final row");
+  failure = run_finite_output_prompt(0);
+  ASSERT_TRUE(!failure, failure);
+  PASS();
+  TEST("finite output stays intact across a gated draft redraw");
+  failure = run_finite_output_prompt(1);
+  ASSERT_TRUE(!failure, failure);
+  PASS();
+  TEST("incomplete finite-output draft fails and reaps its PTY child");
+  failure = run_finite_output_prompt(2);
+  ASSERT_TRUE(failure &&
+                  strcmp(failure, "readline overwrote finite output") == 0,
+              "missing output or child cleanup failure was hidden");
   PASS();
 }
+
+#undef OUTPUT_REQUIRE
 
 struct multiline_stream_end_state {
   int master_fd;
@@ -10569,11 +10723,6 @@ static void test_unbounded_stream_then_readline_preserves_transcript(void) {
   printf("SKIP\n");
   tests_passed++;
 }
-static void test_finite_output_then_readline_preserves_transcript(void) {
-  TEST("readline after finite output preserves its final row");
-  printf("SKIP\n");
-  tests_passed++;
-}
 static void test_multiline_stream_end_preserves_transcript_position(void) {
   TEST("multiline editor stream teardown and resize keep transcript position");
   printf("SKIP\n");
@@ -10651,11 +10800,6 @@ static void test_pty_ctrl_d_exits(void) {
 }
 static void test_normal_prompt_proceeds_after_output(void) {
   TEST("normal prompt proceeds after output");
-  printf("SKIP\n");
-  tests_passed++;
-}
-static void test_normal_wrapped_prompt_proceeds_after_output(void) {
-  TEST("normal wrapped prompt proceeds after output");
   printf("SKIP\n");
   tests_passed++;
 }
@@ -10962,6 +11106,14 @@ int main(int argc, char **argv) {
   printf("softline unit tests\n");
   printf("===================\n\n");
 #if SL_TEST_PTY
+  if (argc == 2 && strcmp(argv[1], "wrapped-output-prompt") == 0) {
+    test_normal_wrapped_prompt_proceeds_after_output();
+    return tests_passed == tests_run ? 0 : 1;
+  }
+  if (argc == 2 && strcmp(argv[1], "finite-output-prompt") == 0) {
+    test_finite_output_then_readline_preserves_transcript();
+    return tests_passed == tests_run ? 0 : 1;
+  }
   if (argc == 2 && strcmp(argv[1], "readline-edit") == 0) {
     test_readline_edit_commands();
     return tests_passed == tests_run ? 0 : 1;
@@ -11031,7 +11183,6 @@ int main(int argc, char **argv) {
   test_pty_readline_uses_default_prompt();
   test_pty_readline_stops_at_line_max();
   test_normal_prompt_proceeds_after_output();
-  test_normal_wrapped_prompt_proceeds_after_output();
   test_pty_ctrl_d_exits();
   test_pty_history_navigation_restores_draft();
   test_pty_readline_does_not_auto_add_history();
@@ -11113,7 +11264,6 @@ int main(int argc, char **argv) {
   test_quote_spacing_after_partial_invalid_write();
   test_unbounded_finite_output_between_sessions();
   test_unbounded_stream_then_readline_preserves_transcript();
-  test_finite_output_then_readline_preserves_transcript();
   test_multiline_stream_end_preserves_transcript_position();
   test_live_output_preserves_reverse_search_prompt(0);
   test_live_output_preserves_reverse_search_prompt(1);

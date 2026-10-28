@@ -28,7 +28,7 @@ mkdir -p "${ROOT_DIR}/build"
 # Exercise ordinary path spaces in both CMake and pkg-config consumers.
 TMP_DIR="$(mktemp -d "${ROOT_DIR}/build/consumer with spaces.XXXXXX")"
 VERSION="$(bash "${ROOT_DIR}/scripts/release_version.sh")"
-SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-2}"
+SOFTLINE_ABI_VERSION="${SOFTLINE_ABI_VERSION:-3}"
 BOOTLIN_TOOLCHAIN="${ROOT_DIR}/cmake/toolchains/bootlin-linux.cmake"
 BOOTLIN_TARGET=""
 BOOTLIN_TOOLCHAIN_ARG=""
@@ -106,6 +106,7 @@ int main(void) {
   sl_prompt_id_t held, ordinary;
   sl_prompt_queue_entry_info_t info;
   sl_prompt_source_t source;
+  int stopped;
 
   if (pipe(input_pipe) != 0 || pipe(output_pipe) != 0)
     return 2;
@@ -171,6 +172,21 @@ int main(void) {
       info.id != ordinary || info.mode != SL_PROMPT_QUEUE_MODE_STEER ||
       sl_prompt_queue_clear(sl) != SL_OK)
     return 19;
+  if (!sl->set_prompt_queue_policy || !sl->prompt_queue_set_executable ||
+      !sl->get_prompt_queue_stopped || !sl->prompt_queue_resume ||
+      sl_set_prompt_queue_policy(sl, NULL, NULL) != SL_OK ||
+      sl_get_prompt_queue_stopped(sl, &stopped) != SL_OK || stopped ||
+      sl_prompt_queue_resume(sl) != SL_OK ||
+      sl_prompt_queue_append(sl, "boundary", 0, &ordinary) != SL_OK ||
+      sl_prompt_queue_set_executable(sl, ordinary, 0) != SL_OK ||
+      sl_prompt_queue_info(sl, 0, &info) != SL_OK || info.eligible ||
+      info.policy.executable ||
+      sl_prompt_queue_take(sl, 0, &line) != SL_ERROR_INVALID || line ||
+      sl->prompt_queue_set_executable(sl, ordinary, 1) != SL_OK ||
+      sl_prompt_queue_take(sl, 0, &line) != SL_OK ||
+      strcmp(line, "boundary") != 0)
+    return 20;
+  sl_free_string(sl, line);
   if (sl->output_stream_begin(sl) != SL_OK ||
       sl->output_stream_reconcile(sl) != SL_OK ||
       sl_output_stream_reconcile(sl) != SL_OK ||

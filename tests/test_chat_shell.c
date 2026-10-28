@@ -80,6 +80,22 @@ static int geometry(struct editor *e, int rows, int columns) {
   e->bottom = rows - 1;
   return 0;
 }
+static int wait_cursor(struct editor *e, const char *text, size_t offset,
+                       int row, int column) {
+  double deadline;
+  if (wait_for(e, text, offset))
+    return 1;
+  deadline = now() + 2;
+  do {
+    if (!e->escape_length && e->row == row && e->column == column)
+      return 0;
+    if (pump(e, 20))
+      break;
+  } while (now() < deadline);
+  fprintf(stderr, "Cursor after %s: expected (%d,%d), got (%d,%d)\n", text, row,
+          column, e->row, e->column);
+  return 1;
+}
 static int preserve_draft(const char *shell, const char *history_path) {
   struct editor e;
   const char *exits[] = {"exit\n", "fail\n", "partial\n"};
@@ -106,14 +122,15 @@ static int preserve_draft(const char *shell, const char *history_path) {
     REQUIRE(prompt(&e, mark) == 0);
     REQUIRE(contains(&e, "draft first", mark));
     REQUIRE(contains(&e, "second tail", mark));
+    /* Force the text and final cursor control into separate PTY reads. */
+    e.read_limit = 1;
     mark = e.length;
     REQUIRE(send_bytes(&e, "X") == 0);
-    REQUIRE(wait_for(&e, "Xtail", mark) == 0);
-    REQUIRE(e.row == e.rows - 1 && e.column == 10);
+    REQUIRE(wait_cursor(&e, "Xtail", mark, e.rows - 1, 10) == 0);
     mark = e.length;
     REQUIRE(send_bytes(&e, "\037") == 0);
-    REQUIRE(wait_for(&e, "tail", mark) == 0);
-    REQUIRE(e.row == e.rows - 1 && e.column == 9);
+    REQUIRE(wait_cursor(&e, "tail", mark, e.rows - 1, 9) == 0);
+    e.read_limit = 0;
   }
   REQUIRE(send_bytes(&e, "!\r") == 0);
   REQUIRE(wait_records(&e, history_path, "draft first\\nsecond !tail\n") == 0);
@@ -128,13 +145,11 @@ cleanup:
 }
 static int exercise(const char *shell) {
   struct editor e;
-  int failed = 0, alias, dimension, key, quotes;
+  int failed = 0, alias, dimension, quotes;
   size_t mark, printed;
   const char *aliases[] = {"!sh\r", "/shell\033\r"};
-  const char *names[] = {"!sh", "/shell"};
-  const char *keys[] = {"\r", "\033\r", "\t"};
   const int dimensions[][2] = {{12, 50}, {30, 110}, {18, 60}};
-  char marker[64], input[64];
+  char marker[64];
   const char *position;
   if (setenv("SHELL", shell, 1))
     return 1;
@@ -142,7 +157,7 @@ static int exercise(const char *shell) {
   REQUIRE(prompt(&e, 0) == 0);
   mark = e.length;
   REQUIRE(send_bytes(&e, "!sh\t") == 0);
-  REQUIRE(wait_for(&e, "Use Enter to open the shell", mark) == 0);
+  REQUIRE(wait_for(&e, "!sh", mark) == 0);
   REQUIRE(!contains(&e, "SHELL_READY", mark));
   REQUIRE(send_bytes(&e, "\025") == 0);
   for (alias = 0; alias < 2; ++alias) {
@@ -204,19 +219,9 @@ static int exercise(const char *shell) {
   REQUIRE(send_bytes(&e, "\025start\r") == 0);
   REQUIRE(wait_for(&e, c_chat ? "Thinking..." : "[operation] processing input.",
                    mark) == 0);
-  for (alias = 0; alias < 2; ++alias)
-    for (key = 0; key < 3; ++key) {
-      mark = e.length;
-      snprintf(input, sizeof(input), "\025%s%s", names[alias], keys[key]);
-      REQUIRE(send_bytes(&e, input) == 0);
-      settle(&e, .1);
-      REQUIRE(!contains(&e, "SHELL_READY", mark));
-      REQUIRE(!contains(&e, "Q 1.", mark) && !contains(&e, "S 1.", mark));
-    }
-  REQUIRE(contains(&e, "Shell is available only between turns.", 0));
   mark = e.length;
   REQUIRE(send_bytes(&e, "\033s") == 0);
-  settle(&e, .1);
+  REQUIRE(wait_for(&e, "Shell is available only between turns.", mark) == 0);
   REQUIRE(!contains(&e, "SHELL_READY", mark));
   mark = e.length;
   REQUIRE(send_bytes(&e, "\025queued\r") == 0);
@@ -302,11 +307,10 @@ cleanup:
 static int busy_history(const char *path) {
   struct editor e;
   const char *aliases[] = {"!sh", "/shell"};
-  const char *keys[] = {"\r", "\033\r", "\t"};
   char expected[512] = "!sh\n/shell\nbusy-history-start\n", input[64];
   FILE *file;
   size_t mark;
-  int failed = 0, alias, key;
+  int failed = 0, alias;
   file = fopen(path, "wb");
   if (!file)
     return 1;
@@ -331,12 +335,6 @@ static int busy_history(const char *path) {
     REQUIRE(send_bytes(&e, "\r") == 0);
     settle(&e, .1);
     REQUIRE(records(path, expected));
-    for (key = 0; key < 3; ++key) {
-      REQUIRE(send_bytes(&e, keys[key]) == 0);
-      REQUIRE(wait_for(&e, "Shell is available only between turns.", 0) == 0);
-      settle(&e, .05);
-      REQUIRE(records(path, expected));
-    }
     REQUIRE(send_bytes(&e, "-edited\r") == 0);
     strcat(expected, aliases[alias]);
     strcat(expected, "-edited\n");

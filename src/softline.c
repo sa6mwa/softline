@@ -328,9 +328,18 @@ static int sl_prompt_queue_insert_raw(sl_impl_t *impl, int index,
   for (i = queue->len; i > index; i--)
     queue->items[i] = queue->items[i - 1];
   queue->items[index].text = copy;
+  memset(&queue->items[index].info, 0, sizeof(queue->items[index].info));
   queue->items[index].info.id = id ? id : ++queue->serial;
   queue->items[index].info.mode = mode;
   queue->items[index].info.held = held && !queue->auto_approval;
+  queue->items[index].info.policy.executable = 1;
+  queue->items[index].info.stopped = queue->stopped;
+  queue->items[index].history_recorded = 0;
+  if (id) {
+    queue->items[index].info = queue->editing.info;
+    queue->items[index].info.mode = mode;
+    queue->items[index].history_recorded = queue->editing.history_recorded;
+  }
   if (queue->editing.info.id && index < queue->editing_index)
     queue->editing_index++;
   queue->len++;
@@ -374,6 +383,8 @@ static void sl_prompt_queue_finish_requeue(sl_prompt_queue_t *queue) {
   sl_prompt_queue_finish_edit(queue);
 }
 
+static void sl_prompt_queue_schedule(sl_impl_t *impl);
+
 /* Alt-E reserves its removed slot, so restoring the original cannot allocate.
  * In-progress edits are discarded on cancellation, EOF or read failure. */
 static void sl_prompt_queue_restore_edit(sl_t *self) {
@@ -387,6 +398,7 @@ static void sl_prompt_queue_restore_edit(sl_t *self) {
   memset(&queue->editing, 0, sizeof(queue->editing));
   queue->editing_index = 0;
   (void)sl_buf_set(self, "");
+  sl_prompt_queue_schedule(impl);
 }
 
 static int sl_prompt_queue_replace_raw(sl_impl_t *impl, int index,
@@ -420,13 +432,69 @@ static char *sl_prompt_queue_take_raw(sl_prompt_queue_t *queue, int index) {
   return item;
 }
 
+/* One eligibility rule serves automatic dispatch, inspection, promotion and
+ * host takes. Explicit fresh admissions may pass the stopped backlog, but
+ * cannot resume it. Independent queries do not disturb other entries. */
+static int sl_prompt_queue_blocks(const sl_prompt_queue_t *queue,
+                                  const sl_prompt_queue_entry_info_t *before,
+                                  const sl_prompt_queue_entry_info_t *after) {
+  if (before->policy.independent || before->stopped)
+    return 0;
+  /* Suggestions do not hold ordinary user input. Steering keeps seam priority
+   * over ordinary turns, but cannot pass older managed commands or waive its
+   * own execution hold. */
+  if (!before->policy.enqueue &&
+      (before->held || (after->mode == SL_PROMPT_QUEUE_MODE_STEER &&
+                        before->mode == SL_PROMPT_QUEUE_MODE_QUEUED)))
+    return 0;
+  return queue->policy_callback || after->policy.enqueue ||
+         before->policy.enqueue || !before->policy.executable;
+}
+
+static int
+sl_prompt_queue_blocked_before(const sl_prompt_queue_t *queue,
+                               const sl_prompt_queue_entry_info_t *info,
+                               int index) {
+  int i;
+  if (info->policy.independent)
+    return 0;
+  for (i = 0; i < index; i++)
+    if (sl_prompt_queue_blocks(queue, &queue->items[i].info, info))
+      return 1;
+  return 0;
+}
+
+static int sl_prompt_queue_eligible(const sl_prompt_queue_t *queue, int index) {
+  const sl_prompt_queue_entry_info_t *info = &queue->items[index].info;
+  if (info->held || !info->policy.executable || info->stopped)
+    return 0;
+  if (info->policy.independent)
+    return 1;
+  if (queue->editing.info.id && index >= queue->editing_index &&
+      sl_prompt_queue_blocks(queue, &queue->editing.info, info))
+    return 0;
+  return !sl_prompt_queue_blocked_before(queue, info, index);
+}
+
 static int sl_prompt_queue_first_queued(const sl_prompt_queue_t *queue) {
   int i;
-  for (i = 0; queue && i < queue->len; i++)
-    if (queue->items[i].info.mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
-        !queue->items[i].info.held)
+  if (!queue || queue->host_controls_delivery)
+    return -1;
+  for (i = 0; i < queue->len; i++) {
+    const sl_prompt_queue_entry_info_t *info = &queue->items[i].info;
+    if (sl_prompt_queue_eligible(queue, i) &&
+        (info->policy.enqueue ||
+         (queue->delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
+          info->mode == SL_PROMPT_QUEUE_MODE_QUEUED)))
       return i;
+  }
   return -1;
+}
+
+static void sl_prompt_queue_schedule(sl_impl_t *impl) {
+  impl->request_queue_dispatch =
+      impl->active_readline &&
+      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0;
 }
 
 /* Approval order follows arrival identity, including an entry temporarily
@@ -480,7 +548,9 @@ static int sl_prompt_approval_index(const sl_impl_t *impl, sl_prompt_id_t id) {
 
 static char *sl_prompt_queue_deliver_raw(sl_prompt_queue_t *queue, int index) {
   sl_prompt_id_t id = queue->items[index].info.id;
-  char *text = sl_prompt_queue_take_raw(queue, index);
+  char *text;
+  queue->last_mode = queue->items[index].info.mode;
+  text = sl_prompt_queue_take_raw(queue, index);
   queue->last_id = text ? id : 0;
   return text;
 }
@@ -501,20 +571,40 @@ static void sl_prompt_queue_sync_queued_turns_delivery(sl_impl_t *impl) {
               impl->prompt_queue.host_controls_delivery
           ? SL_PROMPT_QUEUE_DELIVERY_MANUAL
           : SL_PROMPT_QUEUE_DELIVERY_AUTO;
-  if (impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->active_readline &&
-      sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0 &&
-      impl->len == 0 && !impl->prompt_queue.editing.info.id)
-    impl->request_queue_dispatch = 1;
+  sl_prompt_queue_schedule(impl);
 }
 
 static void sl_prompt_queue_stop_queued_turns(sl_impl_t *impl) {
-  if (!impl || !impl->prompt_queue.enabled ||
-      impl->prompt_queue.profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS)
+  int i;
+  if (!impl || !impl->prompt_queue.enabled)
     return;
+  if (impl->prompt_queue.profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS &&
+      !impl->prompt_queue.policy_callback &&
+      !impl->prompt_queue.editing.info.policy.enqueue) {
+    for (i = 0; i < impl->prompt_queue.len; i++)
+      if (impl->prompt_queue.items[i].info.policy.enqueue)
+        break;
+    if (i == impl->prompt_queue.len)
+      return;
+  }
   impl->prompt_queue.stopped = 1;
-  impl->prompt_queue.delivery = SL_PROMPT_QUEUE_DELIVERY_MANUAL;
+  for (i = 0; i < impl->prompt_queue.len; ++i)
+    impl->prompt_queue.items[i].info.stopped = 1;
+  if (impl->prompt_queue.editing.info.id)
+    impl->prompt_queue.editing.info.stopped = 1;
+  if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS)
+    impl->prompt_queue.delivery = SL_PROMPT_QUEUE_DELIVERY_MANUAL;
   impl->request_queue_dispatch = 0;
+}
+
+static void sl_prompt_queue_resume_backlog(sl_impl_t *impl) {
+  int i;
+  impl->prompt_queue.stopped = 0;
+  for (i = 0; i < impl->prompt_queue.len; ++i)
+    impl->prompt_queue.items[i].info.stopped = 0;
+  impl->prompt_queue.editing.info.stopped = 0;
+  sl_prompt_queue_sync_queued_turns_delivery(impl);
+  sl_prompt_queue_schedule(impl);
 }
 
 static void sl_prompt_queue_resume_on_user_turn(sl_impl_t *impl,
@@ -523,8 +613,7 @@ static void sl_prompt_queue_resume_on_user_turn(sl_impl_t *impl,
       (source != SL_PROMPT_SOURCE_DIRECT &&
        source != SL_PROMPT_SOURCE_PROMOTED))
     return;
-  impl->prompt_queue.stopped = 0;
-  sl_prompt_queue_sync_queued_turns_delivery(impl);
+  sl_prompt_queue_resume_backlog(impl);
 }
 
 static int sl_prompt_queue_require_enabled(sl_t *self, sl_impl_t *impl) {
@@ -5111,10 +5200,9 @@ static ssize_t sl_read_input_byte(sl_t *self, char *ch, int timeout_ms) {
   }
   poll_timeout_ms = timeout_ms;
   if (poll_timeout_ms < 0 &&
-      ((impl->request_queue_dispatch &&
-        impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-        !impl->len && !impl->prompt_queue.editing.info.id &&
-        !impl->history_search_active && !impl->bracketed_paste &&
+      ((impl->request_queue_dispatch && !impl->len &&
+        !impl->prompt_queue.editing.info.id && !impl->history_search_active &&
+        !impl->bracketed_paste &&
         sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) ||
        (!impl->prompt_queue.approval_id &&
         sl_prompt_approval_index(impl, 0) >= 0)))
@@ -6000,6 +6088,60 @@ static int sl_dispatch_key_binding(sl_t *self, int key,
 static int sl_prompt_queue_take_method(sl_t *self, size_t index, char **out);
 static int sl_prompt_queue_enqueue_draft_method(sl_t *self);
 
+/* Called only for deliberate submission. Passive enqueue never classifies or
+ * clears a cancellation stop. Requeueing retains the reserved identity/slot. */
+static int sl_prompt_queue_admit(sl_t *self, sl_prompt_queue_mode_t mode,
+                                 int *admitted) {
+  sl_impl_t *impl = sl_impl(self);
+  sl_prompt_queue_t *queue = &impl->prompt_queue;
+  sl_prompt_queue_policy_t policy = {0, 0, 1};
+  int rc, editing = queue->editing.info.id != 0;
+  int promote = mode == SL_PROMPT_QUEUE_MODE_STEER;
+  int index = editing ? queue->editing_index : queue->len;
+  *admitted = 0;
+  if (!queue->enabled || !impl->len)
+    return SL_OK;
+  if (editing) {
+    policy = queue->editing.info.policy;
+    if (mode == SL_PROMPT_QUEUE_MODE_QUEUED)
+      mode = queue->editing.info.mode;
+  }
+  if (queue->policy_callback) {
+    rc = queue->policy_callback(self, impl->buf, mode, &policy,
+                                queue->policy_userdata);
+    if (rc != SL_OK) {
+      sl_set_error(self, "prompt queue policy rejected submission");
+      return rc;
+    }
+  }
+  if ((policy.enqueue != 0 && policy.enqueue != 1) ||
+      (policy.independent != 0 && policy.independent != 1) ||
+      (policy.executable != 0 && policy.executable != 1) ||
+      (!policy.enqueue && policy.independent)) {
+    sl_set_error(self, "prompt queue policy fields must be valid booleans");
+    return SL_ERROR_INVALID;
+  }
+  /* An edited managed entry cannot escape its queue or cancellation state. */
+  if (editing && queue->editing.info.policy.enqueue)
+    policy.enqueue = 1;
+  if (!policy.enqueue &&
+      !(editing &&
+        (queue->policy_callback || !queue->editing.info.policy.executable ||
+         sl_prompt_queue_blocked_before(queue, &queue->editing.info, index))))
+    return SL_OK;
+  rc = sl_prompt_queue_enqueue_draft_method(self);
+  if (rc != SL_OK)
+    return rc;
+  /* The committed entry occupies its original reserved position after edit. */
+  queue->items[index].info.policy = policy;
+  queue->items[index].info.mode = mode;
+  if (!editing || promote)
+    queue->items[index].info.stopped = 0;
+  sl_prompt_queue_schedule(impl);
+  *admitted = 1;
+  return SL_OK;
+}
+
 static void sl_prompt_queue_bell(sl_impl_t *impl) {
   if (impl)
     (void)write(impl->output_fd, "\a", 1);
@@ -6049,6 +6191,22 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
     *submit = 1;
     return SL_OK;
   }
+  if (impl->len && (key == SL_KEY_ENTER ||
+                    (keys->submit_or_promote_newest != SL_KEY_NONE &&
+                     (sl_key_t)key == keys->submit_or_promote_newest))) {
+    int admitted = 0;
+    rc = sl_prompt_queue_admit(self,
+                               (sl_key_t)key == keys->submit_or_promote_newest
+                                   ? SL_PROMPT_QUEUE_MODE_STEER
+                                   : SL_PROMPT_QUEUE_MODE_QUEUED,
+                               &admitted);
+    if (admitted || rc != SL_OK) {
+      *handled = 1;
+      if (rc != SL_OK)
+        sl_prompt_queue_bell(impl);
+      return SL_OK;
+    }
+  }
   if (keys->enqueue_draft != SL_KEY_NONE &&
       (sl_key_t)key == keys->enqueue_draft) {
     if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS &&
@@ -6088,6 +6246,16 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
   if (keys->submit_or_promote_newest != SL_KEY_NONE &&
       (sl_key_t)key == keys->submit_or_promote_newest) {
     *handled = 1;
+    if (impl->len == 0 && impl->prompt_queue.len &&
+        impl->prompt_queue.items[impl->prompt_queue.len - 1]
+            .info.policy.enqueue) {
+      sl_prompt_queue_entry_info_t *info =
+          &impl->prompt_queue.items[impl->prompt_queue.len - 1].info;
+      info->mode = SL_PROMPT_QUEUE_MODE_STEER;
+      info->stopped = 0;
+      sl_prompt_queue_schedule(impl);
+      return SL_OK;
+    }
     if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS &&
         impl->statusline.busy) {
       if (impl->len != 0) {
@@ -6101,6 +6269,7 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
           sl_set_error(self, "failed to queue steer draft");
           return SL_ERROR_NOMEM;
         }
+        impl->prompt_queue.items[impl->prompt_queue.len - 1].info.stopped = 0;
         if (impl->history_auto_add) {
           rc = sl_history_add_impl(self, impl->buf);
           if (rc != SL_OK) {
@@ -6109,6 +6278,8 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
             free(discard);
             return rc;
           }
+          impl->prompt_queue.items[impl->prompt_queue.len - 1]
+              .history_recorded = 1;
         }
         if (sl_buf_set(self, "") != 0) {
           char *discard = sl_prompt_queue_take_raw(&impl->prompt_queue,
@@ -6127,6 +6298,8 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
       }
       impl->prompt_queue.items[impl->prompt_queue.len - 1].info.mode =
           SL_PROMPT_QUEUE_MODE_STEER;
+      impl->prompt_queue.items[impl->prompt_queue.len - 1].info.stopped = 0;
+      sl_prompt_queue_schedule(impl);
       return SL_OK;
     }
     if (impl->len != 0) {
@@ -6141,6 +6314,23 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
       sl_set_error(self, "queued prompt requires explicit approval");
       sl_prompt_queue_bell(impl);
       return SL_OK;
+    }
+    /* Promotion is explicit, but never waives execution readiness. A managed
+     * entry resumes only itself; legacy promotion keeps new-turn behavior. */
+    if (!impl->prompt_queue.items[impl->prompt_queue.len - 1]
+             .info.policy.executable) {
+      sl_prompt_queue_bell(impl);
+      return SL_OK;
+    }
+    {
+      int index = impl->prompt_queue.len - 1;
+      int stopped = impl->prompt_queue.items[index].info.stopped;
+      impl->prompt_queue.items[index].info.stopped = 0;
+      if (!sl_prompt_queue_eligible(&impl->prompt_queue, index)) {
+        impl->prompt_queue.items[index].info.stopped = stopped;
+        sl_prompt_queue_bell(impl);
+        return SL_OK;
+      }
     }
     return sl_prompt_queue_take_method(
         self, (size_t)(impl->prompt_queue.len - 1), promoted);
@@ -6282,6 +6472,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   impl->request_queue_dispatch = 0;
   impl->control_x_pending = 0;
   impl->active_readline = 1;
+  sl_prompt_queue_schedule(impl);
   if (!sl_surface_is_native(impl->output_surface))
     sl_render_store_clear(impl);
   impl->active_prompt =
@@ -6315,6 +6506,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
     char paste_bytes[8];
     size_t paste_len;
     int key;
+    int queue_key_checked = 0;
     sl_key_action_t action;
     sl_edit_end(&impl->edit);
     if (!queue_dispatch)
@@ -6380,7 +6572,6 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         impl->len == 0 && !impl->prompt_queue.editing.info.id &&
         !impl->history_search_active && !impl->bracketed_paste &&
         !impl->control_x_pending &&
-        impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
         sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
       queued = sl_prompt_queue_deliver_raw(
           &impl->prompt_queue,
@@ -6429,6 +6620,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         if (impl->idle_callback)
           impl->idle_callback(self, impl->idle_userdata);
         if (impl->request_submit) {
+          sl_history_search_accept(self, &search);
           done = 1;
           break;
         }
@@ -6635,6 +6827,7 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
         int queue_submit;
         queue_handled = 0;
         queue_submit = 0;
+        queue_key_checked = 1;
         if (sl_handle_prompt_queue_key(self, key, &queue_handled, &queue_submit,
                                        &promoted) != SL_OK) {
           failed = 1;
@@ -6832,6 +7025,26 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       }
       break;
     }
+    /* Custom submit actions obey the same admission policy as Enter. */
+    if (done && !failed && !cancelled && !interrupted && !suspended && !eof &&
+        !promoted && !queued && impl->len && !impl->history_search_active &&
+        !queue_key_checked) {
+      int admitted = 0;
+      int status = sl_prompt_queue_admit(
+          self,
+          impl->prompt_queue.keys.submit_or_promote_newest != SL_KEY_NONE &&
+                  (sl_key_t)key ==
+                      impl->prompt_queue.keys.submit_or_promote_newest
+              ? SL_PROMPT_QUEUE_MODE_STEER
+              : SL_PROMPT_QUEUE_MODE_QUEUED,
+          &admitted);
+      if (admitted || status != SL_OK) {
+        done = 0;
+        impl->request_submit = 0;
+        if (status != SL_OK)
+          sl_prompt_queue_bell(impl);
+      }
+    }
     /* Every submit route (Enter, key binding, idle/watch callback) shares the
      * hold gate. Editing never becomes implicit approval. */
     if (done && !failed && !cancelled && !interrupted && !suspended && !eof &&
@@ -7004,7 +7217,9 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
   }
   {
     sl_prompt_source_t result_source;
-    result_source = promoted ? SL_PROMPT_SOURCE_PROMOTED
+    result_source = promoted || (queued && impl->prompt_queue.last_mode ==
+                                               SL_PROMPT_QUEUE_MODE_STEER)
+                        ? SL_PROMPT_SOURCE_PROMOTED
                     : queued ? SL_PROMPT_SOURCE_QUEUED
                              : SL_PROMPT_SOURCE_DIRECT;
     if (result) {
@@ -7015,7 +7230,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       sl_set_readline_status(self, SL_READLINE_SUBMITTED);
       if (source)
         *source = result_source;
-      sl_prompt_queue_resume_on_user_turn(impl, result_source);
+      if (!queued)
+        sl_prompt_queue_resume_on_user_turn(impl, result_source);
     }
   }
   sl_history_search_cleanup(self, &search);
@@ -7042,9 +7258,8 @@ static char *sl_next_prompt_method(sl_t *self, const char *prompt,
   if (!impl)
     return NULL;
   impl->prompt_queue.last_id = 0;
-  if (sl_prompt_queue_enabled(impl) &&
-      impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      !impl->readline_suspended && !impl->prompt_queue.editing.info.id &&
+  if (sl_prompt_queue_enabled(impl) && !impl->readline_suspended &&
+      !impl->prompt_queue.editing.info.id &&
       sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0) {
     result = sl_prompt_queue_deliver_raw(
         &impl->prompt_queue, sl_prompt_queue_first_queued(&impl->prompt_queue));
@@ -7055,7 +7270,9 @@ static char *sl_next_prompt_method(sl_t *self, const char *prompt,
     }
     sl_set_readline_status(self, SL_READLINE_SUBMITTED);
     if (source)
-      *source = SL_PROMPT_SOURCE_QUEUED;
+      *source = impl->prompt_queue.last_mode == SL_PROMPT_QUEUE_MODE_STEER
+                    ? SL_PROMPT_SOURCE_PROMOTED
+                    : SL_PROMPT_SOURCE_QUEUED;
     return result;
   }
   result = sl_readline_impl(self, prompt, 1, source);
@@ -7295,11 +7512,7 @@ static int sl_prompt_queue_insert_mode(sl_t *self, size_t index,
   }
   if (out_id)
     *out_id = impl->prompt_queue.items[index].info.id;
-  if (!impl->prompt_queue.items[index].info.held &&
-      mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
-      impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->active_readline)
-    impl->request_queue_dispatch = 1;
+  sl_prompt_queue_schedule(impl);
   return SL_OK;
 }
 
@@ -7339,10 +7552,7 @@ static int sl_set_auto_approval_method(sl_t *self, int enabled) {
       impl->prompt_queue.items[i].info.held = 0;
     impl->prompt_queue.editing.info.held = 0;
     impl->prompt_queue.approval_id = 0;
-    if (impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-        impl->active_readline &&
-        sl_prompt_queue_first_queued(&impl->prompt_queue) >= 0)
-      impl->request_queue_dispatch = 1;
+    sl_prompt_queue_schedule(impl);
   }
   return SL_OK;
 }
@@ -7398,8 +7608,8 @@ static int sl_prompt_queue_take_method(sl_t *self, size_t index, char **out) {
                  "prompt queue take requires an output and a valid index");
     return SL_ERROR_INVALID;
   }
-  if (impl->prompt_queue.items[index].info.held) {
-    sl_set_error(self, "queued prompt requires explicit approval");
+  if (!sl_prompt_queue_eligible(&impl->prompt_queue, (int)index)) {
+    sl_set_error(self, "queued prompt is not eligible for delivery");
     return SL_ERROR_INVALID;
   }
   *out = sl_prompt_queue_deliver_raw(&impl->prompt_queue, (int)index);
@@ -7407,6 +7617,7 @@ static int sl_prompt_queue_take_method(sl_t *self, size_t index, char **out) {
     sl_set_error(self, "failed to take prompt queue entry");
     return SL_ERROR;
   }
+  sl_prompt_queue_schedule(impl);
   return SL_OK;
 }
 
@@ -7433,12 +7644,7 @@ static int sl_prompt_queue_set_mode_method(sl_t *self, size_t index,
     return SL_ERROR_INVALID;
   }
   impl->prompt_queue.items[index].info.mode = mode;
-  if (mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
-      !impl->prompt_queue.items[index].info.held &&
-      impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-      impl->active_readline && impl->len == 0 &&
-      !impl->prompt_queue.editing.info.id)
-    impl->request_queue_dispatch = 1;
+  sl_prompt_queue_schedule(impl);
   return SL_OK;
 }
 
@@ -7453,6 +7659,7 @@ static int sl_prompt_queue_info_method(const sl_t *self, size_t index,
     return SL_ERROR_INVALID;
   }
   *out = impl->prompt_queue.items[index].info;
+  out->eligible = sl_prompt_queue_eligible(&impl->prompt_queue, (int)index);
   return SL_OK;
 }
 
@@ -7465,6 +7672,7 @@ sl_prompt_queue_draft_info_method(const sl_t *self,
   if (!impl || !out)
     return SL_ERROR_INVALID;
   *out = impl->prompt_queue.editing.info;
+  out->eligible = 0;
   return SL_OK;
 }
 
@@ -7491,10 +7699,7 @@ static int sl_prompt_queue_approve_method(sl_t *self, sl_prompt_id_t id) {
     if (impl->prompt_queue.approval_id == id)
       impl->prompt_queue.approval_id = 0;
     info->held = 0;
-    if (info->mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
-        impl->prompt_queue.delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO &&
-        impl->active_readline)
-      impl->request_queue_dispatch = 1;
+    sl_prompt_queue_schedule(impl);
     return SL_OK;
   }
   sl_set_error(self, "prompt queue identity does not exist");
@@ -7522,6 +7727,7 @@ static int sl_prompt_queue_reject_method(sl_t *self, sl_prompt_id_t id) {
     /* The read loop owns the retired search allocation and frees it on
      * exit/restart. Ctrl-G can no longer restore rejected content. */
     sl_history_nav_reset(impl);
+    sl_prompt_queue_schedule(impl);
     return SL_OK;
   }
   for (i = 0; i < impl->prompt_queue.len; i++) {
@@ -7532,6 +7738,7 @@ static int sl_prompt_queue_reject_method(sl_t *self, sl_prompt_id_t id) {
       if (impl->prompt_queue.approval_id == id)
         impl->prompt_queue.approval_id = 0;
       free(sl_prompt_queue_take_raw(&impl->prompt_queue, i));
+      sl_prompt_queue_schedule(impl);
       return SL_OK;
     }
   }
@@ -7557,7 +7764,7 @@ static int sl_prompt_queue_clear_method(sl_t *self) {
 
 static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
   sl_impl_t *impl;
-  int rc;
+  int rc, managed_edit;
   impl = sl_impl(self);
   if (sl_prompt_queue_require_enabled(self, impl) != SL_OK)
     return SL_ERROR_INVALID;
@@ -7575,7 +7782,10 @@ static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
     sl_set_error(self, "failed to queue active draft");
     return SL_ERROR_NOMEM;
   }
-  if (impl->history_auto_add) {
+  if (impl->history_auto_add &&
+      (!impl->prompt_queue.editing.history_recorded ||
+       (!impl->prompt_queue.policy_callback &&
+        !impl->prompt_queue.editing.info.policy.enqueue))) {
     int status = sl_history_add_impl(self, impl->buf);
     if (status != SL_OK) {
       char *discard = sl_prompt_queue_take_raw(&impl->prompt_queue,
@@ -7583,14 +7793,69 @@ static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
       free(discard);
       return status;
     }
+    impl->prompt_queue.items[impl->prompt_queue.len - 1].history_recorded = 1;
   }
   if (sl_buf_set(self, "") != 0) {
+    free(sl_prompt_queue_take_raw(&impl->prompt_queue,
+                                  impl->prompt_queue.len - 1));
     sl_set_error(self, "failed to clear queued draft");
     return SL_ERROR;
   }
+  managed_edit = impl->prompt_queue.editing.info.policy.enqueue;
   sl_prompt_queue_finish_requeue(&impl->prompt_queue);
   impl->request_submit = 0;
   sl_history_nav_reset(impl);
+  if (managed_edit)
+    sl_prompt_queue_schedule(impl);
+  return SL_OK;
+}
+
+static int sl_set_prompt_queue_policy_method(
+    sl_t *self, sl_prompt_queue_policy_callback_t callback, void *userdata) {
+  sl_impl_t *impl = sl_impl(self);
+  if (sl_prompt_queue_require_enabled(self, impl) != SL_OK)
+    return SL_ERROR_INVALID;
+  impl->prompt_queue.policy_callback = callback;
+  impl->prompt_queue.policy_userdata = userdata;
+  sl_prompt_queue_schedule(impl);
+  return SL_OK;
+}
+
+static int sl_prompt_queue_set_executable_method(sl_t *self, sl_prompt_id_t id,
+                                                 int executable) {
+  sl_impl_t *impl = sl_impl(self);
+  sl_prompt_queue_entry_info_t *info = NULL;
+  int i;
+  if (sl_prompt_queue_require_enabled(self, impl) != SL_OK || !id ||
+      (executable != 0 && executable != 1))
+    return SL_ERROR_INVALID;
+  if (impl->prompt_queue.editing.info.id == id)
+    info = &impl->prompt_queue.editing.info;
+  for (i = 0; !info && i < impl->prompt_queue.len; i++)
+    if (impl->prompt_queue.items[i].info.id == id)
+      info = &impl->prompt_queue.items[i].info;
+  if (!info) {
+    sl_set_error(self, "prompt queue identity does not exist");
+    return SL_ERROR_INVALID;
+  }
+  info->policy.executable = executable;
+  sl_prompt_queue_schedule(impl);
+  return SL_OK;
+}
+
+static int sl_get_prompt_queue_stopped_method(const sl_t *self, int *out) {
+  const sl_impl_t *impl = sl_impl_const(self);
+  if (!impl || !out)
+    return SL_ERROR_INVALID;
+  *out = impl->prompt_queue.stopped;
+  return SL_OK;
+}
+
+static int sl_prompt_queue_resume_method(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  if (sl_prompt_queue_require_enabled(self, impl) != SL_OK)
+    return SL_ERROR_INVALID;
+  sl_prompt_queue_resume_backlog(impl);
   return SL_OK;
 }
 
@@ -7604,12 +7869,13 @@ sl_set_prompt_queue_delivery_method(sl_t *self,
     sl_set_error(self, "invalid prompt queue delivery mode");
     return SL_ERROR_INVALID;
   }
+  impl->prompt_queue.host_controls_delivery =
+      delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL;
   if (impl->prompt_queue.profile == SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) {
-    impl->prompt_queue.host_controls_delivery =
-        delivery == SL_PROMPT_QUEUE_DELIVERY_MANUAL;
     sl_prompt_queue_sync_queued_turns_delivery(impl);
   } else
     impl->prompt_queue.delivery = delivery;
+  sl_prompt_queue_schedule(impl);
   return SL_OK;
 }
 
@@ -7639,8 +7905,8 @@ sl_set_prompt_queue_profile_method(sl_t *self,
   impl->prompt_queue.profile = profile;
   impl->prompt_queue.host_controls_delivery = 0;
   if (profile != SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) {
-    impl->prompt_queue.stopped = 0;
     impl->prompt_queue.delivery = SL_PROMPT_QUEUE_DELIVERY_AUTO;
+    sl_prompt_queue_resume_backlog(impl);
   }
   sl_prompt_queue_profile_keys(profile, &impl->prompt_queue.keys);
   sl_prompt_queue_sync_queued_turns_delivery(impl);
@@ -8187,6 +8453,10 @@ static sl_t *sl_create_with_config_impl(const sl_config_t *config) {
   self->get_prompt_queue_profile = sl_get_prompt_queue_profile_method;
   self->set_prompt_queue_keys = sl_set_prompt_queue_keys_method;
   self->get_prompt_queue_keys = sl_get_prompt_queue_keys_method;
+  self->set_prompt_queue_policy = sl_set_prompt_queue_policy_method;
+  self->prompt_queue_set_executable = sl_prompt_queue_set_executable_method;
+  self->get_prompt_queue_stopped = sl_get_prompt_queue_stopped_method;
+  self->prompt_queue_resume = sl_prompt_queue_resume_method;
   impl->input_fd = config->input_fd >= 0 ? config->input_fd : STDIN_FILENO;
   impl->output_fd = config->output_fd >= 0 ? config->output_fd : STDOUT_FILENO;
   impl->screen_width = config->screen_width;
@@ -8524,6 +8794,33 @@ int sl_get_prompt_queue_keys(const sl_t *self, sl_prompt_queue_keys_t *out) {
   if (!self || !self->get_prompt_queue_keys)
     return SL_ERROR_INVALID;
   return self->get_prompt_queue_keys(self, out);
+}
+
+int sl_set_prompt_queue_policy(sl_t *self,
+                               sl_prompt_queue_policy_callback_t callback,
+                               void *userdata) {
+  if (!self || !self->set_prompt_queue_policy)
+    return SL_ERROR_INVALID;
+  return self->set_prompt_queue_policy(self, callback, userdata);
+}
+
+int sl_prompt_queue_set_executable(sl_t *self, sl_prompt_id_t id,
+                                   int executable) {
+  if (!self || !self->prompt_queue_set_executable)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_set_executable(self, id, executable);
+}
+
+int sl_get_prompt_queue_stopped(const sl_t *self, int *out) {
+  if (!self || !self->get_prompt_queue_stopped)
+    return SL_ERROR_INVALID;
+  return self->get_prompt_queue_stopped(self, out);
+}
+
+int sl_prompt_queue_resume(sl_t *self) {
+  if (!self || !self->prompt_queue_resume)
+    return SL_ERROR_INVALID;
+  return self->prompt_queue_resume(self);
 }
 
 int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme) {

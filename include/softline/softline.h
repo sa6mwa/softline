@@ -286,9 +286,9 @@ typedef enum sl_prompt_source {
   SL_PROMPT_SOURCE_NONE = 0,
   /** The user submitted the active editor with Enter or a mapped submit key. */
   SL_PROMPT_SOURCE_DIRECT = 1,
-  /** An oldest-first queued entry was delivered automatically. */
+  /** An eligible queued entry was delivered automatically. */
   SL_PROMPT_SOURCE_QUEUED = 2,
-  /** The user promoted the newest queued entry for immediate host delivery. */
+  /** A promoted entry or a policy-managed steering entry was delivered. */
   SL_PROMPT_SOURCE_PROMOTED = 3
 } sl_prompt_source_t;
 
@@ -309,6 +309,29 @@ typedef enum sl_prompt_queue_mode {
   SL_PROMPT_QUEUE_MODE_STEER = 1
 } sl_prompt_queue_mode_t;
 
+/** Optional host policy for a deliberate editor submission. All fields are
+ * booleans. Zero enqueue retains the selected profile's normal behavior. */
+typedef struct sl_prompt_queue_policy {
+  /** Admit through the visible queue even when idle. */
+  int enqueue;
+  /** Permit this entry to pass unrelated blocked entries (read-only queries).
+   * Other entries retain their positions, holds and delivery intentions. */
+  int independent;
+  /** Host execution boundary is ready; independent of human approval. */
+  int executable;
+} sl_prompt_queue_policy_t;
+
+/** Classify a nonempty deliberate submission before admission. policy starts
+ * with {0,0,1}, or the edited entry's policy. Return SL_OK to accept the
+ * policy. Failure leaves the draft intact. mode reports Enter versus steering
+ * intent. Runs on the owner thread; inspect state only, do not mutate the
+ * editor or queue, recurse into input, destroy self, or perform blocking work.
+ * Softline recognizes no application command names. Passive enqueues do not
+ * invoke it. */
+typedef int (*sl_prompt_queue_policy_callback_t)(
+    sl_t *self, const char *text, sl_prompt_queue_mode_t mode,
+    sl_prompt_queue_policy_t *policy, void *userdata);
+
 /** Identity and independent delivery controls for one queued prompt. */
 typedef struct sl_prompt_queue_entry_info {
   /** Stable handle-local identity, preserved by replacement and editing. */
@@ -317,6 +340,14 @@ typedef struct sl_prompt_queue_entry_info {
   sl_prompt_queue_mode_t mode;
   /** Nonzero until UI/API approval or conversation-wide auto-approval. */
   int held;
+  /** Admission and execution policy, preserved through editing/requeue. */
+  sl_prompt_queue_policy_t policy;
+  /** Entry belongs to a backlog paused by cancellation. */
+  int stopped;
+  /** May be taken by an owner-thread consumer now, considering holds, stopped
+   * state and ordering. Automatic delivery additionally respects manual mode
+   * and, for ordinary profile entries, busy/steering behavior. */
+  int eligible;
 } sl_prompt_queue_entry_info_t;
 
 /** Built-in prompt queue interaction mappings. */
@@ -597,7 +628,8 @@ struct sl {
   /** Move the active cursor to a byte offset, clamped to a UTF-8 cluster
    * boundary. */
   int (*set_cursor)(sl_t *self, size_t cursor);
-  /** Submit the active buffer from a callback or idle hook. */
+  /** Submit the active buffer or reverse-search match through queue admission.
+   * Idle/watch submissions have ordinary queued intent. */
   int (*submit)(sl_t *self);
   /** Cancel the active readline() call from a callback or idle hook. */
   int (*cancel)(sl_t *self);
@@ -666,7 +698,8 @@ struct sl {
                              sl_prompt_id_t *out_id);
   /** Replace one oldest-first queue entry with nonempty text. */
   int (*prompt_queue_replace)(sl_t *self, size_t index, const char *text);
-  /** Remove one oldest-first queue entry and transfer it to the caller. */
+  /** Remove one eligible queue entry and transfer it to the caller. Refuses
+   * approval/execution holds, stopped entries and policy ordering barriers. */
   int (*prompt_queue_take)(sl_t *self, size_t index, char **out);
   /** Clear queued entries without changing the active editor draft. */
   int (*prompt_queue_clear)(sl_t *self);
@@ -710,7 +743,8 @@ struct sl {
   int (*get_auto_approval)(const sl_t *self, int *out);
   /** Set automatic or host-controlled queued delivery for next_prompt(). This
    * also controls whether queued-turns releases ordinary entries on idle.
-   * Busy queued-turns always retains entries. */
+   * Busy queued-turns retains ordinary profile entries; managed entries use
+   * their explicit execution readiness. */
   int (*set_prompt_queue_delivery)(sl_t *self,
                                    sl_prompt_queue_delivery_t delivery);
   /** Return this handle's queued delivery mode. */
@@ -726,6 +760,22 @@ struct sl {
   int (*set_prompt_queue_keys)(sl_t *self, const sl_prompt_queue_keys_t *keys);
   /** Return this handle's built-in prompt queue action keys. */
   int (*get_prompt_queue_keys)(const sl_t *self, sl_prompt_queue_keys_t *out);
+  /** Install an optional owner-thread submission classifier; NULL removes it.
+   * Policy-managed entries use their explicit execution boundary instead of
+   * the busy flag. Manual delivery still prevents automatic release. */
+  int (*set_prompt_queue_policy)(sl_t *self,
+                                 sl_prompt_queue_policy_callback_t callback,
+                                 void *userdata);
+  /** Set execution readiness by identity, including an active edit. Readiness
+   * never approves or resumes an entry. Schedules native delivery when ready.
+   */
+  int (*prompt_queue_set_executable)(sl_t *self, sl_prompt_id_t id,
+                                     int executable);
+  /** Inspect cancellation's backlog stop, independently of delivery mode. */
+  int (*get_prompt_queue_stopped)(const sl_t *self, int *out);
+  /** Explicitly resume the retained backlog without changing manual delivery,
+   * approval, execution readiness or editing state. */
+  int (*prompt_queue_resume)(sl_t *self);
   /** Register an application-owned descriptor to wake active TTY editing;
    * non-TTY handles reject watches. */
   int (*watch_add)(sl_t *self, int fd, unsigned int events,
@@ -1145,6 +1195,21 @@ int sl_set_prompt_queue_keys(sl_t *self, const sl_prompt_queue_keys_t *keys);
 /** Return built-in queue action keys through out. */
 int sl_get_prompt_queue_keys(const sl_t *self, sl_prompt_queue_keys_t *out);
 
+/** Install or remove the deliberate-submission policy callback. */
+int sl_set_prompt_queue_policy(sl_t *self,
+                               sl_prompt_queue_policy_callback_t callback,
+                               void *userdata);
+
+/** Change one queued/edited identity's execution readiness (0 or 1). */
+int sl_prompt_queue_set_executable(sl_t *self, sl_prompt_id_t id,
+                                   int executable);
+
+/** Read the retained backlog's stopped state. */
+int sl_get_prompt_queue_stopped(const sl_t *self, int *out);
+
+/** Resume the backlog explicitly; all other delivery gates still apply. */
+int sl_prompt_queue_resume(sl_t *self);
+
 /** Select a built-in theme for the complete interactive prompt UI. */
 int sl_set_prompt_theme(sl_t *self, sl_prompt_theme_t theme);
 
@@ -1235,7 +1300,9 @@ size_t sl_cursor(const sl_t *self);
  * boundaries. */
 int sl_set_cursor(sl_t *self, size_t cursor);
 
-/** Submit the active readline() buffer from inside a callback. */
+/** Submit the active readline() buffer or reverse-search match from a callback.
+ * Applies queue admission; idle/watch submissions have ordinary queued intent.
+ */
 int sl_submit(sl_t *self);
 
 /** Cancel the active readline() operation from inside a callback. */

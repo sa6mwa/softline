@@ -23,6 +23,51 @@ cleanup:
   close_editor(&e);
   return failed;
 }
+static int policy(void) {
+  struct editor e;
+  size_t i;
+  const char *bursts[] = {"/command\r\033eX\r",
+                          "/hold review\r\033s",
+                          "/status\r",
+                          "\033\r\033s",
+                          "\033",
+                          "/status\r",
+                          "/goal resume\r",
+                          "/bad\r\033s",
+                          "\r",
+                          "/coroutine\r",
+                          "ordinary\r",
+                          "/exception\r\033s",
+                          "\r",
+                          "/metadata\r",
+                          "/hold callback",
+                          "/command callback",
+                          "\022",
+                          "\022",
+                          "/hold callback",
+                          "/command callback",
+                          "\022",
+                          "\022",
+                          "/hold requeue\r\033s",
+                          "\033e\033r\t",
+                          "/hold requeue\r\033s",
+                          "\033e\033r",
+                          "\033eX\r\033s",
+                          ""};
+  int failed = 0;
+  REQUIRE(start(&e, "tests/lua-fixtures/queue-policy.lua", NULL, NULL) == 0);
+  for (i = 0; i < sizeof(bursts) / sizeof(bursts[0]); i++) {
+    char prompt[32];
+    snprintf(prompt, sizeof(prompt), "policy-%lu> ", (unsigned long)i + 1);
+    REQUIRE(wait_for(&e, prompt, 0) == 0);
+    REQUIRE(send_bytes(&e, bursts[i]) == 0);
+  }
+  REQUIRE(wait_for(&e, "lua queue policy passed", 0) == 0);
+  REQUIRE(finish(&e) == 0);
+cleanup:
+  close_editor(&e);
+  return failed;
+}
 static int history(void) {
   struct editor e;
   const char *methods[] = {"readline", "next_prompt"};
@@ -248,9 +293,6 @@ static int stored_history(const char *build, const char *filename) {
   REQUIRE(send_bytes(&e, "history-first\r") == 0);
   REQUIRE(wait_records(&e, path, "history-first\n") == 0);
   REQUIRE(wait_for(&e, c_chat ? "Thinking..." : "\033[?2004h", offset) == 0);
-  REQUIRE(send_bytes(&e, "!sh\r") == 0);
-  REQUIRE(wait_for(&e, "Shell is available only between turns.", offset) == 0);
-  REQUIRE(records(path, "history-first\n"));
   REQUIRE(send_bytes(&e, "\025queued-before-dispatch\r") == 0);
   REQUIRE(wait_records(&e, path, "history-first\nqueued-before-dispatch\n") ==
           0);
@@ -372,6 +414,8 @@ int main(int argc, char **argv) {
                   "lua idle callback smoke passed");
   if (!strcmp(argv[1], "approval"))
     return approval();
+  if (!strcmp(argv[1], "policy"))
+    return policy();
   if (!strcmp(argv[1], "watch_gc"))
     return simple("tests/lua_watch_file_gc.lua",
                   "lua watched file retention passed");

@@ -79,3 +79,7 @@ sl_inject_queued_prompt
 sl_inject_steer_prompt
 sl_set_auto_approval
 sl_get_auto_approval
+sl_set_prompt_queue_policy
+sl_prompt_queue_set_executable
+sl_get_prompt_queue_stopped
+sl_prompt_queue_resume

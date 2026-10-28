@@ -33,6 +33,63 @@ local function is_shell_command(line)
   return line == "!sh" or line == "/shell"
 end
 
+local function command_named(line, name)
+  return line == name or line:sub(1, #name + 1) == name .. " "
+end
+
+local function is_local_command(line)
+  return line == "/status" or line == "/resume" or command_named(line, "/approve")
+end
+
+local function command_ready(line, mode, at_seam)
+  return is_local_command(line) or not busy or
+      (at_seam and mode == softline.QUEUE_MODE_STEER and not is_shell_command(line))
+end
+
+local function sync_queue_readiness(at_seam)
+  local draft = sl:queue_draft_info()
+  if draft then
+    assert(sl:queue_set_executable(draft.id, not busy or draft.policy.independent))
+  end
+  for index = 1, sl:queue_count() do
+    local info = assert(sl:queue_info(index))
+    local text = assert(sl:queue_peek(index))
+    assert(sl:queue_set_executable(info.id, command_ready(text, info.mode, at_seam)))
+  end
+end
+
+local function command_message(message)
+  assert(sl:set_status_message_prefix(message and "! " or ""))
+  assert(sl:set_status_message(message or " "))
+  assert(sl:output_stream_reconcile())
+end
+
+local function handle_command(line)
+  if line == "/status" then
+    command_message(string.format("Status: %s / backlog %s / %d queued / auto-approval %s",
+        busy and "busy" or "idle", sl:queue_stopped() and "paused" or "running",
+        sl:queue_count(), sl:get_auto_approval() and "on" or "off"))
+  elseif line == "/resume" then
+    assert(sl:queue_resume())
+    command_message("Backlog resumed.")
+  elseif command_named(line, "/approve") then
+    local enabled = sl:get_auto_approval()
+    if line == "/approve" then enabled = not enabled
+    elseif line == "/approve on" then enabled = true
+    elseif line == "/approve off" then enabled = false
+    else command_message("Usage: /approve [on|off]"); return true end
+    assert(sl:set_auto_approval(enabled))
+    command_message(enabled and "Auto-approval ON (all waiting requests approved)."
+        or "Auto-approval OFF (new requests need approval).")
+  elseif command_named(line, "/steer") then
+    assert(sl:output_stream_write_quoted_prompt(line))
+    assert(sl:output_stream_write("Steering applied.\n"))
+  else
+    return false
+  end
+  return true
+end
+
 -- Only the idle owner loop may hand the terminal to another process. End the
 -- session to release input/scrolling, then begin a fresh frame at the shell's
 -- final cursor position (including after clear or resize). Keep the handle,
@@ -47,7 +104,8 @@ local function run_shell(preserve_draft)
   assert(sl:output_stream_begin())
   stream_open = true
   if not preserve_draft then
-    assert(sl:set_status_message(nil))
+    assert(sl:set_status_message_prefix(""))
+    assert(sl:set_status_message(" "))
   end
 end
 
@@ -71,8 +129,10 @@ end
 local function set_chat_busy(value)
   assert(sl:set_status_spinner(value))
   assert(sl:set_status_busy(value))
-  assert(sl:set_status_message(nil))
+  assert(sl:set_status_message_prefix(value and "! " or ""))
+  assert(sl:set_status_message(value and "Thinking..." or " "))
   busy = value
+  sync_queue_readiness(false)
 end
 
 local function consume_active_operation_input(line)
@@ -80,24 +140,25 @@ local function consume_active_operation_input(line)
 end
 
 local function consume_steers()
+  sync_queue_readiness(true)
   local index = 1
   while index <= sl:queue_count() do
-    if sl:queue_mode(index) == softline.QUEUE_MODE_STEER then
+    local info = assert(sl:queue_info(index))
+    if info.mode == softline.QUEUE_MODE_STEER and info.eligible then
       local line = assert(sl:queue_take(index))
       if line == "/quit" then
         exit_requested = true
         assert(sl:cancel())
         return
       end
-      if is_shell_command(line) then
-        print_message({ "Shell commands cannot be queued or steered.\n" })
-      else
+      if not handle_command(line) then
         consume_active_operation_input(line)
       end
     else
       index = index + 1
     end
   end
+  sync_queue_readiness(false)
 end
 
 local function finish_operation()
@@ -141,7 +202,15 @@ local function start_operation()
     return
   end
   local delay = string.format("%.3f", operation_step_seconds())
-  worker = assert(io.popen("exec sh -c 'echo $$; printf P; sleep " .. delay ..
+  local gate = os.getenv("SOFTLINE_CHAT_GATE_FD")
+  local gate_command = ""
+  if gate then
+    local fd = tonumber(gate)
+    assert(fd and fd % 1 == 0 and fd >= 3 and fd <= 9,
+        "SOFTLINE_CHAT_GATE_FD must be an inherited FD 3..9")
+    gate_command = "IFS= read -r gate <&" .. string.format("%d", fd) .. " || exit 1; "
+  end
+  worker = assert(io.popen("exec sh -c 'echo $$; " .. gate_command .. "printf P; sleep " .. delay ..
       "; printf L; sleep " .. delay .. "; printf W; sleep " .. delay ..
       "; printf C; sleep " .. delay .. "; printf R'", "r"))
   worker_pid = assert(tonumber(worker:read("*l")), "operation PID missing")
@@ -172,20 +241,17 @@ end
 dispatch_next_queued = function()
   local index = 1
   while index <= sl:queue_count() do
-    if sl:queue_mode(index) == softline.QUEUE_MODE_QUEUED then
+    local info = assert(sl:queue_info(index))
+    if info.eligible and not info.policy.enqueue then
       local line = assert(sl:queue_take(index))
       if line == "/quit" then
         exit_requested = true
         assert(sl:cancel())
         return
       end
-      if is_shell_command(line) then
-        print_message({ "Shell commands cannot be queued or steered.\n" })
-      else
-        print_message({ "[queued] ", line, "\n" })
-        start_operation()
-        return
-      end
+      print_message({ "[queued] ", line, "\n" })
+      start_operation()
+      return
     else
       index = index + 1
     end
@@ -201,7 +267,11 @@ local function run()
     assert(sl:set_prompt_theme(themes[theme_name]))
     assert(sl:set_prompt_queue(true, 64, 3))
     assert(sl:set_queue_profile("queued_turns"))
-    assert(sl:set_queue_delivery("manual"))
+    assert(sl:set_queue_delivery("auto"))
+    assert(sl:set_queue_policy(function(text, mode)
+      return {enqueue = text:sub(1, 1) == "/" or text:sub(1, 1) == "!",
+          independent = is_local_command(text), executable = command_ready(text, mode, false)}
+    end))
     assert(sl:set_statusline(true, 0))
     assert(sl:set_status_elements({
       "gpt-5.6-terra high",
@@ -224,24 +294,11 @@ local function run()
       end
       return softline.KEY_ACTION_SUSPEND
     end))
-    for _, key in ipairs({ softline.KEY_ENTER, softline.KEY_ALT_ENTER, softline.KEY_TAB }) do
-      assert(sl:bind_key(key, function(pressed)
-        -- Search selection must return to editing before submission guards run.
-        if sl:history_search_active() then
-          return softline.KEY_ACTION_PASS
-        end
-        if is_shell_command(sl:buffer()) and (busy or pressed == softline.KEY_TAB) then
-          assert(sl:set_status_message(busy and "Shell is available only between turns."
-              or "Use Enter to open the shell; it cannot be queued."))
-          return softline.KEY_ACTION_HANDLED
-        end
-        return softline.KEY_ACTION_PASS
-      end))
-    end
     set_chat_busy(false)
     assert(sl:output_stream_begin())
     stream_open = true
     print_message({ "softline Lua turn processor. A staged operation streams for about four seconds. Enter sends while available and queues while an operation is running; Alt-Enter queues a steer for the next stage boundary; empty Alt-Enter marks the newest queued turn as steer; Alt-E edits it. Escape or Ctrl-C stops the operation; /quit leaves. !sh or /shell opens your shell between turns; Alt-S opens it while preserving your draft.\n" })
+    print_message({ "Policy demo: /status / /approve / /steer / /resume. Shell commands queue until the turn completes.\n" })
   else
     assert(sl:output_stream_begin())
     stream_open = true
@@ -259,12 +316,14 @@ local function run()
       if is_shell_command(line) then
         if not interactive then
           print_message({ "Shell requires an interactive terminal.\n" })
-        elseif busy or source_or_status ~= softline.PROMPT_SOURCE_DIRECT then
+        elseif busy then
           print_message({ "Shell is available only between turns.\n" })
         else
           assert(sl:output_stream_write_quoted_prompt(line))
           run_shell()
         end
+      elseif interactive and handle_command(line) then
+        -- Native delivery retained the identity, editing and approval gates.
       elseif line == "" then
         print_message({ "[empty turn ignored]\n" })
       else

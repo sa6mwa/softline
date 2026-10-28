@@ -41,6 +41,7 @@ typedef struct sl_history {
 typedef struct sl_prompt_queue_entry {
   char *text;
   sl_prompt_queue_entry_info_t info;
+  int history_recorded;
 } sl_prompt_queue_entry_t;
 
 typedef struct sl_prompt_queue {
@@ -52,6 +53,7 @@ typedef struct sl_prompt_queue {
   int enabled;
   sl_prompt_id_t serial;
   sl_prompt_id_t last_id;
+  sl_prompt_queue_mode_t last_mode;
   int auto_approval;
   sl_prompt_id_t approval_id;
   int approval_focused;
@@ -68,6 +70,8 @@ typedef struct sl_prompt_queue {
   sl_prompt_queue_delivery_t delivery;
   sl_prompt_queue_profile_t profile;
   sl_prompt_queue_keys_t keys;
+  sl_prompt_queue_policy_callback_t policy_callback;
+  void *policy_userdata;
 } sl_prompt_queue_t;
 
 typedef struct sl_statusline {
