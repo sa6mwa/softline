@@ -140,6 +140,21 @@ The editor supports these built-in behaviors:
   the newest kill, and repeated Alt-Y rotates the immediately preceding yank.
   Other editing/navigation ends yank rotation. Focused approval decisions retain
   priority over Alt-Y. A yank exceeding `line_max_len` leaves the draft unchanged.
+- `Alt-K` saves the entire multiline draft in one handle-local stash, replacing
+  its prior contents, then clears the editor. An empty draft leaves the stash
+  unchanged. `Alt-J` appends that saved text at the end of the current draft,
+  regardless of cursor position, retaining the saved copy for repeated use.
+  With no saved text it does nothing. An append exceeding `line_max_len` leaves
+  text, cursor and stash unchanged. `Alt-N` clears the whole ordinary draft
+  without writing the stash or kill ring. All three operations support undo;
+  Ctrl-U and Ctrl-K retain their actual-line boundaries. The stash survives
+  submissions, cancellation and shell handoff until replaced or handle teardown.
+  While editing a queued entry, stashing/appending edits only its text, keeping
+  the active identity and holds; the stash itself never carries queue metadata.
+  Custom bindings and enabled queue key mappings override these defaults,
+  including when the mapped queue action is a no-op. Bracketed paste does not
+  invoke the shortcuts. Draft shortcuts dismiss approval focus even when empty
+  input or an absent stash makes them a no-op.
 - `Ctrl-_` and `Ctrl-X Ctrl-U` undo the last editing command. Continuous typing
   and each bracketed paste are single undo groups; callback buffer edits within
   one key command form a group. Undo restores text and cursor, preserving queue
@@ -197,7 +212,8 @@ frame uses normal terminal scrolling when it needs additional space.
 Interactive ordinary readline and native chat prompts can opt into a prompt queue through
 configuration or `set_prompt_queue()`. Non-TTY input remains a plain line
 reader, so queueing does not alter it. Tab moves a nonempty active editor into
-the queue and clears the editor; Tab on an empty editor does nothing. Alt-E
+the queue and clears the editor; Tab on an ordinary empty editor does nothing.
+Submitting or requeueing an empty queued edit deletes that entry. Alt-E
 removes the most recent queue entry and restores it to the active editor for
 editing.
 
@@ -236,12 +252,20 @@ releases all waiting holds as described below.
 
 Alt-E retains the entry's identity, mode and hold while editing and reserves
 its queue slot. `sl_prompt_queue_draft_info()` / `queue_draft_info()` expose
-that origin. Requeueing or submitting a held edit retains the same ID, hold and
+that origin. Requeueing or submitting a nonempty held edit retains the same ID, hold and
 arrival position for delivery, including when auto-approval releases waiting holds;
-editing is never implicit approval. Empty submission, cancellation, EOF or read
-failure restores the original entry, discarding edits. The host may approve or
+editing is never implicit approval. Empty submission or requeue deletes the
+edited entry, including approvals, without delivering it. Cancellation, EOF or
+read failure restores the original entry, discarding edits. The host may approve or
 reject an active edit by ID; rejection clears its draft. Clearing the queue preserves an active
-edit; disabling it during an edit fails. A held edit is visibly marked.
+edit; disabling it during an edit fails. Every queued edit shows its Q/S/H origin
+and `Alt-N discard`. Alt-N (or Alt-Shift-N) discards that edited entry immediately
+without submitting it. Ctrl-_ can recover the discarded text and cursor as a
+fresh ordinary draft, never the removed identity, hold or earlier edit journal.
+This text-only recovery applies to keyboard discard; host rejection and empty
+submission/requeue retain their existing undo-reset behavior. Outside a queued
+edit or focused approval, Alt-N clears the ordinary draft. Bracketed paste treats
+the same bytes as pasted input rather than a discard command.
 
 Hosts inject messages through `sl_inject_queued_prompt()` or
 `sl_inject_steer_prompt()` (Lua: `inject_queued_prompt`, `inject_steer_prompt`).
@@ -268,9 +292,9 @@ Once offered, a question stays visible when typing resumes; the input keeps
 its contents, cursor and keyboard focus. Sending or clearing a draft permits
 a new question at the next empty input boundary. Editing, requeueing, cancellation
 and reopening input cannot move another approval ahead of the first. Submitting
-an empty queued edit restores the original entry and releases the editor for
-approval review; it never approves or delivers that entry. Later
-held messages remain hidden except in the waiting count until it is decided.
+an empty queued edit deletes that entry and releases the editor for the next
+approval; it never approves or delivers the deleted entry. Later held messages
+remain hidden except in the waiting count until earlier entries are decided or deleted.
 The question shows the message and its queued/steering route:
 Alt-A explicitly focuses the approval, inverting the foreground/background of
 its compact heading and moving the cursor onto its approval controls.

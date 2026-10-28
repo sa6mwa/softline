@@ -46,6 +46,11 @@ Currently implemented:
   interrupt, and failures after `readline()` returns.
 - `Ctrl-U`, `Ctrl-K`, word deletion, movement, history recall (`Up`/`Down` or
   `Ctrl-P`/`Ctrl-N`), and delete keys operate across the whole multiline buffer.
+- `Alt-K` saves the whole draft in one handle-local stash and clears it;
+  saving an empty draft leaves the stash alone. `Alt-J` appends the saved text
+  after all current input, retaining the saved copy. `Alt-N` clears without
+  saving. These edits are undoable with `Ctrl-_`. The stash is independent of
+  the `Ctrl-Y`/`Alt-Y` kill ring and survives prompt submissions and shell handoff.
 - `Ctrl-R` starts reverse incremental history search over the handle's current
   in-memory history, including entries loaded before `readline()`.
   Enter leaves the displayed match in the normal prompt for editing; it does
@@ -130,9 +135,13 @@ Currently implemented:
   `1 approval` or `N awaiting approval`.
   The message preview wraps at word boundaries into at most three lines,
   ending in `...` when truncated; editing and delivery retain the full text.
-  Alt-E, editing and requeue preserve identity and hold. Submitting a held
-  edit requeues it until explicitly approved. Submitting an empty queued edit
-  restores its original text for review. See the [queue contract](docs/softline-spec.md#prompt-queue)
+  Alt-E, editing and requeue preserve identity and hold. Submitting a nonempty
+  held edit requeues it until explicitly approved. Alt-N while editing
+  discards that entry, including approvals; submitting an empty edit also
+  deletes it. After Alt-N, Ctrl-_ recovers its text as a fresh draft without
+  restoring the discarded identity or approval. Escape cancels editing and
+  restores the original entry.
+  See the [queue contract](docs/softline-spec.md#prompt-queue)
   and [Lua queue API](lua/README.md).
 - Interactive handles can watch application-owned file descriptors. Softline
   waits for terminal and watch readiness together, then invokes the watch
@@ -283,7 +292,8 @@ execution defaults to no simulation; `SOFTLINE_CHAT_APPROVAL_DEMO=1` enables it,
 `SOFTLINE_CHAT_APPROVAL_SEED=...` makes the random sequence reproducible.
 Alt-A focuses approval controls by inverting the heading; the cursor stays in
 the input prompt. While focused, Alt-Y approves, Alt-N rejects, Alt-E edits,
-and Esc or Alt-A returns to ordinary input.
+and Esc or Alt-A returns to ordinary input. After Alt-E, Alt-N discards the
+edited message or approval; its editing indicator shows `Alt-N discard`.
 The two `without-delay` targets set `SOFTLINE_CHAT_CHAR_MS=0`, removing the
 example producer's simulated typing delay, with default and riced themes.
 `run-chat` uses Gruvbox by default; pass `THEME=...` to override it. Both C
@@ -557,8 +567,8 @@ the backlog stop. C and Lua expose equivalent operations; see the
 `tests/test_queue_policy.c` and `tests/lua-fixtures/queue-policy.lua`.
 
 Tab queues a nonempty active editor and leaves a FIFO preview panel above the
-current input; Tab on an empty editor is a no-op. The panel uses the themed
-`Q 1. preview` layout, shows oldest-first previews, and adds `... N more` when
+current input; Tab on an ordinary empty editor is a no-op. The panel uses the
+themed `Q 1. preview` layout, shows oldest-first previews, and adds `... N more` when
 entries exceed the configured preview count. Alt-E removes the newest queued
 entry and restores it to the editor. Explicit key bindings continue to override
 these defaults. Prompt appearance is renderer-owned so it remains safe with
@@ -580,10 +590,12 @@ palettes.
 The queue remains renderer-owned, but an embedding application can inspect and
 mutate it without synthetic terminal input or a parallel queue. Queue indexes
 follow delivery order and returned strings are released with `sl_free_string()`.
-Editing reserves the entry's position as well as its capacity. Cancellation,
-empty submission and requeue restore it there, preserving identity, mode and
-approval hold. Insertions and removals before that position move the reservation;
-an insertion exactly at it follows the edited entry, as do new appends. Clearing
+Editing reserves the entry's position as well as its capacity. Cancellation and
+nonempty requeue restore it there, preserving identity, mode and approval hold.
+Alt-N discards the edited entry immediately. Erasing the edited text and
+submitting or requeueing it also deletes that entry,
+including approvals. Insertions and removals before that position move the
+reservation; an insertion exactly at it follows the edited entry, as do new appends. Clearing
 the visible queue retains the edit at its front. Approval decisions still follow
 arrival identity, independently of explicit queue positions.
 

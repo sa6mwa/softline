@@ -240,28 +240,33 @@ static int approval_case(const char *example, const char *kind) {
   setenv("SOFTLINE_CHAT_APPROVAL_DEMO", "1", 1);
   setenv("SOFTLINE_CHAT_APPROVAL_MS", "100", 1);
   REQUIRE(start_chat(&c, example, "plain", 24, 10) == 0);
-  if (!strcmp(kind, "empty")) {
+  if (!strcmp(kind, "empty") || !strcmp(kind, "discard")) {
     send_input(&c, "start-response\r");
     REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", -1, 2) == 0);
     send_input(&c, "\033a");
     REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
     send_input(&c, "\033e");
     REQUIRE(wait_frame(&c, "H editing: approval required", NULL, -1, 2) == 0);
-    send_input(&c, "\025\r");
-    REQUIRE(wait_frame(&c, "A 4 awaiting approval / Alt-A focus", "> \n", -1,
+    if (!strcmp(kind, "discard")) {
+      REQUIRE(wait_visible(&c, "Alt-N discard") == 0);
+      send_input(&c, "\033n");
+    } else
+      send_input(&c, "\025\r");
+    REQUIRE(wait_frame(&c, "A 3 awaiting approval / Alt-A focus", "> \n", -1,
                        2) == 0);
     s = frame(&c);
-    REQUIRE(strstr(s.text, "  Demo queued request #1:"));
-    REQUIRE(!strstr(s.text, "> Demo queued request #1:") &&
-            !strstr(s.text, "Demo steering request #2:"));
+    REQUIRE(!strstr(s.text, "Demo queued request #1:"));
+    REQUIRE(strstr(s.text, "  Demo steering request #2:"));
     REQUIRE(wait_frame(&c, "Try another prompt.", "> \n", 1, 3) == 0);
     send_input(&c, "\033a");
     REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
     send_input(&c, "\033n");
-    REQUIRE(wait_frame(&c, "A 3 awaiting approval", "> \n", 1, 2) == 0);
+    /* The demo can replenish the backlog while the response finishes. Check
+     * the next FIFO head rather than assuming no new requests arrived. */
+    REQUIRE(wait_frame(&c, "  Demo queued request #3:", "> \n", 1, 2) == 0);
     s = frame(&c);
-    REQUIRE(strstr(s.text, "Alt-E edit / Steering:"));
-    REQUIRE(strstr(s.text, "  Demo steering request #2:"));
+    REQUIRE(strstr(s.text, "Alt-E edit / Queued:"));
+    REQUIRE(strstr(s.text, "  Demo queued request #3:"));
   } else if (!strcmp(kind, "queue")) {
     send_input(&c, "start-response\r");
     REQUIRE(wait_frame(&c, "> start-response", "> \n", -1, 2) == 0);
@@ -310,11 +315,15 @@ static int approval_case(const char *example, const char *kind) {
       REQUIRE(strstr(s.text, "  Demo queued request #1:"));
       REQUIRE(s.column == 7);
       send_input(&c, "\033a\033y\033n!");
-      REQUIRE(wait_frame(&c, NULL, "> draft!\n", 0, 2) == 0);
+      REQUIRE(wait_frame(&c, NULL, "> !\n", 0, 2) == 0);
       s = frame(&c);
       REQUIRE(strstr(s.text, "A 4 awaiting approval / Alt-A focus"));
       REQUIRE(strstr(s.text, "  Demo queued request #1:"));
       REQUIRE(!strstr(s.text, "> Demo queued request #1:"));
+      /* Unfocused Alt-N clears only the ordinary draft. Undo typing and then
+       * the clear without approving/rejecting the visible queued request. */
+      send_input(&c, "\037\037");
+      REQUIRE(wait_frame(&c, NULL, "> draft\n", 0, 2) == 0);
       send_input(&c, "\025");
       REQUIRE(wait_frame(&c, "A 4 awaiting approval", "> \n", 0, 2) == 0);
     } else {
@@ -331,18 +340,6 @@ static int approval_case(const char *example, const char *kind) {
                 strstr(panel, "Alt-E edit / Queued:\n  edited-again\n"));
         REQUIRE(!strstr(s.text, "> edited-again\n"));
       }
-      /* An empty submitted edit returns to review without approving it. */
-      send_input(&c, "\033a");
-      REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
-      send_input(&c, "\033e");
-      REQUIRE(wait_frame(&c, "H editing: approval required", "> edited-again\n",
-                         0, 2) == 0);
-      send_input(&c, "\025\r");
-      REQUIRE(wait_frame(&c, "  edited-again\n", "> \n", 0, 2) == 0);
-      s = frame(&c);
-      REQUIRE(strstr(s.text, "A 4 awaiting approval / Alt-A focus"));
-      REQUIRE(!strstr(s.text, "> edited-again\n") &&
-              !strstr(s.text, "Demo steering request #2:"));
       send_input(&c, "\033a");
       REQUIRE(wait_visible(&c, "Alt-Y approve / Alt-N reject") == 0);
       /* Cancellation and the next readline still offer the first ID. */

@@ -41,7 +41,7 @@ static int wait_marker(struct editor *e, const char *marker) {
 }
 static int start_editor(struct editor *e, const char *example, int width,
                         const char *prior, const char *source,
-                        const char *position) {
+                        const char *position, const char *mode) {
   struct winsize size;
   void *pty;
   int master, slave;
@@ -72,11 +72,11 @@ static int start_editor(struct editor *e, const char *example, int width,
     if (slave > 2)
       close(slave);
     setenv("SOFTLINE_PROMPT_THEME", "plain", 1);
-    execl(example, example, (char *)NULL);
+    execl(example, example, mode, (char *)NULL);
     _exit(127);
   }
   close(slave);
-  if (e->child < 0 || wait_marker(e, "softline> "))
+  if (e->child < 0 || wait_marker(e, mode ? "> " : "softline> "))
     return 1;
   v.send(e->screen.terminal, source, (long)strlen(source));
   v.send(e->screen.terminal, position, (long)strlen(position));
@@ -112,7 +112,7 @@ static int case_editor(const char *example, const char *source,
   for (index = 0; index < count; ++index)
     used += (size_t)snprintf(prior + used, sizeof(prior) - used, "keep%03d\r\n",
                              index);
-  if (start_editor(&actual, example, 40, prior, source, position))
+  if (start_editor(&actual, example, 40, prior, source, position, NULL))
     goto cleanup;
   for (stage = 0; stage < 3; ++stage) {
     width = widths[stage];
@@ -139,7 +139,8 @@ static int case_editor(const char *example, const char *source,
       fprintf(stderr, "Readline overwrote retained output\n%s\n", current.text);
       goto cleanup;
     }
-    if (start_editor(&reference, example, width, prior, source, position)) {
+    if (start_editor(&reference, example, width, prior, source, position,
+                     NULL)) {
       stop_editor(&reference);
       goto cleanup;
     }
@@ -210,6 +211,69 @@ cleanup:
   stop_editor(&actual);
   return failed || errors;
 }
+
+static int case_themes(const char *example, const char *source,
+                       const char *position) {
+  const int codes[] = {21, 14, 21, 12, 14, 11, 14, 13, 14, 20,
+                       14, 15, 14, 17, 14, 18, 14, 19, 21, 21};
+  struct editor editor;
+  struct snapshot expected, actual;
+  char key[16], submitted[512];
+  size_t index;
+  double deadline;
+  int failed = 1;
+  if (start_editor(&editor, example, 40, "retained output\r\n", source,
+                   position, "--themes"))
+    goto cleanup;
+  expected = transcript(&editor.screen);
+  /* Cover short/long, plain/RGB, styled-input and unchanged transitions.
+   * Default-to-gruvbox used to print the RGB escape suffix as prompt text. */
+  for (index = 0; index < sizeof(codes) / sizeof(codes[0]); ++index) {
+    int length = snprintf(key, sizeof(key), "\033[%d~", codes[index]);
+    v.send(editor.screen.terminal, key, length);
+    if (rendered(&editor))
+      goto cleanup;
+    actual = transcript(&editor.screen);
+    if (strcmp(actual.text, expected.text) || actual.row != expected.row ||
+        actual.column != expected.column) {
+      fprintf(stderr,
+              "Theme change corrupted the prompt: key=%d draft=%s\n"
+              "expected:\n%s\nactual:\n%s\n",
+              codes[index], source, expected.text, actual.text);
+      goto cleanup;
+    }
+  }
+  /* Submitting the draft proves the underlying text stayed intact too. */
+  v.send(editor.screen.terminal, "\005!\r", 3);
+  snprintf(submitted, sizeof(submitted), "submitted: %s!", source);
+  deadline = now() + 3;
+  do {
+    char *begin, *read, *write;
+    actual = transcript(&editor.screen);
+    begin = strstr(actual.text, "submitted: ");
+    if (begin) {
+      read = write = begin;
+      while (*read) {
+        if (*read != '\n')
+          *write++ = *read;
+        ++read;
+      }
+      *write = '\0';
+      if (!strcmp(begin, submitted)) {
+        failed = 0;
+        break;
+      }
+    }
+    pump_once();
+  } while (now() < deadline);
+  if (failed)
+    fprintf(stderr, "Theme change lost the submitted draft: %s\n%s\n",
+            submitted, actual.text);
+cleanup:
+  stop_editor(&editor);
+  return failed || errors;
+}
+
 int main(int argc, char **argv) {
   const char *sources[] = {
       "one two three four", "alpha beta gamma delta epsilon zeta eta",
@@ -217,8 +281,16 @@ int main(int argc, char **argv) {
   const char *positions[] = {"\001", "\001\033[C\033[C\033[C", ""};
   size_t source, position;
   int filled;
-  if (argc != 2 || load())
+  if ((argc != 2 && argc != 3) || load())
     return 2;
+  if (argc == 3 && !strcmp(argv[2], "themes")) {
+    const char *drafts[] = {"", "a", "abc", "café 中文 é",
+                            "alpha beta gamma delta epsilon zeta eta"};
+    for (source = 0; source < sizeof(drafts) / sizeof(drafts[0]); ++source)
+      if (case_themes(argv[1], drafts[source], ""))
+        return 1;
+    return case_themes(argv[1], "abc", "\001\033[C") || errors != 0;
+  }
   for (source = 0; source < sizeof(sources) / sizeof(sources[0]); ++source)
     for (position = 0; position < 3; ++position)
       for (filled = 0; filled < 2; ++filled)

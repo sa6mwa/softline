@@ -23,6 +23,7 @@ typedef struct sl_edit {
   unsigned long group;
   int enabled, open, command, last_command; /* Active or suspended draft. */
   int changed; /* Current command edited, navigated or replaced its context. */
+  char *stash; /* One saved draft, independent of undo and the kill ring. */
   sl_kill_entry_t kills[SL_EDIT_KILLS];
   int kill_count;
   int yank_valid, yank_index;

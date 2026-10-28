@@ -74,7 +74,7 @@ struct ui {
   size_t csi_len;
   size_t used, mark;
   char text[65536];
-  sl_prompt_id_t id, other;
+  sl_prompt_id_t id, other, following;
 };
 static int timeout_master = -1;
 static void timeout_input(int signo) {
@@ -231,10 +231,11 @@ static int ready(sl_t *sl, const sl_watch_event_t *event, void *data) {
       return SL_OK;
     REQUIRE(info.held);
     if (is_empty_edit(state->kind)) {
-      sl_prompt_id_t later;
-      REQUIRE(sl_inject_queued_prompt(sl, "later approval", &later) == SL_OK);
-      REQUIRE(sl_prompt_queue_approve(sl, later) == SL_ERROR_INVALID);
-      REQUIRE(sl_prompt_queue_reject(sl, later) == SL_ERROR_INVALID);
+      REQUIRE(sl_inject_queued_prompt(sl, "later approval",
+                                      &state->following) == SL_OK);
+      REQUIRE(sl_prompt_queue_approve(sl, state->following) ==
+              SL_ERROR_INVALID);
+      REQUIRE(sl_prompt_queue_reject(sl, state->following) == SL_ERROR_INVALID);
       if (state->kind == EDIT_EMPTY_CALLBACK) {
         REQUIRE(sl_set_buffer(sl, "") == SL_OK && sl_submit(sl) == SL_OK);
       } else
@@ -254,18 +255,22 @@ static int ready(sl_t *sl, const sl_watch_event_t *event, void *data) {
     return SL_OK;
   }
   if (question && state->phase != 3) {
+    sl_prompt_id_t offered = is_empty_edit(state->kind) && state->phase == 2
+                                 ? state->following
+                                 : state->id;
     state->mark = state->used;
     state->questions++;
-    REQUIRE(sl_prompt_queue_info(sl, index_of(sl, state->id), &info) == SL_OK &&
-            info.id == state->id && info.held);
+    REQUIRE(sl_prompt_queue_info(sl, index_of(sl, offered), &info) == SL_OK &&
+            info.id == offered && info.held);
     REQUIRE(strstr(state->text, info.mode == SL_PROMPT_QUEUE_MODE_STEER
                                     ? "Steering:"
                                     : "Queued:"));
     if (is_edit(state->kind) && state->phase == 2) {
       if (is_empty_edit(state->kind)) {
         REQUIRE(sl_prompt_queue_draft_info(sl, &info) == SL_OK && !info.id);
-        REQUIRE(sl_prompt_queue_count(sl) == 3);
-        REQUIRE(!strstr(state->text, "later approval"));
+        REQUIRE(sl_prompt_queue_count(sl) == 2);
+        REQUIRE(index_of(sl, state->id) == sl_prompt_queue_count(sl));
+        REQUIRE(strstr(state->text, "later approval"));
       } else
         REQUIRE(strstr(state->text, "edited café") &&
                 strstr(state->text, "second line"));
@@ -372,25 +377,26 @@ static int ready(sl_t *sl, const sl_watch_event_t *event, void *data) {
   if (state->phase == 3 &&
       (state->kind == STEER || is_edit(state->kind) || state->kind == BUSY ||
        state->kind == AUTO_ENABLE)) {
-    REQUIRE(sl_prompt_queue_info(sl, index_of(sl, state->id), &info) == SL_OK &&
-            info.id == state->id);
+    sl_prompt_id_t offered =
+        is_empty_edit(state->kind) ? state->following : state->id;
+    REQUIRE(sl_prompt_queue_info(sl, index_of(sl, offered), &info) == SL_OK &&
+            info.id == offered);
     if (info.held)
       return SL_OK;
     if (state->kind == BUSY) {
       REQUIRE(info.mode == SL_PROMPT_QUEUE_MODE_QUEUED);
       REQUIRE(sl_set_status_busy(sl, 0) == SL_OK);
     } else {
-      REQUIRE(info.mode == (is_steer(state->kind)
+      REQUIRE(info.mode == (is_steer(state->kind) && !is_empty_edit(state->kind)
                                 ? SL_PROMPT_QUEUE_MODE_STEER
                                 : SL_PROMPT_QUEUE_MODE_QUEUED));
-      REQUIRE(sl_prompt_queue_take(sl, index_of(sl, state->id), &taken) ==
-              SL_OK);
-      REQUIRE(!strcmp(taken, state->kind == STEER ||
-                                     state->kind == AUTO_ENABLE ||
-                                     is_empty_edit(state->kind)
-                                 ? "approval message"
-                                 : "edited café\nsecond line"));
-      REQUIRE(sl_last_prompt_id(sl) == state->id);
+      REQUIRE(sl_prompt_queue_take(sl, index_of(sl, offered), &taken) == SL_OK);
+      REQUIRE(
+          !strcmp(taken, is_empty_edit(state->kind) ? "later approval"
+                         : state->kind == STEER || state->kind == AUTO_ENABLE
+                             ? "approval message"
+                             : "edited café\nsecond line"));
+      REQUIRE(sl_last_prompt_id(sl) == offered);
       sl_free_string(sl, taken);
       REQUIRE(sl_cancel(sl) == SL_OK);
     }

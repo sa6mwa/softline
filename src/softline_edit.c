@@ -24,6 +24,7 @@ void sl_edit_clear_undo(sl_edit_t *edit) {
 void sl_edit_destroy(sl_edit_t *edit) {
   int i;
   sl_edit_clear_undo(edit);
+  free(edit->stash);
   for (i = 0; i < edit->kill_count; i++)
     free(edit->kills[i].text);
 }

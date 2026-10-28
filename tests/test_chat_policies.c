@@ -87,16 +87,21 @@ static int exercise(const char *build, const char *shell,
   REQUIRE(send_bytes(&e, "edit-boundary\r") == 0);
   REQUIRE(wait_for(&e, "Thinking...", mark) == 0);
   REQUIRE(send_bytes(&e, "/shell\r\033eX") == 0);
-  REQUIRE(wait_for(&e, "> /shellX", mark) == 0);
+  REQUIRE(wait_for(&e, "Q editing / Alt-N discard", mark) == 0);
+  REQUIRE(wait_for(&e, "/shellX", mark) == 0);
   REQUIRE(write(gate[1], "x\n", 2) == 2);
   REQUIRE(wait_for(&e, c_chat ? "The stream is still live." : completed,
                    mark) == 0);
   REQUIRE(idle_after(&e, printed,
                      c_chat ? "The stream is still live." : completed) == 0);
-  /* Submitting an empty edit restores the original shell entry, whose whole
-   * turn boundary became ready while it was temporarily outside the queue. */
+  /* Discard deletes the shell entry even after its execution boundary becomes
+   * ready. It must not launch without a new deliberate submission. */
   mark = e.length;
-  REQUIRE(send_bytes(&e, "\025\r") == 0);
+  REQUIRE(send_bytes(&e, "\033n") == 0);
+  REQUIRE(send_bytes(&e, "/status\r") == 0);
+  REQUIRE(wait_for(&e, "Status: idle / backlog running / 0 queued", mark) == 0);
+  REQUIRE(!contains(&e, "SHELL_READY", mark));
+  REQUIRE(send_bytes(&e, "!sh\r") == 0);
   REQUIRE(wait_for(&e, "SHELL_READY", mark) == 0);
   mark = e.length;
   REQUIRE(send_bytes(&e, "exit\n") == 0);

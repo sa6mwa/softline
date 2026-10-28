@@ -415,19 +415,9 @@ static void edit_idle(sl_t *sl, void *data) {
     REQUIRE(!strcmp(sl_buffer(sl), ""));
   } else if (state->kind == EMPTY_SUBMIT || state->kind == NORMAL_EMPTY) {
     REQUIRE(sl_prompt_queue_draft_info(sl, &info) == SL_OK && !info.id);
-    REQUIRE(sl_prompt_queue_info(sl, 0, &info) == SL_OK &&
-            info.id == state->id && info.held == (state->kind == EMPTY_SUBMIT));
-    REQUIRE(sl_prompt_queue_peek(sl, 0, &text) == SL_OK &&
-            !strcmp(text, "original"));
-    sl_free_string(sl, text);
-    if (state->kind == EMPTY_SUBMIT)
-      REQUIRE(sl_prompt_queue_reject(sl, state->id) == SL_OK);
-    else {
-      REQUIRE(sl_prompt_queue_take(sl, 0, &text) == SL_OK &&
-              !strcmp(text, "original"));
-      REQUIRE(sl_last_prompt_id(sl) == state->id);
-      sl_free_string(sl, text);
-    }
+    REQUIRE(sl_prompt_queue_count(sl) == 0);
+    REQUIRE(sl_prompt_queue_reject(sl, state->id) == SL_ERROR_INVALID);
+    REQUIRE(sl_last_prompt_id(sl) == 0);
   } else {
     if (state->kind == FIFO_EDIT) {
       REQUIRE(sl_prompt_queue_info(sl, 1, &info) == SL_OK &&
@@ -750,6 +740,7 @@ static int edit_order_case(int position, enum order_mutation mutation,
   sl_watch_id_t watch;
   sl_t *sl;
   const char *order = expected[position][mutation];
+  char remaining[8];
   char *line, *text = NULL;
   size_t i;
   memset(&state, 0, sizeof(state));
@@ -775,6 +766,14 @@ static int edit_order_case(int position, enum order_mutation mutation,
   CHECK(sl_prompt_queue_insert(sl, 0, "C", position == 0, &state.ids['C']) ==
         SL_OK);
   state.edited = state.ids[(unsigned char)"CAB"[position]];
+  if (finish == ORDER_EMPTY) {
+    size_t read_index, written = 0;
+    for (read_index = 0; order[read_index]; ++read_index)
+      if (order[read_index] != "CAB"[position])
+        remaining[written++] = order[read_index];
+    remaining[written] = '\0';
+    order = remaining;
+  }
   CHECK(sl_prompt_queue_set_mode(sl, (size_t)position,
                                  SL_PROMPT_QUEUE_MODE_STEER) == SL_OK);
   if (native) {
@@ -832,6 +831,7 @@ static int edit_capacity_case(int growth, int held, enum order_finish finish) {
   sl_t *sl;
   char *line, *text = NULL, label[32];
   int j, i, inserted = growth / 2;
+  int first = finish == ORDER_EMPTY;
   memset(&state, 0, sizeof(state));
   state.position = held ? 0 : 2;
   state.growth = growth;
@@ -858,9 +858,9 @@ static int edit_capacity_case(int growth, int held, enum order_finish finish) {
             (finish == ORDER_EOF ? SL_READLINE_EOF : SL_READLINE_CANCELLED));
   CHECK(state.phase == (finish == ORDER_CANCEL || finish == ORDER_EOF ? 2 : 3));
   CHECK(sl_prompt_queue_draft_info(sl, &info) == SL_OK && !info.id);
-  CHECK(sl_prompt_queue_count(sl) == (size_t)growth + 1);
-  for (j = 0; j <= growth; ++j) {
-    CHECK(sl_prompt_queue_info(sl, (size_t)j, &info) == SL_OK);
+  CHECK(sl_prompt_queue_count(sl) == (size_t)(growth + 1 - first));
+  for (j = first; j <= growth; ++j) {
+    CHECK(sl_prompt_queue_info(sl, (size_t)(j - first), &info) == SL_OK);
     if (j == 0) {
       CHECK(info.id == state.edited && info.held == held &&
             info.mode == SL_PROMPT_QUEUE_MODE_STEER);
@@ -876,15 +876,15 @@ static int edit_capacity_case(int growth, int held, enum order_finish finish) {
                                 : SL_PROMPT_QUEUE_MODE_QUEUED));
       sprintf(label, "entry %d", i);
     }
-    CHECK(sl_prompt_queue_peek(sl, (size_t)j, &text) == SL_OK &&
+    CHECK(sl_prompt_queue_peek(sl, (size_t)(j - first), &text) == SL_OK &&
           !strcmp(text, label));
     sl_free_string(sl, text);
   }
-  if (held)
+  if (held && !first)
     CHECK(sl_prompt_queue_approve(sl, state.edited) == SL_OK);
   for (i = 0; i < growth; i += 2)
     CHECK(sl_prompt_queue_approve(sl, state.ids[i]) == SL_OK);
-  for (j = 0; j <= growth; ++j) {
+  for (j = first; j <= growth; ++j) {
     i = j <= inserted ? 2 * (inserted - j) + 1 : 2 * (j - inserted - 1);
     CHECK(sl_prompt_queue_take(sl, 0, &text) == SL_OK);
     CHECK(sl_last_prompt_id(sl) == (j == 0 ? state.edited : state.ids[i]));

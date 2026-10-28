@@ -26,6 +26,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   softline_apply_warnings(test_suspend)
   softline_local_runtime(test_suspend)
   add_test(NAME softline_suspend COMMAND test_suspend)
+  add_test(NAME softline_draft_shortcuts COMMAND test_suspend draft-shortcuts)
+  set_tests_properties(softline_draft_shortcuts PROPERTIES LABELS "unit;editing;memcheck" TIMEOUT 15)
   add_test(NAME softline_visual_row_navigation COMMAND test_suspend visual-rows)
   set_tests_properties(softline_visual_row_navigation PROPERTIES LABELS "unit;editing;memcheck" TIMEOUT 15)
   add_test(NAME softline_suspend_mutations COMMAND test_suspend mutations)
@@ -52,6 +54,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   softline_apply_warnings(test_queue_policy)
   softline_local_runtime(test_queue_policy)
   add_test(NAME softline_queue_policy COMMAND test_queue_policy)
+  add_test(NAME softline_queue_shortcut_precedence COMMAND test_queue_policy shortcut-precedence)
+  set_tests_properties(softline_queue_shortcut_precedence PROPERTIES
+    LABELS "unit;queue;editing;memcheck" TIMEOUT 15)
   set_tests_properties(softline_queue_policy PROPERTIES
     LABELS "unit;queue;editing;memcheck" TIMEOUT 30)
   target_link_libraries(test_queue_approval PRIVATE softline util)
@@ -426,6 +431,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
       set_tests_properties(softline_terminal_readline_resize PROPERTIES ENVIRONMENT "${terminal_test_environment}")
       set_tests_properties(softline_terminal_readline_resize PROPERTIES
         LABELS "integration" TIMEOUT 40)
+      add_test(NAME softline_terminal_prompt_themes COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
+        "$<TARGET_FILE:test_vte_editor>" "$<TARGET_FILE:editor_resize_fixture>" themes)
+      set_tests_properties(softline_terminal_prompt_themes PROPERTIES
+        ENVIRONMENT "${terminal_test_environment}" LABELS "integration;editing" TIMEOUT 20)
     endif()
     if(_softline_test_libmdf_supported)
       add_executable(unicode_output_fixture unicode_output_fixture.c)
@@ -450,7 +459,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET example_chat)
     set_tests_properties(softline_chat_line_keys PROPERTIES
       ENVIRONMENT "${terminal_test_environment}"
       LABELS "integration;example-smoke" TIMEOUT 15)
-    foreach(approval_case typing queue edit empty idle multiline resize)
+    foreach(approval_case typing queue edit empty discard idle multiline resize)
       add_test(NAME softline_chat_approval_${approval_case} COMMAND "${SOFTLINE_TEST_XVFB_RUN}" -a
         "$<TARGET_FILE:test_vte_chat>" approval "$<TARGET_FILE:example_chat>" "${approval_case}")
       set_tests_properties(softline_chat_approval_${approval_case} PROPERTIES

@@ -363,10 +363,12 @@ static void transitions(int native) {
   CHECK(sl_prompt_queue_reject(f.sl, id) == SL_OK);
   expect(&f, "", "/selected", SL_PROMPT_SOURCE_QUEUED, 0);
   teardown(&f);
-  /* Empty edits restore original text/state. Rejection of an active held edit
+  /* Empty submission removes its entry. Rejection of an active held edit
    * cannot release an execution-blocked entry or disturb another draft. */
   setup(&f, native, 8);
   suspend_keys(&f, "/hold original\r\033e\001\013\r\033s");
+  CHECK(!strcmp(sl_buffer(f.sl), "") && sl_prompt_queue_count(f.sl) == 0);
+  suspend_keys(&f, "/hold retained\r\033s");
   info = entry(&f, 0);
   CHECK(!strcmp(sl_buffer(f.sl), "") && !info.policy.executable);
   CHECK(sl_inject_queued_prompt(f.sl, "approval", &held) == SL_OK);
@@ -828,6 +830,277 @@ static void policy_wakeup(int native) {
     }
 }
 
+static int empty_edit_key(sl_t *sl, sl_key_t key, void *userdata,
+                          sl_key_action_t *out) {
+  int *requeue = userdata;
+  (void)key;
+  CHECK(((*requeue) ? sl_prompt_queue_enqueue_draft(sl) : sl_submit(sl)) ==
+        SL_OK);
+  *out = SL_KEY_ACTION_HANDLED;
+  return SL_OK;
+}
+
+static int discard_override(sl_t *sl, sl_key_t key, void *userdata,
+                            sl_key_action_t *out) {
+  (void)sl;
+  (void)key;
+  *out = *(sl_key_action_t *)userdata;
+  return SL_OK;
+}
+
+static void discard_edges(int native) {
+  struct fixture f;
+  sl_prompt_queue_entry_info_t info;
+  sl_prompt_id_t removed, waiting, ordinary;
+  sl_key_action_t action = SL_KEY_ACTION_HANDLED;
+  char *text = NULL;
+  int scenario;
+  for (scenario = 0; scenario < 4; ++scenario) {
+    setup(&f, native, 4);
+    CHECK(sl_set_prompt_queue_delivery(f.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) ==
+          SL_OK);
+    CHECK(sl_history_add(f.sl, "matching history") == SL_OK);
+    CHECK(sl_inject_queued_prompt(f.sl, "original", &removed) == SL_OK);
+    CHECK(sl_inject_steer_prompt(f.sl, "waiting", &waiting) == SL_OK);
+    CHECK(sl_prompt_queue_append(f.sl, "ordinary", 0, &ordinary) == SL_OK);
+    suspend_keys(&f, "\033e-edited\033s");
+    CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK &&
+          info.id == removed);
+    if (scenario == 0) {
+      CHECK(sl_bind_key(f.sl, SL_KEY_ALT_BASE + 'n', discard_override,
+                        &action) == SL_OK);
+      suspend_keys(&f, "\033n\033s");
+      CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK &&
+            info.id == removed);
+      CHECK(!strcmp(sl_buffer(f.sl), "original-edited"));
+      action = SL_KEY_ACTION_PASS;
+    } else if (scenario == 1) {
+      suspend_keys(&f, "\033[200~\033n\033[201~\033s");
+      CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK &&
+            info.id == removed);
+    } else if (scenario == 2) {
+      CHECK(sl_set_auto_approval(f.sl, 1) == SL_OK);
+      CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK && !info.held);
+    }
+    suspend_keys(&f, scenario == 3   ? "\022match\033n\007\037\033s"
+                     : scenario == 0 ? "\030\033n\037\033s"
+                                     : "\033n\037\033s");
+    CHECK(!sl_history_search_active(f.sl));
+    CHECK(scenario == 3 ? !strcmp(sl_buffer(f.sl), "matching history")
+                        : !strncmp(sl_buffer(f.sl), "original-edited", 15));
+    CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK && !info.id);
+    CHECK(sl_prompt_queue_count(f.sl) == 2);
+    CHECK(entry(&f, 0).id == waiting && entry(&f, 1).id == ordinary);
+    CHECK(entry(&f, 0).held == (scenario != 2));
+    CHECK(sl_prompt_queue_peek(f.sl, 0, &text) == SL_OK &&
+          !strcmp(text, "waiting"));
+    sl_free_string(f.sl, text);
+    CHECK(sl_prompt_queue_reject(f.sl, removed) == SL_ERROR_INVALID);
+    CHECK(f.calls == 0 && f.history == 1);
+    /* Clearing the recovered text cannot remove another queued identity. */
+    CHECK(sl_bind_key(f.sl, SL_KEY_ALT_BASE + 'n', NULL, NULL) == SL_OK);
+    suspend_keys(&f, "\033nfresh\033n\033N\037\033s");
+    CHECK(!strcmp(sl_buffer(f.sl), "fresh"));
+    CHECK(sl_prompt_queue_count(f.sl) == 2);
+    teardown(&f);
+  }
+  for (scenario = 0; scenario < 4; ++scenario) {
+    int held = scenario % 2;
+    sl_prompt_queue_mode_t mode =
+        scenario < 2 ? SL_PROMPT_QUEUE_MODE_QUEUED : SL_PROMPT_QUEUE_MODE_STEER;
+    setup(&f, native, 4);
+    CHECK(sl_set_prompt_queue_delivery(f.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) ==
+          SL_OK);
+    CHECK(sl_prompt_queue_append(f.sl, "saved\ntext", held, &removed) == SL_OK);
+    CHECK(sl_prompt_queue_set_mode(f.sl, 0, mode) == SL_OK);
+    suspend_keys(&f, "\033e\033k\033s");
+    CHECK(!*sl_buffer(f.sl));
+    CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK &&
+          info.id == removed && info.held == held && info.mode == mode);
+    suspend_keys(&f, "prefix \033j\033s");
+    CHECK(!strcmp(sl_buffer(f.sl), "prefix saved\ntext"));
+    CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK &&
+          info.id == removed && info.held == held && info.mode == mode);
+    suspend_keys(&f, "\033n\037\033s");
+    CHECK(!strcmp(sl_buffer(f.sl), "prefix saved\ntext"));
+    CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK && !info.id);
+    CHECK(sl_prompt_queue_count(f.sl) == 0);
+    CHECK(sl_prompt_queue_approve(f.sl, removed) == SL_ERROR_INVALID);
+    expect(&f, "\r", "prefix saved\ntext", SL_PROMPT_SOURCE_DIRECT, 0);
+    CHECK(sl_last_prompt_id(f.sl) == 0);
+    teardown(&f);
+  }
+}
+
+static void empty_edits(int native) {
+  struct fixture f;
+  sl_prompt_queue_entry_info_t info;
+  sl_prompt_id_t removed, next;
+  const char *submit[] = {"\r",    "\033\r", "\t",   "\033r",
+                          "\033r", "\033n",  "\033N"};
+  char burst[32], *text = NULL;
+  int origin, steer, route, requeue, calls, recorded;
+  for (origin = 0; origin < 3; ++origin)
+    for (steer = 0; steer < 2; ++steer)
+      for (route = 0; route < 7; ++route) {
+        setup(&f, native, 8);
+        CHECK(sl_set_status_busy(f.sl, 1) == SL_OK);
+        if (origin == 2) {
+          suspend_keys(&f, "/hold remove\r\033s");
+          removed = entry(&f, 0).id;
+        } else
+          CHECK(sl_prompt_queue_append(f.sl, "remove", origin == 1, &removed) ==
+                SL_OK);
+        CHECK(sl_prompt_queue_set_mode(f.sl, 0,
+                                       steer ? SL_PROMPT_QUEUE_MODE_STEER
+                                             : SL_PROMPT_QUEUE_MODE_QUEUED) ==
+              SL_OK);
+        if (route == 2)
+          CHECK(sl_set_prompt_queue_profile(
+                    f.sl, SL_PROMPT_QUEUE_PROFILE_DEFAULT) == SL_OK);
+        CHECK(sl_set_prompt_queue_delivery(
+                  f.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_OK);
+        requeue = route == 4;
+        CHECK(sl_bind_key(f.sl, SL_KEY_ALT_BASE + 'r', empty_edit_key,
+                          &requeue) == SL_OK);
+        calls = f.calls;
+        recorded = f.history;
+        sprintf(burst, "\033e%s%s\037\033s", route < 5 ? "\001\013" : "",
+                submit[route]);
+        suspend_keys(&f, burst);
+        CHECK(sl_prompt_queue_count(f.sl) == 0);
+        CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK && !info.id);
+        CHECK(!strcmp(sl_buffer(f.sl), route < 5     ? ""
+                                       : origin == 2 ? "/hold remove"
+                                                     : "remove") &&
+              sl_last_prompt_id(f.sl) == 0);
+        CHECK(sl_prompt_queue_approve(f.sl, removed) == SL_ERROR_INVALID);
+        CHECK(sl_prompt_queue_reject(f.sl, removed) == SL_ERROR_INVALID);
+        CHECK(f.calls == calls && f.history == recorded);
+        CHECK(sl_set_prompt_queue(f.sl, 1, 1, 1) == SL_OK);
+        CHECK(sl_prompt_queue_append(f.sl, "next", 1, &next) == SL_OK &&
+              next > removed);
+        CHECK(sl_prompt_queue_append(f.sl, "full", 0, NULL) == SL_ERROR_FULL);
+        teardown(&f);
+      }
+  /* Only a zero-length edit is deletion; whitespace remains literal content. */
+  setup(&f, native, 8);
+  CHECK(sl_inject_queued_prompt(f.sl, "keep", &removed) == SL_OK);
+  suspend_keys(&f, "\033e\001\013 \r\033s");
+  CHECK(entry(&f, 0).id == removed && entry(&f, 0).held);
+  CHECK(sl_prompt_queue_peek(f.sl, 0, &text) == SL_OK && !strcmp(text, " "));
+  sl_free_string(f.sl, text);
+  teardown(&f);
+  /* Deleting an edit must not resume the stopped backlog behind it. */
+  for (route = 0; route < 2; ++route) {
+    sl_prompt_source_t source;
+    int stopped;
+    setup(&f, native, 8);
+    CHECK(sl_set_status_busy(f.sl, 1) == SL_OK);
+    CHECK(sl_prompt_queue_append(f.sl, "backlog", 0, &next) == SL_OK);
+    CHECK(!keys(&f, "\033", &source));
+    CHECK(sl_inject_steer_prompt(f.sl, "remove", &removed) == SL_OK);
+    suspend_keys(&f, route ? "\033e\033n\033s" : "\033e\001\013\r\033s");
+    CHECK(sl_get_prompt_queue_stopped(f.sl, &stopped) == SL_OK && stopped);
+    CHECK(sl_prompt_queue_count(f.sl) == 1 && entry(&f, 0).id == next);
+    CHECK(entry(&f, 0).stopped && !entry(&f, 0).eligible);
+    teardown(&f);
+  }
+}
+
+static void shortcut_mappings(int native) {
+  const char letters[] = "kjn";
+  struct fixture f;
+  sl_prompt_queue_keys_t bindings;
+  sl_prompt_queue_entry_info_t info;
+  sl_prompt_id_t id;
+  char burst[64];
+  int context, action_index, key_index;
+  for (context = 0; context < 3; ++context)
+    for (action_index = 0; action_index < 3; ++action_index)
+      for (key_index = 0; key_index < 3; ++key_index) {
+        setup(&f, native, 4);
+        CHECK(sl_set_prompt_queue_profile(
+                  f.sl, context == 0
+                            ? SL_PROMPT_QUEUE_PROFILE_DEFAULT
+                            : SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) == SL_OK);
+        CHECK(sl_set_status_busy(f.sl, context == 1) == SL_OK);
+        CHECK(sl_set_prompt_queue_delivery(
+                  f.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) == SL_OK);
+        suspend_keys(&f, "saved\033k\033s");
+        memset(&bindings, 0, sizeof(bindings));
+        if (action_index == 0)
+          bindings.enqueue_draft = SL_KEY_ALT_BASE + letters[key_index];
+        else if (action_index == 1)
+          bindings.edit_newest = SL_KEY_ALT_BASE + letters[key_index];
+        else
+          bindings.submit_or_promote_newest =
+              SL_KEY_ALT_BASE + letters[key_index];
+        CHECK(sl_set_prompt_queue_keys(f.sl, &bindings) == SL_OK);
+        if (action_index == 1)
+          CHECK(sl_prompt_queue_append(f.sl, "queued", 0, &id) == SL_OK);
+        sprintf(burst, "%s\033%c\033s",
+                action_index == 1   ? ""
+                : action_index == 2 ? "/hold command"
+                                    : "draft",
+                letters[key_index]);
+        suspend_keys(&f, burst);
+        if (action_index == 1) {
+          CHECK(sl_prompt_queue_draft_info(f.sl, &info) == SL_OK &&
+                info.id == id);
+          CHECK(!strcmp(sl_buffer(f.sl), "queued"));
+          CHECK(sl_prompt_queue_count(f.sl) == 0);
+        } else if (action_index == 0 && context == 2) {
+          /* An idle queued-turns enqueue is deliberately ignored. Its key
+           * must still never fall through to stash/append/clear defaults. */
+          CHECK(!strcmp(sl_buffer(f.sl), "draft"));
+          CHECK(sl_prompt_queue_count(f.sl) == 0);
+        } else {
+          CHECK(!*sl_buffer(f.sl) && sl_prompt_queue_count(f.sl) == 1);
+          CHECK(entry(&f, 0).mode == (action_index == 2
+                                          ? SL_PROMPT_QUEUE_MODE_STEER
+                                          : SL_PROMPT_QUEUE_MODE_QUEUED));
+        }
+        teardown(&f);
+      }
+  /* A disabled queue must not reserve its configured keys. */
+  setup(&f, native, 4);
+  suspend_keys(&f, "saved\033k\033s");
+  memset(&bindings, 0, sizeof(bindings));
+  bindings.enqueue_draft = SL_KEY_ALT_BASE + 'j';
+  CHECK(sl_set_prompt_queue_keys(f.sl, &bindings) == SL_OK);
+  CHECK(sl_set_prompt_queue(f.sl, 0, 4, 3) == SL_OK);
+  suspend_keys(&f, "prefix\033j\033s");
+  CHECK(!strcmp(sl_buffer(f.sl), "prefixsaved"));
+  teardown(&f);
+}
+
+static void shortcut_focus(int native) {
+  const char letters[] = "kKjJjJ";
+  struct fixture f;
+  sl_prompt_id_t id;
+  char burst[32];
+  int index;
+  for (index = 0; index < 6; ++index) {
+    setup(&f, native, 4);
+    CHECK(sl_set_prompt_queue_delivery(f.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) ==
+          SL_OK);
+    if (index >= 4)
+      suspend_keys(&f, "saved\033k\033s");
+    CHECK(sl_inject_queued_prompt(f.sl, "approval", &id) == SL_OK);
+    sprintf(burst, "\033a\033%c\033n\033s", letters[index]);
+    suspend_keys(&f, burst);
+    CHECK(!*sl_buffer(f.sl));
+    CHECK(sl_prompt_queue_count(f.sl) == 1 && entry(&f, 0).id == id &&
+          entry(&f, 0).held);
+    suspend_keys(&f, "\033a\033y\033s");
+    CHECK(sl_prompt_queue_count(f.sl) == 1 && entry(&f, 0).id == id &&
+          !entry(&f, 0).held);
+    CHECK(f.calls == 0 && f.history == 0);
+    teardown(&f);
+  }
+}
+
 int main(int argc, char **argv) {
   int native;
   (void)argv;
@@ -835,7 +1108,18 @@ int main(int argc, char **argv) {
   for (native = 0; native <= 1; native++) {
     fprintf(stderr, "policy tests: native=%d\n", native);
     if (argc > 1) {
-      if (!strcmp(argv[1], "barriers"))
+      if (!strcmp(argv[1], "shortcut-precedence")) {
+        shortcut_mappings(native);
+        shortcut_focus(native);
+      } else if (!strcmp(argv[1], "shortcut-mappings"))
+        shortcut_mappings(native);
+      else if (!strcmp(argv[1], "shortcut-focus"))
+        shortcut_focus(native);
+      else if (!strcmp(argv[1], "discard"))
+        discard_edges(native);
+      else if (!strcmp(argv[1], "empty-edits"))
+        empty_edits(native);
+      else if (!strcmp(argv[1], "barriers"))
         edited_barriers(native);
       else if (!strcmp(argv[1], "policy_wakeup"))
         policy_wakeup(native);
@@ -864,6 +1148,8 @@ int main(int argc, char **argv) {
     edit_readiness(native);
     edited_barriers(native);
     policy_wakeup(native);
+    empty_edits(native);
+    discard_edges(native);
   }
   puts("Queue policy regressions passed");
   return 0;

@@ -188,12 +188,20 @@ live scroll regions, status lines, and spinners are off; the theme is
   queued edit, where rejection clears only that draft. Held entries display
   `H` and are skipped during automatic delivery; ordinary user prompts proceed.
   Alt-E, edits, Tab/Enter requeue and busy steering preserve identity and hold.
-  Submitting a held edit requeues it; it never implicitly approves or delivers.
+  Submitting a nonempty held edit requeues it; it never implicitly approves or delivers.
+  Submitting or requeueing an empty edit deletes its entry, including approvals.
+  Alt-N discards the edited entry immediately without erasing or submitting it;
+  the editing indicator shows `Alt-N discard`. Ctrl-_ recovers only its text as
+  a fresh draft; its old identity and hold stay removed. On an ordinary draft,
+  Alt-N clears the text with undo support. Alt-K saves and clears the whole draft
+  in one per-handle stash; Alt-J appends that saved text after current input.
+  The stash survives submissions and is independent of Ctrl-Y/Alt-Y's kill ring.
   Editing reserves one queue slot; cancellation/EOF/read failure restores the
   original entry. Clear preserves an active edit, and disable is refused until
   that edit is requeued, delivered, cancelled or explicitly rejected.
 - `sl:queue_clear()` clears queued entries without changing the active draft;
-  `sl:queue_draft()` atomically queues an active nonempty draft.
+  `sl:queue_draft()` atomically queues an active nonempty draft, or deletes the
+  edited queue entry if its draft is empty.
 - `sl:queue_mode(index)` returns `softline.QUEUE_MODE_QUEUED` or
   `softline.QUEUE_MODE_STEER`; `sl:queue_set_mode(index, mode)` changes an
   entry's delivery intent. The host chooses which steer to take at a safe seam.

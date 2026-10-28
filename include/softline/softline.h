@@ -703,7 +703,8 @@ struct sl {
   int (*prompt_queue_take)(sl_t *self, size_t index, char **out);
   /** Clear queued entries without changing the active editor draft. */
   int (*prompt_queue_clear)(sl_t *self);
-  /** Atomically queue the active nonempty draft and clear the editor. */
+  /** Atomically queue the active nonempty draft and clear the editor.
+   * An empty queued edit deletes its entry instead. */
   int (*prompt_queue_enqueue_draft)(sl_t *self);
   /** Inspect one oldest-first entry's identity, mode and approval hold. */
   int (*prompt_queue_info)(const sl_t *self, size_t index,
@@ -711,8 +712,9 @@ struct sl {
   /** Inspect the active draft's queued origin; id is zero for an ordinary
    * draft. Alt-E reserves its queue position and capacity until requeue,
    * delivery or rejection.
-   * Cancelling or submitting an empty edit restores the original entry with
-   * its identity/hold. */
+   * Alt-N or empty submission/requeue deletes the entry. Cancellation, EOF and
+   * read failure restore the original entry with its identity/hold. Undo after
+   * Alt-N recovers text only, as an ordinary draft without the removed ID. */
   int (*prompt_queue_draft_info)(const sl_t *self,
                                  sl_prompt_queue_entry_info_t *out);
   /** Release one queued or actively edited entry's hold by stable identity.
@@ -1148,7 +1150,9 @@ int sl_prompt_queue_set_mode(sl_t *self, size_t index,
 /** Clear queued entries without changing the active editor draft. */
 int sl_prompt_queue_clear(sl_t *self);
 
-/** Queue the active nonempty draft and clear it atomically while editing. */
+/** Queue the active nonempty draft and clear it atomically while editing.
+ * An empty queued edit deletes its entry; an ordinary empty draft is invalid.
+ */
 int sl_prompt_queue_enqueue_draft(sl_t *self);
 
 /** Inspect an entry's stable identity, delivery intent and approval hold. */
@@ -1157,8 +1161,10 @@ int sl_prompt_queue_info(const sl_t *self, size_t index,
 /** Inspect a queued edit; id is zero for a draft without a queued origin.
  * Alt-E retains identity, mode and hold, reserving its queue position and
  * capacity. Enter or a submit callback requeues nonempty held edits there
- * without delivering them.
- * Submitting an empty edit, cancellation, EOF or read failure restores the
+ * without delivering them. Empty submission or requeue deletes the edited
+ * entry, including approvals. Alt-N discards the active queued edit without
+ * submission; undo recovers only its text as a fresh draft. Cancellation, EOF
+ * or read failure restores the
  * original entry, discarding its edits. */
 int sl_prompt_queue_draft_info(const sl_t *self,
                                sl_prompt_queue_entry_info_t *out);

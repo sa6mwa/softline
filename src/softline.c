@@ -2367,9 +2367,12 @@ static size_t sl_row_shared_prefix(const char *old_text, size_t old_len,
     size_t ansi_len;
     int cells;
     size_t char_len;
-    ansi_len = sl_ansi_sequence_len(new_text, limit, pos);
+    /* Parse the complete new sequence even when the old row is shorter.
+     * Otherwise a longer colour escape can look like shared text bytes. */
+    ansi_len = sl_ansi_sequence_len(new_text, new_len, pos);
     if (ansi_len > 0) {
-      if (memcmp(old_text + pos, new_text + pos, ansi_len) != 0)
+      if (ansi_len > limit - pos ||
+          memcmp(old_text + pos, new_text + pos, ansi_len) != 0)
         break;
       pos += ansi_len;
       continue;
@@ -3082,7 +3085,7 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
   if (!sl_prompt_queue_enabled(impl) || !render)
     return 0;
   queue = &impl->prompt_queue;
-  if (queue->len == 0 && !queue->editing.info.held)
+  if (queue->len == 0 && !queue->editing.info.id)
     return 0;
   held = 0;
   for (i = 0; i < queue->len; i++)
@@ -3100,11 +3103,16 @@ static int sl_render_append_queue_panel(sl_t *self, sl_render_t *render,
       return -1;
     style = queue_style;
   }
-  if (queue->editing.info.held) {
+  if (queue->editing.info.id) {
+    const char *editing =
+        queue->editing.info.held
+            ? "H editing: approval required / Alt-N discard"
+        : queue->editing.info.mode == SL_PROMPT_QUEUE_MODE_STEER
+            ? "S editing / Alt-N discard"
+            : "Q editing / Alt-N discard";
     if (sl_render_new_row_at(render, 0, 0) != 0 ||
-        sl_queue_row_append_preview(&render->rows[render->count - 1],
-                                    "H editing: approval required", width,
-                                    style) != 0)
+        sl_queue_row_append_preview(&render->rows[render->count - 1], editing,
+                                    width, style) != 0)
       return -1;
   }
   if (held && approval < 0) {
@@ -6182,11 +6190,14 @@ static int sl_handle_prompt_queue_key(sl_t *self, int key, int *handled,
     return SL_OK;
   keys = &impl->prompt_queue.keys;
   /* Empty edits still own a queue entry. Route every keyboard submission
-   * through the same restoration gate as sl_submit(), including busy Enter.
+   * or requeue through the same deletion gate as sl_submit().
    */
   if (impl->len == 0 && impl->prompt_queue.editing.info.id &&
       (key == SL_KEY_ENTER ||
-       (sl_key_t)key == keys->submit_or_promote_newest)) {
+       (keys->enqueue_draft != SL_KEY_NONE &&
+        (sl_key_t)key == keys->enqueue_draft) ||
+       (keys->submit_or_promote_newest != SL_KEY_NONE &&
+        (sl_key_t)key == keys->submit_or_promote_newest))) {
     *handled = 1;
     *submit = 1;
     return SL_OK;
@@ -6356,6 +6367,63 @@ static int sl_kill_draft(sl_t *self, size_t start, size_t end, int backward) {
   }
   sl_edit_commit_kill(&impl->edit, text, len);
   impl->cursor = start;
+  return 0;
+}
+
+static int sl_clear_draft(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  if (impl->prompt_queue.editing.info.id) {
+    sl_edit_t recovery;
+    int status;
+    /* Prepare the text-only undo before retiring the queued context. Never
+     * carry its earlier edits or identity into the new ordinary draft. */
+    memset(&recovery, 0, sizeof(recovery));
+    recovery.enabled = 1;
+    if (sl_edit_record(&recovery, 0, impl->buf, impl->len, 0, impl->cursor) !=
+        0) {
+      sl_set_error(self, "failed to retain discarded draft text for undo");
+      return -1;
+    }
+    status = sl_prompt_queue_reject(self, impl->prompt_queue.editing.info.id);
+    if (status != SL_OK) {
+      sl_edit_clear_undo(&recovery);
+      return -1;
+    }
+    impl->edit.undo = recovery.undo;
+    impl->edit.group = recovery.group;
+    return 0;
+  }
+  if (sl_buf_delete(self, 0, impl->len) != 0)
+    return -1;
+  impl->cursor = 0;
+  return 0;
+}
+
+static int sl_stash_draft(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  char *saved;
+  if (!impl->len)
+    return 0;
+  saved = sl_strdup(impl->buf);
+  if (!saved || sl_buf_delete(self, 0, impl->len) != 0) {
+    free(saved);
+    sl_set_error(self, "failed to stash draft text");
+    return -1;
+  }
+  free(impl->edit.stash);
+  impl->edit.stash = saved;
+  impl->cursor = 0;
+  return 0;
+}
+
+static int sl_append_stash(sl_t *self) {
+  sl_impl_t *impl = sl_impl(self);
+  if (!impl->edit.stash)
+    return 0;
+  if (sl_buf_insert(self, impl->len, impl->edit.stash,
+                    strlen(impl->edit.stash)) != 0)
+    return -1;
+  impl->cursor = impl->len;
   return 0;
 }
 
@@ -6531,7 +6599,9 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
           key == SL_KEY_ALT_A || key == SL_KEY_ALT_E ||
           (impl->prompt_queue.approval_focused &&
            (key == SL_KEY_ALT_Y || key == SL_KEY_ALT_BASE + 'Y' ||
-            key == SL_KEY_ALT_BASE + 'n' || key == SL_KEY_ALT_BASE + 'N'));
+            key == SL_KEY_ALT_BASE + 'n' || key == SL_KEY_ALT_BASE + 'N')) ||
+          (impl->prompt_queue.editing.info.id &&
+           (key == SL_KEY_ALT_BASE + 'n' || key == SL_KEY_ALT_BASE + 'N'));
       impl->control_x_pending = 0;
       if (key == SL_KEY_CTRL_U)
         key = SL_KEY_CTRL_UNDERSCORE;
@@ -6750,6 +6820,31 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
           impl->edit.command = SL_EDIT_YANK;
         else if (key == SL_KEY_ALT_Y)
           impl->edit.command = SL_EDIT_YANK_POP;
+      }
+      /* Configured queue keys remain reserved even when their action is a
+       * no-op in the current profile/state. */
+      if ((key == SL_KEY_ALT_BASE + 'k' || key == SL_KEY_ALT_BASE + 'K' ||
+           key == SL_KEY_ALT_BASE + 'j' || key == SL_KEY_ALT_BASE + 'J' ||
+           key == SL_KEY_ALT_BASE + 'n' || key == SL_KEY_ALT_BASE + 'N') &&
+          (!sl_prompt_queue_enabled(impl) ||
+           ((sl_key_t)key != impl->prompt_queue.keys.enqueue_draft &&
+            (sl_key_t)key != impl->prompt_queue.keys.edit_newest &&
+            (sl_key_t)key !=
+                impl->prompt_queue.keys.submit_or_promote_newest))) {
+        int status;
+        impl->prompt_queue.approval_focused = 0;
+        if (impl->history_search_active) {
+          sl_history_search_accept(self, &search);
+          impl->active_prompt = prompt;
+        }
+        status = key == SL_KEY_ALT_BASE + 'k' || key == SL_KEY_ALT_BASE + 'K'
+                     ? sl_stash_draft(self)
+                 : key == SL_KEY_ALT_BASE + 'j' || key == SL_KEY_ALT_BASE + 'J'
+                     ? sl_append_stash(self)
+                     : sl_clear_draft(self);
+        if (status != 0)
+          sl_prompt_queue_bell(impl);
+        break;
       }
       if (key == SL_KEY_ALT_A &&
           sl_prompt_approval_index(impl, impl->prompt_queue.approval_id) >= 0) {
@@ -7056,7 +7151,8 @@ static char *sl_readline_impl(sl_t *self, const char *prompt,
       if (impl->len)
         status = sl_prompt_queue_enqueue_draft_method(self);
       else
-        sl_prompt_queue_restore_edit(self);
+        status =
+            sl_prompt_queue_reject(self, impl->prompt_queue.editing.info.id);
       if (status != SL_OK) {
         failed = 1;
         done = 1;
@@ -7768,6 +7864,9 @@ static int sl_prompt_queue_enqueue_draft_method(sl_t *self) {
   impl = sl_impl(self);
   if (sl_prompt_queue_require_enabled(self, impl) != SL_OK)
     return SL_ERROR_INVALID;
+  if (impl->active_readline && impl->len == 0 &&
+      impl->prompt_queue.editing.info.id)
+    return sl_prompt_queue_reject(self, impl->prompt_queue.editing.info.id);
   if (!impl->active_readline || impl->len == 0) {
     sl_set_error(
         self, "prompt queue draft enqueue requires an active nonempty editor");

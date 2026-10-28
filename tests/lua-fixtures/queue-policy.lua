@@ -210,5 +210,63 @@ text, source, id = sl:next_prompt("policy-28> ")
 assert(removed and text == "ordinary" and source == softline.PROMPT_SOURCE_QUEUED and id == newer)
 assert(sl:queue_count() == 1 and sl:queue_info(1).id == older)
 assert(sl:set_idle_callback(nil))
+assert(sl:queue_clear())
+assert(sl:set_queue_delivery("manual"))
+prompt_index = 28
+for _, held in ipairs({false, true}) do
+  for _, steering in ipairs({false, true}) do
+    for _, api in ipairs({false, true}) do
+      local removed = assert(sl:queue_append(api and "first\nsecond" or "remove", held))
+      assert(sl:queue_set_mode(1, steering and softline.QUEUE_MODE_STEER or softline.QUEUE_MODE_QUEUED))
+      assert(sl:bind_key(softline.KEY_ALT_BASE + string.byte("r"), function()
+        assert(sl:set_buffer(""))
+        assert(sl:queue_draft())
+        return softline.KEY_ACTION_HANDLED
+      end))
+      local before_history = history
+      prompt_index = prompt_index + 1
+      suspended("policy-" .. prompt_index .. "> ")
+      assert(sl:queue_count() == 0 and sl:queue_draft_info() == nil)
+      assert(sl:buffer() == "" and sl:last_prompt_id() == 0)
+      assert(not sl:queue_reject(removed) and not sl:queue_approve(removed))
+      assert(history == before_history)
+    end
+  end
+end
+local cancelled = assert(sl:inject_queued_prompt("cancelled edit"))
+text = sl:next_prompt("policy-37> ")
+assert(text == nil and sl:last_readline_status() == softline.READLINE_CANCELLED)
+assert(sl:queue_info(1).id == cancelled and sl:queue_info(1).held)
+assert(sl:queue_peek(1) == "cancelled edit")
+assert(sl:queue_clear())
+prompt_index = 37
+for _, held in ipairs({false, true}) do
+  for _, steering in ipairs({false, true}) do
+    assert(sl:set_buffer(""))
+    local removed = assert(sl:queue_append("discard\nwithout erasing", held))
+    assert(sl:queue_set_mode(1, steering and softline.QUEUE_MODE_STEER or softline.QUEUE_MODE_QUEUED))
+    local before_history = history
+    prompt_index = prompt_index + 1
+    suspended("policy-" .. prompt_index .. "> ")
+    assert(sl:queue_count() == 0 and sl:queue_draft_info() == nil)
+    assert(sl:buffer() == "discard\nwithout erasing" and sl:last_prompt_id() == 0)
+    assert(not sl:queue_reject(removed) and not sl:queue_approve(removed))
+    assert(history == before_history)
+  end
+end
+local before_stash_history = history
+suspended("policy-42> ")
+assert(sl:buffer() == "prefix discard\nwithout erasing" and sl:queue_draft_info() == nil)
+suspended("policy-43> ")
+assert(sl:buffer() == "prefix discard\nwithout erasing" and sl:queue_count() == 0)
+suspended("policy-44> ")
+assert(sl:buffer() == "discard\nwithout erasing" and sl:queue_count() == 0)
+for _, letter in ipairs({"k", "j", "n"}) do
+  assert(sl:bind_key(softline.KEY_ALT_BASE + string.byte(letter), function()
+    return softline.KEY_ACTION_HANDLED
+  end))
+end
+suspended("policy-45> ")
+assert(sl:buffer() == "discard\nwithout erasing" and history == before_stash_history)
 sl:close()
 print("lua queue policy passed")

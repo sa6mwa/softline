@@ -233,21 +233,21 @@ static int held_edit(void) {
         info.held);
   CHECK(sl_output_stream_end(sl) == SL_OK &&
         sl_output_stream_begin(sl) == SL_OK);
-  /* Empty edit goes through the restoration gate, without bypassing FIFO. */
+  /* Empty submission deletes the oldest approval; the next one can be
+   * focused before suspension and decided after handoff. */
   line = read_keys(sl, master, 1, NULL, 0, "\033e\001\013\r\033a\033s", NULL);
   CHECK(!line && sl_last_readline_status(sl) == SL_READLINE_SUSPENDED);
-  CHECK(sl_prompt_queue_info(sl, 1, &info) == SL_OK && info.id == held &&
+  CHECK(sl_prompt_queue_count(sl) == 1);
+  CHECK(sl_prompt_queue_info(sl, 0, &info) == SL_OK && info.id == other &&
         info.held);
-  CHECK(sl_prompt_queue_reject(sl, other) == SL_ERROR_INVALID);
+  CHECK(sl_prompt_queue_reject(sl, held) == SL_ERROR_INVALID);
   CHECK(sl_output_stream_end(sl) == SL_OK &&
         sl_output_stream_begin(sl) == SL_OK);
   /* Focus survives suspension: Alt-Y acts on the offered approval. */
   line = read_keys(sl, master, 1, NULL, 0, "\033y\033s", NULL);
   CHECK(!line && sl_last_readline_status(sl) == SL_READLINE_SUSPENDED);
-  CHECK(sl_prompt_queue_info(sl, 1, &info) == SL_OK && info.id == held &&
-        !info.held);
   CHECK(sl_prompt_queue_info(sl, 0, &info) == SL_OK && info.id == other &&
-        info.held);
+        !info.held);
   CHECK(sl_history_add(sl, "matching history") == SL_OK);
   line = read_keys(sl, master, 1, NULL, 0, "draft\022match\033s", NULL);
   CHECK(!line && sl_last_readline_status(sl) == SL_READLINE_SUSPENDED);
@@ -911,7 +911,124 @@ static int visual_rows(int native) {
   return 0;
 }
 
+static int stash_lifetime(int native) {
+  struct {
+    sl_t *sl;
+    int master, slave;
+  } handles[2];
+  struct winsize size = {24, 40, 0, 0};
+  sl_config_t config;
+  char *line;
+  int index;
+  for (index = 0; index < 2; ++index) {
+    CHECK(openpty(&handles[index].master, &handles[index].slave, NULL, NULL,
+                  &size) == 0);
+    sl_config_init(&config);
+    config.input_fd = config.output_fd = handles[index].slave;
+    config.line_max_len = 16;
+    config.prompt_theme = SL_PROMPT_THEME_PLAIN;
+    handles[index].sl = sl_create_with_config(&config);
+    CHECK(handles[index].sl &&
+          sl_bind_key(handles[index].sl, SL_KEY_ALT_BASE + 's', suspend_key,
+                      NULL) == SL_OK);
+    if (native)
+      CHECK(sl_output_stream_begin(handles[index].sl) == SL_OK);
+  }
+  line = read_keys(handles[0].sl, handles[0].master, native, "abcdefgh", 3,
+                   "\033k\033s", NULL);
+  CHECK(!line && !*sl_buffer(handles[0].sl));
+  line = read_keys(handles[1].sl, handles[1].master, native, "second", 2,
+                   "\033j\033s", NULL);
+  CHECK(!line && !strcmp(sl_buffer(handles[1].sl), "second") &&
+        sl_cursor(handles[1].sl) == 2);
+  line = read_keys(handles[0].sl, handles[0].master, native, "12345678", 0,
+                   "\033j\033s", NULL);
+  CHECK(!line && !strcmp(sl_buffer(handles[0].sl), "12345678abcdefgh"));
+  line = read_keys(handles[0].sl, handles[0].master, native, "123456789", 0,
+                   "\033j\033s", NULL);
+  CHECK(!line && !strcmp(sl_buffer(handles[0].sl), "123456789") &&
+        sl_cursor(handles[0].sl) == 0);
+  line = read_keys(handles[0].sl, handles[0].master, native, NULL, 0,
+                   "\033n\033j\r", NULL);
+  CHECK(line && !strcmp(line, "abcdefgh"));
+  sl_free_string(handles[0].sl, line);
+  line = read_keys(handles[0].sl, handles[0].master, native, NULL, 0, "temp\r",
+                   NULL);
+  CHECK(line && !strcmp(line, "temp"));
+  sl_free_string(handles[0].sl, line);
+  if (native)
+    CHECK(sl_output_stream_end(handles[0].sl) == SL_OK &&
+          sl_output_stream_begin(handles[0].sl) == SL_OK);
+  line = read_keys(handles[0].sl, handles[0].master, native, NULL, 0,
+                   "\033j\033s", NULL);
+  CHECK(!line && !strcmp(sl_buffer(handles[0].sl), "abcdefgh"));
+  for (index = 0; index < 2; ++index) {
+    if (native)
+      CHECK(sl_output_stream_end(handles[index].sl) == SL_OK);
+    sl_destroy(handles[index].sl);
+    close(handles[index].master);
+    close(handles[index].slave);
+  }
+  return 0;
+}
+
+static int draft_shortcuts(int native) {
+  static const struct {
+    const char *text, *keys, *expected;
+    size_t cursor, expected_cursor;
+  } cases[] = {
+      {"", "\033j\033n", "", 0, 0},
+      {"café\n中文", "\033kprefix \001\033j", "prefix café\n中文", 1,
+       sizeof("prefix café\n中文") - 1},
+      {"abc", "\033k\033j\033j", "abcabc", 1, 6},
+      {"abc", "\033k\033k\033j", "abc", 1, 3},
+      {"abc", "\033ksecond\033k\033j", "second", 1, 6},
+      {"café\n中文", "\033k\037", "café\n中文", 1, 1},
+      {"abc", "\033kprefix\001\033j\037", "prefix", 1, 0},
+      {"café\n中文", "\033n\037", "café\n中文", 1, 1},
+      {"abc", "\033kother\033n\033j", "abc", 1, 3},
+      {"kill", "\025stash\033kdiscard\033n\031\033j", "killstash", 4, 9},
+      {"one", "\025two\025draft\033k\033j\001\031\033y", "onedraft", 3, 3},
+      {"abc", "\033K\033J\033N\037", "abc", 1, 3},
+      {"café\n中文", "\022match\033k\033j", "matching history", 1, 16},
+      {"abc", "\022match\033n\037", "matching history", 1, 16}};
+  size_t index;
+  for (index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index) {
+    int master, slave;
+    struct winsize size = {24, 40, 0, 0};
+    sl_config_t config;
+    sl_t *sl;
+    char keys[128], *line;
+    fprintf(stderr, "draft shortcut: native=%d case=%lu\n", native,
+            (unsigned long)index);
+    CHECK(openpty(&master, &slave, NULL, NULL, &size) == 0);
+    sl_config_init(&config);
+    config.input_fd = config.output_fd = slave;
+    config.prompt_theme = SL_PROMPT_THEME_PLAIN;
+    sl = sl_create_with_config(&config);
+    CHECK(sl &&
+          sl_bind_key(sl, SL_KEY_ALT_BASE + 's', suspend_key, NULL) == SL_OK);
+    CHECK(sl_history_add(sl, "matching history") == SL_OK);
+    if (native)
+      CHECK(sl_output_stream_begin(sl) == SL_OK);
+    snprintf(keys, sizeof(keys), "%s\033s", cases[index].keys);
+    line = read_keys(sl, master, native, cases[index].text, cases[index].cursor,
+                     keys, NULL);
+    CHECK(!line && sl_last_readline_status(sl) == SL_READLINE_SUSPENDED);
+    CHECK(!strcmp(sl_buffer(sl), cases[index].expected));
+    CHECK(sl_cursor(sl) == cases[index].expected_cursor);
+    if (native)
+      CHECK(sl_output_stream_end(sl) == SL_OK);
+    sl_destroy(sl);
+    close(master);
+    close(slave);
+  }
+  return stash_lifetime(native);
+}
+
 int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "draft-shortcuts"))
+    return draft_shortcuts(0) || draft_shortcuts(1);
   if (argc == 2 && !strcmp(argv[1], "visual-rows"))
     return visual_rows(0) || visual_rows(1);
   if (argc == 2 && !strcmp(argv[1], "cursor-groups"))
